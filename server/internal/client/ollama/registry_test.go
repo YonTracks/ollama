@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,8 +18,9 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/ollama/ollama/server/internal/cache/blob"
@@ -791,78 +793,186 @@ func TestUnlink(t *testing.T) {
 	})
 }
 
+//go:embed testdata/ollama.com
+var modelsFS embed.FS
+
+func serveChunkedModels(w http.ResponseWriter, r *http.Request) {
+	mfs, err := fs.Sub(modelsFS, "testdata/ollama.com")
+	if err != nil {
+		http.Error(w, err.Error(), 499)
+	}
+	if strings.Contains(r.URL.Path, "/chunksums/") {
+		path := strings.Replace(r.URL.Path, "/chunksums/", "/blobs/", 1)
+		path = strings.Replace(path, ":", "-", 1)
+		path = strings.TrimPrefix(path, "/")
+		w.Header().Set("Content-Location", path)
+
+		f, err := mfs.Open(path)
+		if err != nil {
+			http.Error(w, err.Error(), 499)
+		}
+		defer f.Close()
+
+		// chunk in 8-byte blocks (or less for the last chunk)
+		var read int
+		for {
+			var buf [8]byte
+			n, err := f.Read(buf[:])
+			if n > 0 {
+				d := blob.DigestFromBytes(buf[:n])
+				fmt.Fprintf(w, "%s %d-%d\n", d, read, read+n-1)
+			}
+			read += n
+			if errors.Is(err, io.EOF) {
+				return
+			}
+		}
+	} else {
+		// serve manifests and blobs (supports range requests)
+		http.FileServerFS(mfs).ServeHTTP(w, r)
+	}
+}
+
 func TestPullChunksums(t *testing.T) {
 	check := testutil.Checker(t)
 
-	content := "hello"
-	var chunksums string
-	contentDigest := func() blob.Digest {
-		return blob.DigestFromBytes(content)
-	}
+	var chunked atomic.Int64
 	rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.Contains(r.URL.Path, "/manifests/latest"):
-			fmt.Fprintf(w, `{"layers":[{"digest":%q,"size":%d}]}`, contentDigest(), len(content))
-		case strings.HasSuffix(r.URL.Path, "/chunksums/"+contentDigest().String()):
-			loc := fmt.Sprintf("http://blob.store/v2/library/test/blobs/%s", contentDigest())
-			w.Header().Set("Content-Location", loc)
-			io.WriteString(w, chunksums)
-		case strings.Contains(r.URL.Path, "/blobs/"+contentDigest().String()):
-			http.ServeContent(w, r, contentDigest().String(), time.Time{}, strings.NewReader(content))
-		default:
-			t.Errorf("unexpected request: %v", r)
-			http.NotFound(w, r)
+		if strings.Contains(r.URL.Path, "/chunksums/") {
+			chunked.Add(1)
 		}
+		serveChunkedModels(w, r)
 	})
 
-	rc.MaxStreams = 1        // prevent concurrent chunk downloads
-	rc.ChunkingThreshold = 1 // for all blobs to be chunked
+	rc.ChunkingThreshold = 1 // force chunksums for all blobs
 
-	var mu sync.Mutex
-	var reads []int64
 	ctx := WithTrace(t.Context(), &Trace{
 		Update: func(l *Layer, n int64, err error) {
-			t.Logf("Update: %v %d %v", l, n, err)
-			mu.Lock()
-			reads = append(reads, n)
-			mu.Unlock()
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
 		},
 	})
 
-	chunksums = fmt.Sprintf("%s 0-2\n%s 3-4\n",
-		blob.DigestFromBytes("hel"),
-		blob.DigestFromBytes("lo"),
-	)
-	err := rc.Pull(ctx, "test")
+	err := rc.Pull(ctx, "smol")
 	check(err)
-	wantReads := []int64{
-		0, // initial signaling of layer pull starting
-		3, // first chunk read
-		2, // second chunk read
-	}
-	if !slices.Equal(reads, wantReads) {
-		t.Errorf("reads = %v; want %v", reads, wantReads)
+
+	if chunked.Load() == 0 {
+		t.Error("no chunksums were requested")
 	}
 
-	mw, err := rc.Resolve(t.Context(), "test")
+	// check cached manifest is equal to remote
+	mw, err := rc.Resolve(t.Context(), "smol")
 	check(err)
-	mg, err := rc.ResolveLocal("test")
+	mg, err := rc.ResolveLocal("smol")
 	check(err)
 	if !reflect.DeepEqual(mw, mg) {
 		t.Errorf("mw = %v; mg = %v", mw, mg)
 	}
-	for i := range mg.Layers {
-		_, err = c.Get(mg.Layers[i].Digest)
+
+	for l := range mg.All() {
+		prefix := fmt.Sprintf("layers[%s]", l.Digest.Short())
+		info, err := c.Get(l.Digest)
 		if err != nil {
-			t.Errorf("Get(%v): %v", mg.Layers[i].Digest, err)
+			t.Errorf("%s: %v", prefix, err)
+		}
+		if info.Size != l.Size {
+			t.Errorf("%s: size = %v; want %v", prefix, info.Size, l.Size)
+		}
+		data, err := os.ReadFile(c.GetFile(l.Digest))
+		if err != nil {
+			t.Fatalf("%s: %v", prefix, err)
+		}
+		gd := blob.DigestFromBytes(data)
+		if gd != l.Digest {
+			t.Errorf("%s: sum = %v; want %v", prefix, gd, l.Digest)
 		}
 	}
 
-	// missing chunks
-	content = "llama"
-	chunksums = fmt.Sprintf("%s 0-1\n", blob.DigestFromBytes("ll"))
-	err = rc.Pull(ctx, "missingchunks")
+	var total atomic.Int64
+	ctx = WithTrace(t.Context(), &Trace{
+		Update: func(l *Layer, n int64, err error) {
+			if n > 0 && !errors.Is(err, ErrCached) {
+				t.Errorf("expecting cached layers only: err == %v", err)
+			}
+			total.Add(n)
+		},
+	})
+
+	err = rc.Pull(ctx, "smol")
+	check(err)
+
+	if total.Load() != mg.Size() {
+		t.Errorf("total = %d; want 0", total.Load())
+	}
+}
+
+type truncateResponseWriter struct {
+	http.ResponseWriter
+	tw io.Writer
+	n  int64
+}
+
+func (trw *truncateResponseWriter) Write(b []byte) (int, error) {
+	if trw.tw == nil {
+		trw.tw = iotest.TruncateWriter(trw.ResponseWriter, trw.n)
+	}
+	return trw.tw.Write(b)
+}
+
+func TestPullResume(t *testing.T) {
+	var shortChunksums bool
+	rc, _ := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if shortChunksums && strings.Contains(r.URL.Path, "/chunksums/") {
+			w = &truncateResponseWriter{ResponseWriter: w, n: 100} // enough for first chunksum to get out
+		}
+		serveChunkedModels(w, r)
+	})
+
+	rc.MaxStreams = 1        // prevent concurrent downloads
+	rc.ChunkingThreshold = 1 // force chunksums for all blobs
+
+	var script strings.Builder
+	ctx := WithTrace(t.Context(), &Trace{
+		Update: func(l *Layer, n int64, err error) {
+			errStr := "<nil>"
+			if err != nil {
+				if errors.Is(err, ErrCached) {
+					errStr = "<cached>"
+				} else {
+					errStr = "!"
+				}
+			}
+			fmt.Fprintf(&script, "-- %s %3d %s --\n", l.Digest.Short(), n, errStr)
+		},
+	})
+
+	shortChunksums = true
+	err := rc.Pull(ctx, "smol")
 	if err == nil {
-		t.Error("expected error because of missing chunks")
+		t.Error("expected error")
+	}
+
+	script.Reset()
+	shortChunksums = false
+	err = rc.Pull(ctx, "smol")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var gotCachedChunks []string
+	for line := range strings.Lines(script.String()) {
+		if strings.Contains(line, "<cached>") {
+			gotCachedChunks = append(gotCachedChunks, line)
+		}
+	}
+	wantCachedChunks := []string{
+		"-- a4e5e156   8 <cached> --\n",
+		"-- ca239d7b   8 <cached> --\n",
+	}
+
+	if !slices.Equal(gotCachedChunks, wantCachedChunks) {
+		t.Logf("script:\n%s", script.String())
+		t.Errorf("got = %q; want %q", gotCachedChunks, wantCachedChunks)
 	}
 }

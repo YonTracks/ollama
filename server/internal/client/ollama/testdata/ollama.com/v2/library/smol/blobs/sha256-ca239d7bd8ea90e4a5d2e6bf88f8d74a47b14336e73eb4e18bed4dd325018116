@@ -1,0 +1,1 @@
+{"model_format":"gguf","model_family":"unknown","model_families":["unknown"],"model_type":"0","file_type":"unknown","architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":["sha256:a4e5e156ddec27e286f75328784d7106b60a4eb1d246e950a001a3f944fbda99"]}}
