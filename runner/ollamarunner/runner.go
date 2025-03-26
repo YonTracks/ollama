@@ -678,6 +678,7 @@ func (m *multiLPath) String() string {
 }
 
 func (s *Server) loadModel(
+	ctx context.Context,
 	mpath string,
 	params ml.BackendParams,
 	lpath multiLPath,
@@ -687,7 +688,7 @@ func (s *Server) loadModel(
 	multiUserCache bool,
 ) {
 	var err error
-	s.model, err = model.New(mpath, params)
+	s.model, err = model.New(ctx, mpath, params)
 	if err != nil {
 		panic(err)
 	}
@@ -699,7 +700,7 @@ func (s *Server) loadModel(
 		panic("loras are not yet implemented")
 	}
 
-	s.cache, err = NewInputCache(s.model, kvCacheType, int32(kvSize), parallel, multiUserCache)
+	s.cache, err = NewInputCache(s.model, kvCacheType, int32(kvSize), parallel, s.batchSize, multiUserCache)
 	if err != nil {
 		panic(err)
 	}
@@ -783,6 +784,9 @@ func Execute(args []string) error {
 	}
 
 	params := ml.BackendParams{
+		Progress: func(progress float32) {
+			server.progress = progress
+		},
 		NumThreads:     *threads,
 		NumGPULayers:   *numGPULayers,
 		MainGPU:        *mainGPU,
@@ -791,12 +795,12 @@ func Execute(args []string) error {
 	}
 
 	server.ready.Add(1)
-	go server.loadModel(*mpath, params, lpaths, *parallel, *kvCacheType, *kvSize, *multiUserCache)
-
-	server.cond = sync.NewCond(&server.mu)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	go server.loadModel(ctx, *mpath, params, lpaths, *parallel, *kvCacheType, *kvSize, *multiUserCache)
+
+	server.cond = sync.NewCond(&server.mu)
 
 	go server.run(ctx)
 
