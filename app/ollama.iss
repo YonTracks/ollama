@@ -4,7 +4,6 @@
 ; 
 ; powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps
 
-
 #define MyAppName "Ollama"
 #if GetEnv("PKG_VERSION") != ""
   #define MyAppVersion GetEnv("PKG_VERSION")
@@ -19,7 +18,7 @@
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application. Do not use the same AppId value in installers for other applications.
 ; (To generate a new GUID, click Tools | Generate GUID inside the IDE.)
-AppId={{44E83376-CE68-45EB-8FC1-393500EB558C}
+AppId={{44E83376-CE68-45EB-8FC1-393500EB558C}}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 VersionInfoVersion={#MyAppVersion}
@@ -37,6 +36,9 @@ PrivilegesRequired=lowest
 OutputBaseFilename="OllamaSetup"
 SetupIconFile={#MyIcon}
 UninstallDisplayIcon={uninstallexe}
+; RunOnceId warning disabled
+MissingRunOnceIdsWarning=no
+
 Compression=lzma2
 SolidCompression=no
 WizardStyle=modern
@@ -70,8 +72,8 @@ DisableReadyPage=yes
 DisableStartupPrompt=yes
 DisableWelcomePage=yes
 
-; TODO - percentage can't be set less than 100, so how to make it shorter?
-; WizardSizePercent=100,80
+; Larger DialogFontSize will auto size the wizard window accordingly.
+WizardSizePercent=100
 
 #if GetEnv("KEY_CONTAINER")
 SignTool=MySignTool
@@ -83,19 +85,20 @@ SetupMutex=OllamaSetupMutex
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
-[LangOptions]
-DialogFontSize=12
+; Default=8
+; [LangOptions]
+; DialogFontSize=12
 
 [Files]
 #if DirExists("..\dist\windows-amd64")
-Source: "..\dist\windows-amd64-app.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}" ;Check: not IsArm64();  Flags: ignoreversion 64bit
+Source: "..\dist\windows-amd64-app.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}" ;Check: not IsArm64(); Flags: ignoreversion 64bit
 Source: "..\dist\windows-amd64\ollama.exe"; DestDir: "{app}"; Check: not IsArm64(); Flags: ignoreversion 64bit
 Source: "..\dist\windows-amd64\lib\ollama\*"; DestDir: "{app}\lib\ollama\"; Check: not IsArm64(); Flags: ignoreversion 64bit recursesubdirs
 #endif
 
 #if DirExists("..\dist\windows-arm64")
 Source: "..\dist\windows-arm64\vc_redist.arm64.exe"; DestDir: "{tmp}"; Check: IsArm64() and vc_redist_needed(); Flags: deleteafterinstall
-Source: "..\dist\windows-arm64-app.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}" ;Check: IsArm64();  Flags: ignoreversion 64bit
+Source: "..\dist\windows-arm64-app.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}" ;Check: IsArm64(); Flags: ignoreversion 64bit
 Source: "..\dist\windows-arm64\ollama.exe"; DestDir: "{app}"; Check: IsArm64(); Flags: ignoreversion 64bit
 #endif
 
@@ -116,19 +119,22 @@ Filename: "{cmd}"; Parameters: "/C set PATH={app};%PATH% & ""{app}\{#MyAppExeNam
 [UninstallRun]
 ; Filename: "{cmd}"; Parameters: "/C ""taskkill /im ''{#MyAppExeName}'' /f /t"; Flags: runhidden
 ; Filename: "{cmd}"; Parameters: "/C ""taskkill /im ollama.exe /f /t"; Flags: runhidden
-Filename: "taskkill"; Parameters: "/im ""{#MyAppExeName}"" /f /t"; Flags: runhidden
-Filename: "taskkill"; Parameters: "/im ""ollama.exe"" /f /t"; Flags: runhidden
+; Each command is assigned a RunOnceId so that it runs only once.
+Filename: "taskkill"; Parameters: "/im ""{#MyAppExeName}"" /f /t"; Flags: runhidden; RunOnceId: "KillMyAppExe"
+Filename: "taskkill"; Parameters: "/im ""ollama.exe"" /f /t"; Flags: runhidden; RunOnceId: "KillOllamaExe"
+
+
 ; HACK!  need to give the server and app enough time to exit
 ; TODO - convert this to a Pascal code script so it waits until they're no longer running, then completes
 Filename: "{cmd}"; Parameters: "/c timeout 5"; Flags: runhidden
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{%TEMP}\ollama*"
-Type: filesandordirs; Name: "{%LOCALAPPDATA}\Ollama"
-Type: filesandordirs; Name: "{%LOCALAPPDATA}\Programs\Ollama"
-Type: filesandordirs; Name: "{%USERPROFILE}\.ollama\models"
-Type: filesandordirs; Name: "{%USERPROFILE}\.ollama\history"
-; NOTE: if the user has a custom OLLAMA_MODELS it will be preserved
+; The following folders are now handled in code:
+; Type: filesandordirs; Name: "{%LOCALAPPDATA}\Ollama"
+; Type: filesandordirs; Name: "{%LOCALAPPDATA}\Programs\Ollama"
+; Type: filesandordirs; Name: "{%USERPROFILE}\.ollama\models"
+; Type: filesandordirs; Name: "{%USERPROFILE}\.ollama\history"
 
 [InstallDelete]
 Type: filesandordirs; Name: "{%TEMP}\ollama*"
@@ -139,66 +145,228 @@ WizardReady=Ollama
 ReadyLabel1=%nLet's get you up and running with your own large language models.
 SetupAppRunningError=Another Ollama installer is running.%n%nPlease cancel or finish the other installer, then click OK to continue with this install, or Cancel to exit.
 
-
-;FinishedHeadingLabel=Run your first model
-;FinishedLabel=%nRun this command in a PowerShell or cmd terminal.%n%n%n    ollama run llama3.2
-;ClickFinish=%n
-
 [Registry]
 Root: HKCU; Subkey: "Environment"; \
     ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; \
     Check: NeedsAddPath('{app}')
 
 [Code]
+const
+  wpUninstallConfirm = 1;  { Define the uninstall confirmation page identifier }
+  MY_FILE_ATTRIBUTE_DIRECTORY = $10;
 
-function NeedsAddPath(Param: string): boolean;
+var
+  UserWantsKeep: Boolean;       { Choice for %USERPROFILE%\.ollama }
+  UserWantsKeepLocal: Boolean;  { Choice for %LOCALAPPDATA%\Ollama }
+
+{ Recursive function to delete all files and subdirectories in a given directory }
+function DeleteDirectoryRecursive(const Dir: string): Boolean;
+var
+  FindRec: TFindRec;
+  FilePath: string;
+begin
+  Result := True;
+  if not DirExists(Dir) then
+    Exit;
+  if FindFirst(AddBackslash(Dir) + '*', FindRec) then
+  begin
+    try
+      repeat
+        if (FindRec.Name <> '.') and (FindRec.Name <> '..') then
+        begin
+          FilePath := AddBackslash(Dir) + FindRec.Name;
+          if (FindRec.Attributes and MY_FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+          begin
+            if not DeleteDirectoryRecursive(FilePath) then
+              Result := False;
+          end
+          else
+          begin
+            if not DeleteFile(FilePath) then
+              Result := False;
+          end;
+        end;
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
+  end;
+  if not RemoveDir(Dir) then
+    Result := False;
+end;
+
+// TODO: auto init the install after uninstalling the old version.
+function InitializeSetup(): Boolean;
+var
+  OldInstallDir: string;
+  Uninstaller: string;
+  ResultCode: Integer;
+begin
+  // Assume success unless a problem occurs.
+  Result := True;
+
+  // Define the installation directory used by previous versions.
+  // Adjust the path if older versions were installed elsewhere.
+  OldInstallDir := ExpandConstant('{localappdata}\Programs\Ollama');
+  
+  if DirExists(OldInstallDir) then
+  begin
+    // Option 1: If an uninstaller exists from a previous installation, run it.
+    Uninstaller := OldInstallDir + '\unins000.exe';
+    if FileExists(Uninstaller) then
+    begin
+      if MsgBox('A previous version of Ollama was detected. Do you want to uninstall it first?', 
+                mbConfirmation, MB_YESNO) = idYes then
+      begin
+        if not Exec(Uninstaller, '/silent', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+        begin
+          MsgBox('Failed to uninstall the previous version. Please remove it manually and try again.', 
+                 mbError, MB_OK);
+          Result := False;
+          Exit;
+        end;
+      end
+      else
+      begin
+        // User chose not to uninstall the older version.
+        Result := False;
+        Exit;
+      end;
+    end
+    else
+    begin
+      // Option 2: No uninstaller found, so prompt to delete the folder.
+      if MsgBox('A previous installation was detected at:' + #13#10 +
+                OldInstallDir + #13#10 +
+                'It will be removed to avoid conflicts. Proceed with removal?', 
+                mbConfirmation, MB_YESNO) = idYes then
+      begin
+        if not DelTree(OldInstallDir, True, True, True) then
+        begin
+          MsgBox('Failed to remove the previous installation folder. Please remove it manually and try again.', 
+                 mbError, MB_OK);
+          Result := False;
+          Exit;
+        end;
+      end
+      else
+      begin
+        // User chose not to remove the old version.
+        Result := False;
+        Exit;
+      end;
+    end;
+  end;
+end;
+
+{ InitializeUninstall:
+  Ask the user whether to keep their models/configuration (in %USERPROFILE%\.ollama)
+  and whether to keep logs/updates (in %LOCALAPPDATA%\Ollama).
+  The decisions are stored in UserWantsKeep and UserWantsKeepLocal respectively.
+  Deletion for folders chosen for removal is deferred until after final confirmation. }
+function InitializeUninstall(): Boolean;
+begin
+  UserWantsKeep := MsgBox(
+    'Uninstall is initializing.'#13#10 +
+    'Do you want to keep your models, history, and configuration files? '#13#10 +
+    'Choose Yes to keep (the %USERPROFILE%\.ollama folder), or No to delete it.',
+    mbConfirmation, MB_YESNO) = idYes;
+
+  if UserWantsKeep then
+    MsgBox('The .ollama folder (models, history, configuration) will be kept.', mbInformation, MB_OK)
+  else
+    MsgBox('The .ollama folder will be removed after final confirmation.', mbInformation, MB_OK);
+
+  UserWantsKeepLocal := MsgBox(
+    'Do you want to keep your logs and updates?'#13#10 +
+    'Choose Yes to keep the %LOCALAPPDATA%\Ollama folder, or No to delete it.',
+    mbConfirmation, MB_YESNO) = idYes;
+
+  if UserWantsKeepLocal then
+    MsgBox('The %LOCALAPPDATA%\Ollama folder (logs, updates) will be kept.', mbInformation, MB_OK)
+  else
+    MsgBox('The %LOCALAPPDATA%\Ollama folder will be removed after final confirmation.', mbInformation, MB_OK);
+
+  Result := True; // Continue with uninstallation.
+end;
+
+{ Conditionally skip the default uninstall confirmation page.
+  If the user chose to keep their models (UserWantsKeep=True), skip the confirmation page;
+  otherwise, show it. }
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  if PageID = wpUninstallConfirm then
+    Result := UserWantsKeep
+  else
+    Result := False;
+end;
+
+{ After final confirmation (during the usUninstall step), delete folders that the user chose to remove. }
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  UserFolder, LocalFolder: string;
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    if not UserWantsKeep then
+    begin
+      UserFolder := ExpandConstant('{%USERPROFILE}\.ollama');
+      if DirExists(UserFolder) then
+      begin
+        if not DeleteDirectoryRecursive(UserFolder) then
+          MsgBox('Failed to delete the .ollama folder completely.', mbError, MB_OK);
+      end;
+    end;
+    if not UserWantsKeepLocal then
+    begin
+      LocalFolder := ExpandConstant('{%LOCALAPPDATA}\Ollama');
+      if DirExists(LocalFolder) then
+      begin
+        if not DeleteDirectoryRecursive(LocalFolder) then
+          MsgBox('Failed to delete the %LOCALAPPDATA%\Ollama folder completely.', mbError, MB_OK);
+      end;
+    end;
+  end;
+end;
+
+function NeedsAddPath(Param: string): Boolean;
 var
   OrigPath: string;
 begin
-  if not RegQueryStringValue(HKEY_CURRENT_USER,
-    'Environment',
-    'Path', OrigPath)
-  then begin
+  if not RegQueryStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', OrigPath) then
+  begin
     Result := True;
     exit;
   end;
-  { look for the path with leading and trailing semicolon }
-  { Pos() returns 0 if not found }
+  { Look for the path with leading and trailing semicolon.
+    Pos() returns 0 if not found. }
   Result := Pos(';' + ExpandConstant(Param) + ';', ';' + OrigPath + ';') = 0;
 end;
 
-{ --- VC Runtime libraries discovery code - Only install vc_redist if it isn't already installed ----- }
-const VCRTL_MIN_V1 = 14;
-const VCRTL_MIN_V2 = 40;
-const VCRTL_MIN_V3 = 33807;
-const VCRTL_MIN_V4 = 0;
+{ --- VC++ Redistributable discovery code --- }
+const
+  VCRTL_MIN_V1 = 14;
+  VCRTL_MIN_V2 = 40;
+  VCRTL_MIN_V3 = 33807;
+  VCRTL_MIN_V4 = 0;
 
- // check if the minimum required vc redist is installed (by looking the registry)
-function vc_redist_needed (): Boolean;
+function vc_redist_needed(): Boolean;
 var
   sRegKey: string;
-  v1: Cardinal;
-  v2: Cardinal;
-  v3: Cardinal;
-  v4: Cardinal;
+  v1, v2, v3, v4: Cardinal;
 begin
   sRegKey := 'SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\arm64';
-  if (RegQueryDWordValue (HKEY_LOCAL_MACHINE, sRegKey, 'Major', v1)  and
-      RegQueryDWordValue (HKEY_LOCAL_MACHINE, sRegKey, 'Minor', v2) and
-      RegQueryDWordValue (HKEY_LOCAL_MACHINE, sRegKey, 'Bld', v3) and
-      RegQueryDWordValue (HKEY_LOCAL_MACHINE, sRegKey, 'RBld', v4)) then
+  if (RegQueryDWordValue(HKEY_LOCAL_MACHINE, sRegKey, 'Major', v1) and
+      RegQueryDWordValue(HKEY_LOCAL_MACHINE, sRegKey, 'Minor', v2) and
+      RegQueryDWordValue(HKEY_LOCAL_MACHINE, sRegKey, 'Bld', v3) and
+      RegQueryDWordValue(HKEY_LOCAL_MACHINE, sRegKey, 'RBld', v4)) then
   begin
-    Log ('VC Redist version: ' + IntToStr (v1) +
-        '.' + IntToStr (v2) + '.' + IntToStr (v3) +
-        '.' + IntToStr (v4));
-    { Version info was found. Return true if later or equal to our
-       minimal required version RTL_MIN_Vx }
-    Result := not (
-        (v1 > VCRTL_MIN_V1) or ((v1 = VCRTL_MIN_V1) and
-         ((v2 > VCRTL_MIN_V2) or ((v2 = VCRTL_MIN_V2) and
-          ((v3 > VCRTL_MIN_V3) or ((v3 = VCRTL_MIN_V3) and
-           (v4 >= VCRTL_MIN_V4)))))));
+    Log('VC Redist version: ' + IntToStr(v1) + '.' + IntToStr(v2) + '.' + IntToStr(v3) + '.' + IntToStr(v4));
+    { Return true if the installed version is less than the required version. }
+    Result := not ((v1 > VCRTL_MIN_V1) or ((v1 = VCRTL_MIN_V1) and
+               ((v2 > VCRTL_MIN_V2) or ((v2 = VCRTL_MIN_V2) and
+               ((v3 > VCRTL_MIN_V3) or ((v3 = VCRTL_MIN_V3) and (v4 >= VCRTL_MIN_V4)))))));
   end
   else
-    Result := TRUE;
+    Result := True;
 end;
