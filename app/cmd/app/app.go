@@ -292,7 +292,8 @@ func main() {
 		slog.Debug("background desktop server done")
 	}()
 
-	upd.StartBackgroundUpdaterChecker(ctx, UpdateAvailable)
+	// prevent update for custom build
+	// upd.StartBackgroundUpdaterChecker(ctx, UpdateAvailable)
 
 	// Check for pending updates on startup (show tray notification if update is ready)
 	if updater.IsUpdatePending() {
