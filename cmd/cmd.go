@@ -41,6 +41,7 @@ import (
 	"github.com/ollama/ollama/cmd/tui"
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
+	"github.com/ollama/ollama/internal/modelref"
 	"github.com/ollama/ollama/parser"
 	"github.com/ollama/ollama/progress"
 	"github.com/ollama/ollama/readline"
@@ -131,6 +132,17 @@ func getModelfileName(cmd *cobra.Command) (string, error) {
 	return absName, nil
 }
 
+// isLocalhost returns true if the configured Ollama host is a loopback or unspecified address.
+func isLocalhost() bool {
+	host := envconfig.Host()
+	h, _, _ := net.SplitHostPort(host.Host)
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
+}
+
 func CreateHandler(cmd *cobra.Command, args []string) error {
 	p := progress.NewProgress(os.Stderr)
 	defer p.Stop()
@@ -145,10 +157,7 @@ func CreateHandler(cmd *cobra.Command, args []string) error {
 	// Check for --experimental flag for safetensors model creation
 	experimental, _ := cmd.Flags().GetBool("experimental")
 	if experimental {
-		host := envconfig.Host()
-		h, _, _ := net.SplitHostPort(host.Host)
-		ip := net.ParseIP(h)
-		if ip == nil || (!ip.IsLoopback() && !ip.IsUnspecified()) {
+		if !isLocalhost() {
 			return errors.New("remote safetensor model creation not yet supported")
 		}
 		// Get Modelfile content - either from -f flag or default to "FROM ."
@@ -220,10 +229,7 @@ func CreateHandler(cmd *cobra.Command, args []string) error {
 		if filename == "" {
 			// No Modelfile found - check if current directory is an image gen model
 			if create.IsTensorModelDir(".") {
-				host := envconfig.Host()
-				h, _, _ := net.SplitHostPort(host.Host)
-				ip := net.ParseIP(h)
-				if ip == nil || (!ip.IsLoopback() && !ip.IsUnspecified()) {
+				if !isLocalhost() {
 					return errors.New("remote safetensor model creation not yet supported")
 				}
 				quantize, _ := cmd.Flags().GetString("quantize")
@@ -418,12 +424,14 @@ func loadOrUnloadModel(cmd *cobra.Command, opts *runOptions) error {
 		return err
 	}
 
+	requestedCloud := modelref.HasExplicitCloudSource(opts.Model)
+
 	if info, err := client.Show(cmd.Context(), &api.ShowRequest{Model: opts.Model}); err != nil {
 		return err
-	} else if info.RemoteHost != "" {
+	} else if info.RemoteHost != "" || requestedCloud {
 		// Cloud model, no need to load/unload
 
-		isCloud := strings.HasPrefix(info.RemoteHost, "https://ollama.com")
+		isCloud := requestedCloud || strings.HasPrefix(info.RemoteHost, "https://ollama.com")
 
 		// Check if user is signed in for ollama.com cloud models
 		if isCloud {
@@ -434,10 +442,14 @@ func loadOrUnloadModel(cmd *cobra.Command, opts *runOptions) error {
 
 		if opts.ShowConnect {
 			p.StopAndClear()
+			remoteModel := info.RemoteModel
+			if remoteModel == "" {
+				remoteModel = opts.Model
+			}
 			if isCloud {
-				fmt.Fprintf(os.Stderr, "Connecting to '%s' on 'ollama.com' ⚡\n", info.RemoteModel)
+				fmt.Fprintf(os.Stderr, "Connecting to '%s' on 'ollama.com' ⚡\n", remoteModel)
 			} else {
-				fmt.Fprintf(os.Stderr, "Connecting to '%s' on '%s'\n", info.RemoteModel, info.RemoteHost)
+				fmt.Fprintf(os.Stderr, "Connecting to '%s' on '%s'\n", remoteModel, info.RemoteHost)
 			}
 		}
 
@@ -507,6 +519,20 @@ func generateEmbedding(cmd *cobra.Command, modelName, input string, keepAlive *a
 	fmt.Println(string(output))
 
 	return nil
+}
+
+// TODO(parthsareen): consolidate with TUI signin flow
+func handleCloudAuthorizationError(err error) bool {
+	var authErr api.AuthorizationError
+	if errors.As(err, &authErr) && authErr.StatusCode == http.StatusUnauthorized {
+		fmt.Printf("You need to be signed in to Ollama to run Cloud models.\n\n")
+		if authErr.SigninURL != "" {
+			fmt.Printf(ConnectInstructions, authErr.SigninURL)
+		}
+		return true
+	}
+
+	return false
 }
 
 func RunHandler(cmd *cobra.Command, args []string) error {
@@ -605,12 +631,16 @@ func RunHandler(cmd *cobra.Command, args []string) error {
 	}
 
 	name := args[0]
+	requestedCloud := modelref.HasExplicitCloudSource(name)
 
 	info, err := func() (*api.ShowResponse, error) {
 		showReq := &api.ShowRequest{Name: name}
 		info, err := client.Show(cmd.Context(), showReq)
 		var se api.StatusError
 		if errors.As(err, &se) && se.StatusCode == http.StatusNotFound {
+			if requestedCloud {
+				return nil, err
+			}
 			if err := PullHandler(cmd, []string{name}); err != nil {
 				return nil, err
 			}
@@ -619,6 +649,9 @@ func RunHandler(cmd *cobra.Command, args []string) error {
 		return info, err
 	}()
 	if err != nil {
+		if handleCloudAuthorizationError(err) {
+			return nil
+		}
 		return err
 	}
 
@@ -713,7 +746,13 @@ func RunHandler(cmd *cobra.Command, args []string) error {
 
 		return generateInteractive(cmd, opts)
 	}
-	return generate(cmd, opts)
+	if err := generate(cmd, opts); err != nil {
+		if handleCloudAuthorizationError(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func SigninHandler(cmd *cobra.Command, args []string) error {
