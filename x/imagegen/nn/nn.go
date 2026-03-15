@@ -1,7 +1,11 @@
 // Package nn provides neural network layer types.
 package nn
 
-import "github.com/ollama/ollama/x/imagegen/mlx"
+import (
+	"log"
+
+	"github.com/ollama/ollama/x/imagegen/mlx"
+)
 
 // Layer is the interface for neural network layers with a Forward method.
 type Layer interface {
@@ -18,8 +22,8 @@ type LinearLayer interface {
 // Linear applies an affine transformation: y = x @ W.T + b
 // Weight is stored as [out_features, in_features], matching PyTorch/MLX convention.
 type Linear struct {
-	Weight *mlx.Array `weight:"weight"`          // [out_features, in_features]
-	Bias   *mlx.Array `weight:"bias,optional"`   // [out_features] or nil
+	Weight *mlx.Array `weight:"weight"`        // [out_features, in_features]
+	Bias   *mlx.Array `weight:"bias,optional"` // [out_features] or nil
 }
 
 // NewLinear creates a linear layer.
@@ -53,11 +57,34 @@ func NewQuantizedLinear(weight *mlx.Array, bias *mlx.Array, groupSize, bits int,
 
 // Forward applies the linear transformation: x @ W.T + bias
 func (l *Linear) Forward(x *mlx.Array) *mlx.Array {
-	w := mlx.Transpose(l.Weight, 1, 0)
-	if l.Bias != nil {
-		return mlx.AddMM(l.Bias, x, w, 1.0, 1.0)
+	if x == nil {
+		panic("Linear.Forward: x is nil")
 	}
-	return mlx.Linear(x, w)
+	if l.Weight == nil {
+		panic("Linear.Forward: weight is nil")
+	}
+
+	log.Printf("DEBUG Linear.Forward: input x.Shape() = %#v", x.Shape())
+	log.Printf("DEBUG Linear.Forward: weight.Shape() = %#v", l.Weight.Shape())
+
+	if l.Bias != nil {
+		log.Printf("DEBUG Linear.Forward: bias.Shape() = %#v", l.Bias.Shape())
+	} else {
+		log.Printf("DEBUG Linear.Forward: bias is nil")
+	}
+
+	w := mlx.Transpose(l.Weight, 1, 0)
+	log.Printf("DEBUG Linear.Forward: transposed weight w.Shape() = %#v", w.Shape())
+
+	out := mlx.Linear(x, w)
+	log.Printf("DEBUG Linear.Forward: after Linear out.Shape() = %#v", out.Shape())
+
+	if l.Bias != nil {
+		out = mlx.Add(out, l.Bias)
+		log.Printf("DEBUG Linear.Forward: after bias add out.Shape() = %#v", out.Shape())
+	}
+
+	return out
 }
 
 // OutputDim returns the output dimension of the linear layer.
