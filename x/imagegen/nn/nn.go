@@ -1,11 +1,7 @@
 // Package nn provides neural network layer types.
 package nn
 
-import (
-	"log"
-
-	"github.com/ollama/ollama/x/imagegen/mlx"
-)
+import "github.com/ollama/ollama/x/imagegen/mlx"
 
 // Layer is the interface for neural network layers with a Forward method.
 type Layer interface {
@@ -57,34 +53,11 @@ func NewQuantizedLinear(weight *mlx.Array, bias *mlx.Array, groupSize, bits int,
 
 // Forward applies the linear transformation: x @ W.T + bias
 func (l *Linear) Forward(x *mlx.Array) *mlx.Array {
-	if x == nil {
-		panic("Linear.Forward: x is nil")
-	}
-	if l.Weight == nil {
-		panic("Linear.Forward: weight is nil")
-	}
-
-	log.Printf("DEBUG Linear.Forward: input x.Shape() = %#v", x.Shape())
-	log.Printf("DEBUG Linear.Forward: weight.Shape() = %#v", l.Weight.Shape())
-
-	if l.Bias != nil {
-		log.Printf("DEBUG Linear.Forward: bias.Shape() = %#v", l.Bias.Shape())
-	} else {
-		log.Printf("DEBUG Linear.Forward: bias is nil")
-	}
-
 	w := mlx.Transpose(l.Weight, 1, 0)
-	log.Printf("DEBUG Linear.Forward: transposed weight w.Shape() = %#v", w.Shape())
-
-	out := mlx.Linear(x, w)
-	log.Printf("DEBUG Linear.Forward: after Linear out.Shape() = %#v", out.Shape())
-
 	if l.Bias != nil {
-		out = mlx.Add(out, l.Bias)
-		log.Printf("DEBUG Linear.Forward: after bias add out.Shape() = %#v", out.Shape())
+		return mlx.AddMM(l.Bias, x, w, 1.0, 1.0)
 	}
-
-	return out
+	return mlx.Linear(x, w)
 }
 
 // OutputDim returns the output dimension of the linear layer.

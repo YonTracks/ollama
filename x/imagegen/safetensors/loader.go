@@ -2,7 +2,6 @@ package safetensors
 
 import (
 	"fmt"
-	"log"
 	"reflect"
 	"strings"
 
@@ -149,7 +148,6 @@ func loadStruct(v reflect.Value, weights WeightSource, prefix string, errs *[]st
 				}
 				continue
 			}
-			log.Printf("DEBUG LoadModule: assigning field=%s fullPath=%s type=%T", field.Name, fullPath, layer)
 			fieldVal.Set(reflect.ValueOf(layer))
 			continue
 		}
@@ -326,43 +324,31 @@ func LoadMultiLinearLayer(weights WeightSource, path string) (nn.MultiLinearLaye
 // LoadLinearLayer loads a linear layer from weights, automatically detecting if it's quantized.
 // If {path}.weight_scale exists, creates a QuantizedLinear layer (or dequantizes if no kernel support).
 func LoadLinearLayer(weights WeightSource, path string) (nn.LinearLayer, error) {
-	log.Printf("DEBUG LoadLinearLayer: path=%s", path)
-	log.Printf("DEBUG LoadLinearLayer: has %s.weight = %v", path, weights.HasTensor(path+".weight"))
-	log.Printf("DEBUG LoadLinearLayer: has %s.bias = %v", path, weights.HasTensor(path+".bias"))
-	log.Printf("DEBUG LoadLinearLayer: has %s.weight_scale = %v", path, weights.HasTensor(path+".weight_scale"))
-
+	// Check if this is a quantized layer by looking for scale tensor
 	scalePath := path + ".weight_scale"
 	hasScale := weights.HasTensor(scalePath)
-
 	if hasScale {
 		weight, err := weights.GetTensor(path + ".weight")
 		if err != nil {
 			return nil, fmt.Errorf("failed to load quantized weight %s: %w", path, err)
 		}
-		log.Printf("DEBUG LoadLinearLayer: loaded quantized weight %s.weight shape=%#v", path, weight.Shape())
 
 		scales, err := weights.GetTensor(scalePath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to load scales %s: %w", scalePath, err)
 		}
-		log.Printf("DEBUG LoadLinearLayer: loaded scales %s shape=%#v", scalePath, scales.Shape())
 
+		// Bias is optional
 		var bias *mlx.Array
 		biasPath := path + ".bias"
 		if weights.HasTensor(biasPath) {
 			bias, _ = weights.GetTensor(biasPath)
-			if bias != nil {
-				log.Printf("DEBUG LoadLinearLayer: loaded bias %s shape=%#v", biasPath, bias.Shape())
-			}
 		}
 
 		var qbiases *mlx.Array
 		qbiasPath := path + ".weight_qbias"
 		if weights.HasTensor(qbiasPath) {
 			qbiases, _ = weights.GetTensor(qbiasPath)
-			if qbiases != nil {
-				log.Printf("DEBUG LoadLinearLayer: loaded qbias %s shape=%#v", qbiasPath, qbiases.Shape())
-			}
 		}
 
 		// Detect bits from tensor shapes (supports mixed-precision Q4/Q8)
@@ -423,15 +409,12 @@ func LoadLinearLayer(weights WeightSource, path string) (nn.LinearLayer, error) 
 		}
 
 		dequantized := mlx.Dequantize(weight, scales, qbiases, groupSize, bits, mode)
-
 		// Force materialization before the backing quantized tensors are released.
 		if bias != nil {
 			mlx.Eval(dequantized, bias)
 		} else {
 			mlx.Eval(dequantized)
 		}
-		log.Printf("DEBUG LoadLinearLayer: dequantized %s shape=%#v groupSize=%d bits=%d mode=%s",
-			path, dequantized.Shape(), groupSize, bits, mode)
 
 		return nn.NewLinear(dequantized, bias), nil
 	}
@@ -441,7 +424,6 @@ func LoadLinearLayer(weights WeightSource, path string) (nn.LinearLayer, error) 
 	if err != nil {
 		return nil, fmt.Errorf("failed to load weight %s: %w", path, err)
 	}
-	log.Printf("DEBUG LoadLinearLayer: loaded weight %s.weight shape=%#v", path, weight.Shape())
 
 	// Bias is optional
 	var bias *mlx.Array
