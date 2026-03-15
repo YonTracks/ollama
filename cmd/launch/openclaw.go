@@ -1,4 +1,4 @@
-package config
+package launch
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/cmd/internal/fileutil"
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/types/model"
 )
@@ -23,6 +24,9 @@ const defaultGatewayPort = 18789
 
 // Bound model capability probing so launch/config cannot hang on slow/unreachable API calls.
 var openclawModelShowTimeout = 5 * time.Second
+
+// openclawFreshInstall is set to true when ensureOpenclawInstalled performs an install
+var openclawFreshInstall bool
 
 type Openclaw struct{}
 
@@ -34,10 +38,7 @@ func (c *Openclaw) Run(model string, args []string) error {
 		return err
 	}
 
-	firstLaunch := true
-	if integrationConfig, err := loadIntegration("openclaw"); err == nil {
-		firstLaunch = !integrationConfig.Onboarded
-	}
+	firstLaunch := !c.onboarded()
 
 	if firstLaunch {
 		fmt.Fprintf(os.Stderr, "\n%sSecurity%s\n\n", ansiBold, ansiReset)
@@ -45,24 +46,32 @@ func (c *Openclaw) Run(model string, args []string) error {
 		fmt.Fprintf(os.Stderr, "  A bad prompt can trick it into doing unsafe things.\n\n")
 		fmt.Fprintf(os.Stderr, "%s  Learn more: https://docs.openclaw.ai/gateway/security%s\n\n", ansiGray, ansiReset)
 
-		ok, err := confirmPrompt("I understand the risks. Continue?")
+		ok, err := ConfirmPrompt("I understand the risks. Continue?")
 		if err != nil {
 			return err
 		}
 		if !ok {
 			return nil
 		}
-	}
 
-	if !c.onboarded() {
+		// Ensure the latest version is installed before onboarding so we get
+		// the newest wizard flags (e.g. --auth-choice ollama).
+		if !openclawFreshInstall {
+			update := exec.Command(bin, "update")
+			update.Stdout = os.Stdout
+			update.Stderr = os.Stderr
+			_ = update.Run() // best-effort; continue even if update fails
+		}
+
 		fmt.Fprintf(os.Stderr, "\n%sSetting up OpenClaw with Ollama...%s\n", ansiGreen, ansiReset)
 		fmt.Fprintf(os.Stderr, "%s  Model: %s%s\n\n", ansiGray, model, ansiReset)
 
 		cmd := exec.Command(bin, "onboard",
 			"--non-interactive",
 			"--accept-risk",
-			"--auth-choice", "skip",
-			"--gateway-token", "ollama",
+			"--auth-choice", "ollama",
+			"--custom-base-url", envconfig.Host().String(),
+			"--custom-model-id", model,
 			"--install-daemon",
 			"--skip-channels",
 			"--skip-skills",
@@ -75,12 +84,6 @@ func (c *Openclaw) Run(model string, args []string) error {
 		}
 
 		patchDeviceScopes()
-
-		// Onboarding overwrites openclaw.json, so re-apply the model config
-		// that Edit() wrote before Run() was called.
-		if err := c.Edit([]string{model}); err != nil {
-			fmt.Fprintf(os.Stderr, "%s  Warning: could not re-apply model config: %v%s\n", ansiYellow, err, ansiReset)
-		}
 	}
 
 	if strings.HasSuffix(model, ":cloud") || strings.HasSuffix(model, "-cloud") {
@@ -89,11 +92,7 @@ func (c *Openclaw) Run(model string, args []string) error {
 		}
 	}
 
-	if firstLaunch {
-		fmt.Fprintf(os.Stderr, "\n%sPreparing your assistant — this may take a moment...%s\n\n", ansiGray, ansiReset)
-	} else {
-		fmt.Fprintf(os.Stderr, "\n%sStarting your assistant — this may take a moment...%s\n\n", ansiGray, ansiReset)
-	}
+	fmt.Fprintf(os.Stderr, "\n%sStarting your assistant — this may take a moment...%s\n\n", ansiGray, ansiReset)
 
 	// When extra args are passed through, run exactly what the user asked for
 	// after setup and skip the built-in gateway+TUI convenience flow.
@@ -106,11 +105,6 @@ func (c *Openclaw) Run(model string, args []string) error {
 		if err := cmd.Run(); err != nil {
 			return windowsHint(err)
 		}
-		if firstLaunch {
-			if err := integrationOnboarded("openclaw"); err != nil {
-				return fmt.Errorf("failed to save onboarding state: %w", err)
-			}
-		}
 		return nil
 	}
 
@@ -118,7 +112,7 @@ func (c *Openclaw) Run(model string, args []string) error {
 	addr := fmt.Sprintf("localhost:%d", port)
 
 	// If the gateway is already running (e.g. via the daemon), restart it
-	// so it picks up any config changes from Edit() above (model, provider, etc.).
+	// so it picks up any config changes (model, provider, etc.).
 	if portOpen(addr) {
 		restart := exec.Command(bin, "daemon", "restart")
 		restart.Env = openclawEnv()
@@ -165,11 +159,6 @@ func (c *Openclaw) Run(model string, args []string) error {
 		return windowsHint(err)
 	}
 
-	if firstLaunch {
-		if err := integrationOnboarded("openclaw"); err != nil {
-			return fmt.Errorf("failed to save onboarding state: %w", err)
-		}
-	}
 	return nil
 }
 
@@ -426,7 +415,7 @@ func ensureOpenclawInstalled() (string, error) {
 			"and select OpenClaw")
 	}
 
-	ok, err := confirmPrompt("OpenClaw is not installed. Install with npm?")
+	ok, err := ConfirmPrompt("OpenClaw is not installed. Install with npm?")
 	if err != nil {
 		return "", err
 	}
@@ -448,6 +437,7 @@ func ensureOpenclawInstalled() (string, error) {
 	}
 
 	fmt.Fprintf(os.Stderr, "%sOpenClaw installed successfully%s\n\n", ansiGreen, ansiReset)
+	openclawFreshInstall = true
 	return "openclaw", nil
 }
 
@@ -561,7 +551,7 @@ func (c *Openclaw) Edit(models []string) error {
 	if err != nil {
 		return err
 	}
-	if err := writeWithBackup(configPath, data); err != nil {
+	if err := fileutil.WriteWithBackup(configPath, data); err != nil {
 		return err
 	}
 
@@ -776,9 +766,9 @@ func (c *Openclaw) Models() []string {
 		return nil
 	}
 
-	config, err := readJSONFile(filepath.Join(home, ".openclaw", "openclaw.json"))
+	config, err := fileutil.ReadJSON(filepath.Join(home, ".openclaw", "openclaw.json"))
 	if err != nil {
-		config, err = readJSONFile(filepath.Join(home, ".clawdbot", "clawdbot.json"))
+		config, err = fileutil.ReadJSON(filepath.Join(home, ".clawdbot", "clawdbot.json"))
 		if err != nil {
 			return nil
 		}

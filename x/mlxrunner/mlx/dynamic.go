@@ -16,9 +16,14 @@ import (
 )
 
 var initError error
+var initLoadError string
 
 // CheckInit returns any error that occurred during MLX dynamic library initialization.
+// When initialization failed, detailed load errors are logged to help diagnose the issue.
 func CheckInit() error {
+	if initError != nil && initLoadError != "" {
+		slog.Error(initLoadError)
+	}
 	return initError
 }
 
@@ -44,12 +49,12 @@ func tryLoadFromDir(dir string) bool {
 
 		var handle C.mlx_dynamic_handle
 		if C.mlx_dynamic_load(&handle, cPath) != 0 {
-			slog.Error("Failed to load MLX dynamic library", "path", path)
+			initLoadError = fmt.Sprintf("failed to load MLX dynamic library: path=%s", path)
 			continue
 		}
 
 		if C.mlx_dynamic_load_symbols(handle) != 0 {
-			slog.Error("Failed to load MLX dynamic library symbols", "path", path)
+			initLoadError = fmt.Sprintf("failed to load MLX dynamic library symbols: path=%s", path)
 			C.mlx_dynamic_unload(&handle)
 			continue
 		}
@@ -126,6 +131,22 @@ func init() {
 
 	if cwd, err := os.Getwd(); err == nil {
 		searchDirs = append(searchDirs, filepath.Join(cwd, "build", "lib", "ollama"))
+
+		// Walk up from cwd to find the repo root (containing go.mod) so that
+		// tests running from a package subdirectory can find the build output.
+		for dir := cwd; ; {
+			if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+				if dir != cwd {
+					searchDirs = append(searchDirs, filepath.Join(dir, "build", "lib", "ollama"))
+				}
+				break
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
 	}
 
 	// Also scan mlx_* subdirectories within each search dir
