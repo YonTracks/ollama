@@ -53,43 +53,87 @@ func EncodeImageBase64(arr *mlx.Array) (string, error) {
 }
 
 // ArrayToImage converts an MLX array to a Go image.RGBA.
-// Expected format: [B, C, H, W] with values in [0, 1] range and C=3 (RGB).
+//
+// Preferred input format: [B, C, H, W] with values in [0, 1] and C=3.
+// Also accepts accidental [B, H, W, C] input for debugging compatibility.
 func ArrayToImage(arr *mlx.Array) (*image.RGBA, error) {
-	shape := arr.Shape()
-	if len(shape) != 4 {
-		return nil, fmt.Errorf("expected 4D array [B, C, H, W], got %v", shape)
+	if arr == nil || !arr.Valid() {
+		return nil, fmt.Errorf("invalid input array")
 	}
 
-	// Transform to [H, W, C] for image conversion
-	// Free intermediate arrays to avoid memory leak
-	squeezed := mlx.Squeeze(arr, 0)
-	transposed := mlx.Transpose(squeezed, 1, 2, 0)
-	squeezed.Free()
-	img := mlx.Contiguous(transposed)
-	transposed.Free()
+	shape := arr.Shape()
+	if len(shape) != 4 {
+		return nil, fmt.Errorf("expected 4D array, got %v", shape)
+	}
+
+	var img *mlx.Array
+	var squeezed *mlx.Array
+	var transposed *mlx.Array
+
+	switch {
+	// Preferred path: BCHW
+	case shape[1] == 3:
+		// [B, C, H, W] -> [H, W, C]
+		squeezed = mlx.Squeeze(arr, 0)
+		transposed = mlx.Transpose(squeezed, 1, 2, 0)
+		img = mlx.Contiguous(transposed)
+
+	// Debug compatibility: BHWC
+	case shape[3] == 3:
+		// [B, H, W, C] -> [H, W, C]
+		squeezed = mlx.Squeeze(arr, 0)
+		img = mlx.Contiguous(squeezed)
+
+	default:
+		return nil, fmt.Errorf("expected RGB tensor in BCHW or BHWC format, got %v", shape)
+	}
+
+	// Materialize final image tensor before releasing intermediates.
 	mlx.Eval(img)
+	mlx.Sync()
+
+	// Mark intermediates releasable now that img is realized.
+	if squeezed != nil {
+		squeezed.Free()
+	}
+	if transposed != nil {
+		transposed.Free()
+	}
 
 	imgShape := img.Shape()
+	if len(imgShape) != 3 {
+		img.Free()
+		return nil, fmt.Errorf("expected 3D image array [H, W, C], got %v", imgShape)
+	}
+
 	H := int(imgShape[0])
 	W := int(imgShape[1])
 	C := int(imgShape[2])
+
+	fmt.Printf("DEBUG ArrayToImage: input.Shape()=%v final.Shape()=%v\n", shape, imgShape)
 
 	if C != 3 {
 		img.Free()
 		return nil, fmt.Errorf("expected 3 channels (RGB), got %d", C)
 	}
 
-	// Copy to CPU and free GPU memory
+	// Read back after final tensor is materialized.
 	data := img.Data()
 	img.Free()
 
-	// Write directly to Pix slice (faster than SetRGBA)
+	expected := H * W * C
+	if len(data) != expected {
+		return nil, fmt.Errorf("image data length mismatch: got %d, expected %d", len(data), expected)
+	}
+
 	goImg := image.NewRGBA(image.Rect(0, 0, W, H))
 	pix := goImg.Pix
+
 	for y := 0; y < H; y++ {
 		for x := 0; x < W; x++ {
-			srcIdx := (y*W + x) * C
+			srcIdx := (y*W + x) * 3
 			dstIdx := (y*W + x) * 4
+
 			pix[dstIdx+0] = uint8(clampF(data[srcIdx+0]*255+0.5, 0, 255))
 			pix[dstIdx+1] = uint8(clampF(data[srcIdx+1]*255+0.5, 0, 255))
 			pix[dstIdx+2] = uint8(clampF(data[srcIdx+2]*255+0.5, 0, 255))

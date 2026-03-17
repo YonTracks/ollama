@@ -2,6 +2,8 @@
 package vae
 
 import (
+	"fmt"
+
 	"github.com/ollama/ollama/x/imagegen/mlx"
 )
 
@@ -21,7 +23,7 @@ func DefaultTilingConfig() *TilingConfig {
 	}
 }
 
-// decodedTile holds a decoded tile's pixel data and dimensions
+// decodedTile holds a decoded tile's pixel data and dimensions.
 type decodedTile struct {
 	data   []float32
 	height int32
@@ -36,7 +38,7 @@ type decodedTile struct {
 //   - cfg: tiling configuration (tile size and overlap)
 //   - decoder: function to decode a single tile [1, H, W, C] -> [1, H*scale, W*scale, 3]
 //
-// Returns: [1, 3, H*scale, W*scale] decoded image in NCHW format
+// Returns: [1, 3, H*scale, W*scale] decoded image in NCHW format.
 func DecodeTiled(latents *mlx.Array, cfg *TilingConfig, decoder func(*mlx.Array) *mlx.Array) *mlx.Array {
 	shape := latents.Shape()
 	H := shape[1] // latent height
@@ -58,8 +60,7 @@ func DecodeTiled(latents *mlx.Array, cfg *TilingConfig, decoder func(*mlx.Array)
 	// Calculate tiling parameters (matching diffusers)
 	overlapSize := tileLatentSize - overlapLatent // stride in latent space
 
-	// Blend extent in pixel space (assumes 8x upscale, adjust if needed)
-	// For other scale factors, this could be made configurable
+	// Blend extent in pixel space (8x upscale for Flux2 VAE)
 	tileSampleSize := tileLatentSize * 8     // tile size in pixels after 8x upscale
 	blendExtent := overlapLatent * 8         // blend region in pixels
 	rowLimit := tileSampleSize - blendExtent // non-overlapping region per tile
@@ -69,24 +70,71 @@ func DecodeTiled(latents *mlx.Array, cfg *TilingConfig, decoder func(*mlx.Array)
 
 	for i := int32(0); i < H; i += overlapSize {
 		var row []decodedTile
+
 		for j := int32(0); j < W; j += overlapSize {
 			// Extract tile (may be smaller at edges)
 			i2 := min(i+tileLatentSize, H)
 			j2 := min(j+tileLatentSize, W)
 
 			tile := mlx.Slice(latents, []int32{0, i, j, 0}, []int32{1, i2, j2, C})
-			decoded := decoder(tile)
+
+			// Decode tile and read back as float32
+			decoded := decoder(tile) // [1, Hpx, Wpx, 3]
 			decoded = mlx.AsType(decoded, mlx.DtypeFloat32)
+			decoded = mlx.Contiguous(decoded)
+
+			// IMPORTANT:
+			// On Windows/CUDA, reading tiled decode outputs as [1, H, W, 3] (4D)
+			// has proven unstable and can lead to crashes or invalid memory reads.
+			// Squeezing to a true 3D tensor [H, W, 3] before Data() makes the
+			// readback significantly more reliable.
+			//
+			// Root cause is likely tied to backend memory layout / batching handling
+			// in MLX when materializing NHWC tensors with a batch dimension.
+			//
+			// Therefore we:
+			//   1) Fully materialize the decoded tile
+			//   2) Squeeze batch dimension -> [H, W, 3]
+			//   3) Re-materialize the squeezed tensor
+			//   4) Read back from the 3D contiguous tensor
+
+			// Materialize the decoded tile
 			mlx.Eval(decoded)
+			mlx.Sync()
 
 			decodedShape := decoded.Shape()
-			tileH := decodedShape[1]
-			tileW := decodedShape[2]
-			tileData := decoded.Data()
-			decoded.Free()
+			fmt.Printf("DEBUG DecodeTiled tile: latent=[%d:%d,%d:%d] decodedShape=%v dtype=%v\n",
+				i, i2, j, j2, decodedShape, decoded.Dtype())
 
-			row = append(row, decodedTile{data: tileData, height: tileH, width: tileW})
+			// Drop batch dim: [1, H, W, 3] -> [H, W, 3]
+			decoded3 := mlx.Squeeze(decoded, 0)
+			decoded3 = mlx.Contiguous(decoded3)
+
+			// Ensure squeezed tensor is also fully realized
+			mlx.Eval(decoded3)
+			mlx.Sync()
+
+			decoded3Shape := decoded3.Shape()
+			fmt.Printf("DEBUG DecodeTiled tile squeezed shape=%v dtype=%v\n",
+				decoded3Shape, decoded3.Dtype())
+
+			// Safe float32 readback from 3D tensor
+			tileH := decoded3Shape[0]
+			tileW := decoded3Shape[1]
+			tileData := decoded3.Data()
+
+			// Free intermediates after readback
+			decoded3.Free()
+			decoded.Free()
+			tile.Free()
+
+			row = append(row, decodedTile{
+				data:   tileData,
+				height: tileH,
+				width:  tileW,
+			})
 		}
+
 		rows = append(rows, row)
 	}
 
@@ -137,7 +185,7 @@ func DecodeTiled(latents *mlx.Array, cfg *TilingConfig, decoder func(*mlx.Array)
 		totalH += h
 	}
 
-	// Phase 4: Assemble final image by interleaving tiles row-by-row
+	// Phase 4: Assemble final image row-by-row in float32 HWC
 	finalData := make([]float32, totalH*totalW*3)
 
 	dstY := int32(0)
@@ -151,8 +199,8 @@ func DecodeTiled(latents *mlx.Array, cfg *TilingConfig, decoder func(*mlx.Array)
 
 				for x := int32(0); x < keepW; x++ {
 					for c := int32(0); c < 3; c++ {
-						srcIdx := (y*tile.width + x) * 3 + c
-						dstIdx := ((dstY + y) * totalW + (dstX + x)) * 3 + c
+						srcIdx := (y*tile.width+x)*3 + c
+						dstIdx := ((dstY+y)*totalW+(dstX+x))*3 + c
 						finalData[dstIdx] = tile.data[srcIdx]
 					}
 				}
@@ -162,16 +210,18 @@ func DecodeTiled(latents *mlx.Array, cfg *TilingConfig, decoder func(*mlx.Array)
 		dstY += keepH
 	}
 
-	// Create mlx array [1, H, W, 3] then transpose to NCHW [1, 3, H, W]
+	// Create float32 NHWC array, then transpose to NCHW
 	result := mlx.NewArray(finalData, []int32{1, totalH, totalW, 3})
 	result = mlx.Transpose(result, 0, 3, 1, 2)
 	result = mlx.ClipScalar(result, 0.0, 1.0, true, true)
+
+	fmt.Printf("DEBUG DecodeTiled: totalH=%d totalW=%d result.Shape()=%v\n", totalH, totalW, result.Shape())
 
 	return result
 }
 
 // blendV blends the bottom of 'above' tile into top of 'current' tile (vertical blend)
-// Matches diffusers blend_v formula
+// Matches diffusers blend_v formula.
 func blendV(above, current *decodedTile, blendExtent int32) {
 	blend := min(blendExtent, min(above.height, current.height))
 	if blend <= 0 {
@@ -183,8 +233,8 @@ func blendV(above, current *decodedTile, blendExtent int32) {
 		alpha := float32(y) / float32(blend)
 		for x := int32(0); x < w; x++ {
 			for c := int32(0); c < 3; c++ {
-				aboveIdx := ((above.height - blend + y) * above.width + x) * 3 + c
-				currIdx := (y * current.width + x) * 3 + c
+				aboveIdx := ((above.height-blend+y)*above.width+x)*3 + c
+				currIdx := (y*current.width+x)*3 + c
 				current.data[currIdx] = above.data[aboveIdx]*(1-alpha) + current.data[currIdx]*alpha
 			}
 		}
@@ -192,7 +242,7 @@ func blendV(above, current *decodedTile, blendExtent int32) {
 }
 
 // blendH blends the right of 'left' tile into left of 'current' tile (horizontal blend)
-// Matches diffusers blend_h formula
+// Matches diffusers blend_h formula.
 func blendH(left, current *decodedTile, blendExtent int32) {
 	blend := min(blendExtent, min(left.width, current.width))
 	if blend <= 0 {
@@ -204,8 +254,8 @@ func blendH(left, current *decodedTile, blendExtent int32) {
 		for x := int32(0); x < blend; x++ {
 			alpha := float32(x) / float32(blend)
 			for c := int32(0); c < 3; c++ {
-				leftIdx := (y * left.width + (left.width - blend + x)) * 3 + c
-				currIdx := (y * current.width + x) * 3 + c
+				leftIdx := (y*left.width+(left.width-blend+x))*3 + c
+				currIdx := (y*current.width+x)*3 + c
 				current.data[currIdx] = left.data[leftIdx]*(1-alpha) + current.data[currIdx]*alpha
 			}
 		}

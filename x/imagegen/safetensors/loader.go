@@ -316,6 +316,11 @@ func LoadMultiLinearLayer(weights WeightSource, path string) (nn.MultiLinearLaye
 			groupSize = weightCols * packFactor / scalesCols
 		}
 		weight = mlx.Dequantize(weight, scales, qbiases, groupSize, bits, "affine")
+
+		// Force materialization before the backing quantized tensors are released.
+		// Without this, the array may reference temporary quantized buffers
+		// that get freed after weight loading, causing crashes later.
+		mlx.Eval(weight)
 	}
 
 	return nn.NewMultiLinear(weight), nil

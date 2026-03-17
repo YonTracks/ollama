@@ -20,14 +20,14 @@ import (
 // GenerateConfig holds all options for image generation.
 type GenerateConfig struct {
 	Prompt        string
-	Width         int32                 // Image width (default: 1024)
-	Height        int32                 // Image height (default: 1024)
-	Steps         int                   // Denoising steps (default: 4 for Klein)
-	GuidanceScale float32               // Guidance scale (default: 1.0, Klein doesn't need CFG)
-	Seed          int64                 // Random seed
+	Width         int32                      // Image width (default: 1024)
+	Height        int32                      // Image height (default: 1024)
+	Steps         int                        // Denoising steps (default: 4 for Klein)
+	GuidanceScale float32                    // Guidance scale (default: 1.0, Klein doesn't need CFG)
+	Seed          int64                      // Random seed
 	Progress      func(step, totalSteps int) // Optional progress callback
-	CapturePath   string                // GPU capture path (debug)
-	InputImages   []image.Image         // Reference images for image conditioning (already loaded)
+	CapturePath   string                     // GPU capture path (debug)
+	InputImages   []image.Image              // Reference images for image conditioning (already loaded)
 }
 
 // Model represents a FLUX.2 Klein model.
@@ -238,8 +238,8 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 	pixels := int(cfg.Width) * int(cfg.Height)
 	if pixels > MaxOutputPixels {
 		scale := math.Sqrt(float64(MaxOutputPixels) / float64(pixels))
-		cfg.Width = int32(math.Round(float64(cfg.Width) * scale / 16) * 16)
-		cfg.Height = int32(math.Round(float64(cfg.Height) * scale / 16) * 16)
+		cfg.Width = int32(math.Round(float64(cfg.Width)*scale/16) * 16)
+		cfg.Height = int32(math.Round(float64(cfg.Height)*scale/16) * 16)
 	}
 	cfg.Height = int32((cfg.Height + 8) / 16 * 16) // round to nearest 16
 	cfg.Width = int32((cfg.Width + 8) / 16 * 16)
@@ -407,16 +407,25 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 	// VAE decode with tiling for larger images
 	fmt.Print("  Decoding VAE... ")
 	vaeStart := time.Now()
+
 	// Enable tiling for images > 512x512 (latent > 64x64)
-	// VAE attention is O(n²) on latent pixels, tiling reduces memory significantly
 	if patchH*2 > 64 || patchW*2 > 64 {
 		m.VAE.Tiling = DefaultTilingConfig()
+	} else {
+		m.VAE.Tiling = nil
 	}
+
 	decoded := m.VAE.Decode(patches, patchH, patchW)
 	mlx.Eval(decoded)
 
+	fmt.Printf("  DEBUG decoded shape=%v dtype=%v contiguous=%v\n",
+		decoded.Shape(), decoded.Dtype(), decoded.IsContiguous())
+
 	// Free patches now that decode is done
 	patches.Free()
+
+	// Optional stability aid for reused runners / large outputs
+	mlx.ClearCache()
 
 	fmt.Printf("✓ (%.2fs, peak %.1f GB)\n", time.Since(vaeStart).Seconds(),
 		float64(mlx.MetalGetPeakMemory())/(1024*1024*1024))

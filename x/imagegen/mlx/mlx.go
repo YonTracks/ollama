@@ -1273,27 +1273,48 @@ func (d Dtype) ItemSize() int64 {
 // ============ Data Access ============
 
 // Data copies the float32 data out of the array.
-// Note: For non-contiguous arrays (e.g., from SliceStride), call Contiguous() first.
-// Note: Arrays of other dtypes (bf16, f16, etc) are automatically converted to float32.
-// Note: Triggers cleanup of non-kept arrays.
+// For non-contiguous arrays, call Contiguous() first.
+// Arrays of other dtypes are converted to float32 automatically.
+//
+// Important:
+// We do NOT cleanup() at the start, because that can free arrays still backing
+// the graph for this result. Instead, we evaluate and synchronize the target
+// array first, then cleanup unrelated arrays, then read back immediately.
 func (a *Array) Data() []float32 {
+	if a == nil || a.c.ctx == nil {
+		panic("Data(): invalid array handle")
+	}
+
+	arr := a
+	if arr.Dtype() != DtypeFloat32 {
+		arr = AsType(arr, DtypeFloat32)
+	}
+
+	if !arr.IsContiguous() {
+		arr = Contiguous(arr)
+	}
+
+	// Materialize the exact array we will read back.
+	Eval(arr)
+	Sync()
+
+	// Now that arr is realized and kept, free unrelated non-kept arrays
+	// to reduce memory pressure before CPU readback.
 	cleanup()
-	size := a.Size()
+
+	size := arr.Size()
 	if size == 0 {
 		return nil
 	}
 
-	arr := a
-	if a.Dtype() != DtypeFloat32 {
-		arr = AsType(a, DtypeFloat32)
-		arr.Eval()
-		// Cast array will be cleaned up on next Eval
-	}
+	fmt.Printf("DEBUG Data: dtype=%v contiguous=%v shape=%v\n", arr.Dtype(), arr.IsContiguous(), arr.Shape())
 
 	ptr := C.mlx_array_data_float32(arr.c)
 	if ptr == nil {
+		fmt.Println("DEBUG Data: ptr=nil")
 		return nil
 	}
+
 	data := make([]float32, size)
 	copy(data, unsafe.Slice((*float32)(unsafe.Pointer(ptr)), size))
 	return data
