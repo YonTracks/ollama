@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"image"
 	"math"
-	"runtime"
 	"time"
 
 	"github.com/ollama/ollama/x/imagegen/manifest"
@@ -198,10 +197,6 @@ const MaxRefPixels = 728 * 728
 
 // generate is the internal denoising pipeline.
 func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, error) {
-	runtime.LockOSThread()
-	fmt.Println("  DEBUG generate(): locked OS thread")
-	defer runtime.UnlockOSThread()
-
 	// Enable MLX compilation for fused kernels
 	mlx.EnableCompile()
 
@@ -394,7 +389,6 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 			fmt.Printf("    step %d: %.2fs, peak %.1f GB\n", i+1, elapsed, peakGB)
 		}
 		stepStart = time.Now()
-
 		if cfg.Progress != nil {
 			cfg.Progress(i+1, cfg.Steps)
 		}
@@ -410,30 +404,19 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 		ts.Free()
 	}
 
-	fmt.Println("  DEBUG generate(): entering VAE decode on locked thread")
-
 	// VAE decode with tiling for larger images
 	fmt.Print("  Decoding VAE... ")
 	vaeStart := time.Now()
-
 	// Enable tiling for images > 512x512 (latent > 64x64)
+	// VAE attention is O(n²) on latent pixels, tiling reduces memory significantly
 	if patchH*2 > 64 || patchW*2 > 64 {
 		m.VAE.Tiling = DefaultTilingConfig()
-	} else {
-		m.VAE.Tiling = nil
 	}
-
 	decoded := m.VAE.Decode(patches, patchH, patchW)
 	mlx.Eval(decoded)
 
-	fmt.Printf("  DEBUG decoded shape=%v dtype=%v contiguous=%v\n",
-		decoded.Shape(), decoded.Dtype(), decoded.IsContiguous())
-
 	// Free patches now that decode is done
 	patches.Free()
-
-	// Optional stability aid for reused runners / large outputs
-	mlx.ClearCache()
 
 	fmt.Printf("✓ (%.2fs, peak %.1f GB)\n", time.Since(vaeStart).Seconds(),
 		float64(mlx.MetalGetPeakMemory())/(1024*1024*1024))

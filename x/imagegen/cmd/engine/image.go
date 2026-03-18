@@ -33,23 +33,17 @@ func savePNG(img *image.RGBA, path string) error {
 }
 
 func arrayToImage(arr *mlx.Array) (*image.RGBA, error) {
-	fmt.Println("DEBUG ARRAYTOIMAGE UINT8 PATH ACTIVE (x/imagegen/cmd/engine/image.go)")
 	shape := arr.Shape()
 	if len(shape) != 4 {
 		return nil, fmt.Errorf("expected 4D array [B, C, H, W], got %v", shape)
 	}
-	if shape[0] != 1 {
-		return nil, fmt.Errorf("expected batch size 1, got shape %v", shape)
-	}
-	if shape[1] != 3 {
-		return nil, fmt.Errorf("expected 3 channels (RGB), got shape %v", shape)
-	}
 
-	// Transform to [H, W, C] on device.
-	img := mlx.Squeeze(arr, 0) // [3, H, W]
+	// Transform to [H, W, C] for image conversion
+	img := mlx.Squeeze(arr, 0)
 	arr.Free()
-
-	img = mlx.Transpose(img, 1, 2, 0) // [H, W, 3]
+	img = mlx.Transpose(img, 1, 2, 0)
+	img = mlx.Contiguous(img)
+	mlx.Eval(img)
 
 	imgShape := img.Shape()
 	H := int(imgShape[0])
@@ -61,43 +55,33 @@ func arrayToImage(arr *mlx.Array) (*image.RGBA, error) {
 		return nil, fmt.Errorf("expected 3 channels (RGB), got %d", C)
 	}
 
-	fmt.Printf("DEBUG ArrayToImage uint8: input.Shape()=%v final.Shape()=%v\n", shape, imgShape)
-
-	// Convert to uint8 on device before host readback:
-	// clip -> scale -> round -> uint8
-	img = mlx.ClipScalar(img, 0.0, 1.0, true, true)
-	img = mlx.MulScalar(img, 255.0)
-	img = mlx.AddScalar(img, 0.5) // simple rounding before cast
-	img = mlx.AsType(img, mlx.DtypeUint8)
-	img = mlx.Contiguous(img)
-	mlx.Eval(img)
-
-	fmt.Printf("DEBUG ArrayToImage uint8: shape=%v dtype=%v\n", img.Shape(), img.Dtype())
-
-	// Copy compact uint8 RGB bytes to CPU.
-	raw := img.Bytes()
+	// Copy to CPU and free GPU memory
+	data := img.Data()
 	img.Free()
-
-	expected := H * W * 3
-	if len(raw) != expected {
-		return nil, fmt.Errorf("expected %d RGB bytes, got %d", expected, len(raw))
-	}
 
 	// Write directly to Pix slice (faster than SetRGBA)
 	goImg := image.NewRGBA(image.Rect(0, 0, W, H))
 	pix := goImg.Pix
-
-	src := 0
 	for y := 0; y < H; y++ {
 		for x := 0; x < W; x++ {
+			srcIdx := (y*W + x) * C
 			dstIdx := (y*W + x) * 4
-			pix[dstIdx+0] = raw[src+0]
-			pix[dstIdx+1] = raw[src+1]
-			pix[dstIdx+2] = raw[src+2]
+			pix[dstIdx+0] = uint8(clampF(data[srcIdx+0]*255+0.5, 0, 255))
+			pix[dstIdx+1] = uint8(clampF(data[srcIdx+1]*255+0.5, 0, 255))
+			pix[dstIdx+2] = uint8(clampF(data[srcIdx+2]*255+0.5, 0, 255))
 			pix[dstIdx+3] = 255
-			src += 3
 		}
 	}
 
 	return goImg, nil
+}
+
+func clampF(v, min, max float32) float32 {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
 }

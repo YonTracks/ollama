@@ -91,18 +91,8 @@ func (s *server) handleImageCompletion(w http.ResponseWriter, r *http.Request, r
 		flusher.Flush()
 	}
 
-	var img *mlx.Array
-	defer func() {
-		if img != nil {
-			img.Free()
-		}
-		mlx.ClearCache()
-		mlx.MetalResetPeakMemory()
-	}()
-
 	// Generate image
-	var err error
-	img, err = s.imageModel.GenerateImage(ctx, req.Prompt, req.Width, req.Height, req.Steps, req.Seed, progress)
+	img, err := s.imageModel.GenerateImage(ctx, req.Prompt, req.Width, req.Height, req.Steps, req.Seed, progress)
 	if err != nil {
 		// Don't send error for cancellation
 		if ctx.Err() != nil {
@@ -124,6 +114,11 @@ func (s *server) handleImageCompletion(w http.ResponseWriter, r *http.Request, r
 		w.Write([]byte("\n"))
 		return
 	}
+
+	// Free the generated image array and clean up MLX state
+	img.Free()
+	mlx.ClearCache()
+	mlx.MetalResetPeakMemory()
 
 	// Send final response with image data
 	resp := Response{

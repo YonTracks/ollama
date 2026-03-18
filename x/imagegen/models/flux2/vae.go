@@ -613,16 +613,13 @@ func (v *AutoencoderKLFlux2) Decode(latents *mlx.Array, pH, pW int32) *mlx.Array
 	// Convert NCHW -> NHWC for processing
 	z = mlx.Transpose(z, 0, 2, 3, 1)
 
-	// Use tiled decoding if enabled.
-	// DecodeTiled already returns NCHW [B, 3, H, W].
+	// Use tiled decoding if enabled
 	if v.Tiling != nil {
 		mlx.Eval(z)
-		h := vae.DecodeTiled(z, v.Tiling, v.decodeTile)
-		fmt.Printf("DEBUG Flux2 Decode tiled output shape=%v\n", h.Shape())
-		return h
+		return vae.DecodeTiled(z, v.Tiling, v.decodeTile)
 	}
 
-	// Direct decode (no tiling): decodeTile returns NHWC, so transpose to NCHW here.
+	// Direct decode (no tiling)
 	h := v.decodeTile(z)
 	h = mlx.ClipScalar(h, 0.0, 1.0, true, true)
 	h = mlx.Transpose(h, 0, 3, 1, 2)

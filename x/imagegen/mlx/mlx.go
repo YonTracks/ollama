@@ -46,9 +46,7 @@ static inline mlx_stream cpu_stream() {
 import "C"
 
 import (
-	"encoding/binary"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1274,119 +1272,37 @@ func (d Dtype) ItemSize() int64 {
 
 // ============ Data Access ============
 
-// evalForReadback evaluates exactly one array and synchronizes,
-// without triggering global cleanup of unrelated tracked arrays.
-func evalForReadback(a *Array) {
-	if a == nil || a.c.ctx == nil {
-		panic("evalForReadback(): invalid array handle")
-	}
-	C.mlx_array_eval(a.c)
-	Sync()
-}
-
-func bytesToFloat32s(raw []byte) []float32 {
-	if len(raw) == 0 {
-		return nil
-	}
-	n := len(raw) / 4
-	out := make([]float32, n)
-	for i := 0; i < n; i++ {
-		bits := binary.LittleEndian.Uint32(raw[i*4 : i*4+4])
-		out[i] = math.Float32frombits(bits)
-	}
-	return out
-}
-
-func bytesToInt32s(raw []byte) []int32 {
-	if len(raw) == 0 {
-		return nil
-	}
-	n := len(raw) / 4
-	out := make([]int32, n)
-	for i := 0; i < n; i++ {
-		bits := binary.LittleEndian.Uint32(raw[i*4 : i*4+4])
-		out[i] = int32(bits)
-	}
-	return out
-}
-
 // Data copies the float32 data out of the array.
-// For non-contiguous arrays, call Contiguous() first.
-// Arrays of other dtypes are converted to float32 automatically.
-//
-// Important:
-// This function must NOT trigger global cleanup before evaluation.
-// MLX is lazy, so the target array may still depend on unevaluated graph state.
-// We evaluate only the exact array being read back, synchronize, then copy.
-//
-// Also, use raw-byte readback via mlx_array_data_uint8() instead of
-// mlx_array_data_float32(), because the typed float32 readback path has
-// shown instability/crashes on some backends.
+// Note: For non-contiguous arrays (e.g., from SliceStride), call Contiguous() first.
+// Note: Arrays of other dtypes (bf16, f16, etc) are automatically converted to float32.
+// Note: Triggers cleanup of non-kept arrays.
 func (a *Array) Data() []float32 {
-	if a == nil || a.c.ctx == nil {
-		panic("Data(): invalid array handle")
-	}
-
-	arr := a
-	var temps []*Array
-
-	if arr.Dtype() != DtypeFloat32 {
-		arr = AsType(arr, DtypeFloat32)
-		temps = append(temps, arr)
-	}
-
-	if !arr.IsContiguous() {
-		arr = Contiguous(arr)
-		temps = append(temps, arr)
-	}
-
-	size := arr.Size()
+	cleanup()
+	size := a.Size()
 	if size == 0 {
 		return nil
 	}
 
-	fmt.Printf("DEBUG Data: dtype=%v contiguous=%v shape=%v\n", arr.Dtype(), arr.IsContiguous(), arr.Shape())
+	arr := a
+	if a.Dtype() != DtypeFloat32 {
+		arr = AsType(a, DtypeFloat32)
+		arr.Eval()
+		// Cast array will be cleaned up on next Eval
+	}
 
-	// Evaluate ONLY this array. Do not call Eval(arr), because Eval()
-	// runs global cleanup() before evaluation.
-	evalForReadback(arr)
-
-	nbytes := arr.Nbytes()
-	fmt.Printf("DEBUG Data: nbytes=%d size=%d\n", nbytes, size)
-	fmt.Println("DEBUG Data: before mlx_array_data_uint8")
-	ptr := C.mlx_array_data_uint8(arr.c)
-	fmt.Println("DEBUG Data: after mlx_array_data_uint8")
+	ptr := C.mlx_array_data_float32(arr.c)
 	if ptr == nil {
-		fmt.Println("DEBUG Data: ptr=nil")
-		for _, t := range temps {
-			t.Free()
-		}
 		return nil
 	}
-
-	// Copy raw bytes first.
-	raw := make([]byte, nbytes)
-	copy(raw, unsafe.Slice((*byte)(unsafe.Pointer(ptr)), nbytes))
-
-	// Decode into Go-owned float32 slice.
-	data := bytesToFloat32s(raw)
-
-	// Keep arrays alive until after the Go copies complete.
-	runtime.KeepAlive(arr)
-	runtime.KeepAlive(a)
-
-	// Mark temporary arrays releasable later.
-	for _, t := range temps {
-		t.Free()
-	}
-
+	data := make([]float32, size)
+	copy(data, unsafe.Slice((*float32)(unsafe.Pointer(ptr)), size))
 	return data
 }
 
 // Item returns the scalar value from a 0-dimensional array.
-// Converts to float32 if necessary.
+// Converts to float32 if necessary. Triggers cleanup.
 func (a *Array) Item() float32 {
-	data := a.Data()
+	data := a.Data() // Data() calls cleanup()
 	if len(data) == 0 {
 		return 0
 	}
@@ -1394,148 +1310,67 @@ func (a *Array) Item() float32 {
 }
 
 // DataInt32 copies the int32 data out of the array.
-// For non-contiguous arrays, a contiguous temporary is created for readback.
+// Note: For non-contiguous arrays (e.g., from SliceStride), call Contiguous() first.
+// Note: Triggers cleanup of non-kept arrays.
 func (a *Array) DataInt32() []int32 {
-	if a == nil || a.c.ctx == nil {
-		panic("DataInt32(): invalid array handle")
-	}
-
-	arr := a
-	var temps []*Array
-
-	if arr.Dtype() != DtypeInt32 {
-		panic(fmt.Sprintf("DataInt32(): expected int32 array, got %v", arr.Dtype()))
-	}
-
-	if !arr.IsContiguous() {
-		arr = Contiguous(arr)
-		temps = append(temps, arr)
-	}
-
-	size := arr.Size()
+	cleanup()
+	size := a.Size()
 	if size == 0 {
 		return nil
 	}
-
-	evalForReadback(arr)
-
-	nbytes := arr.Nbytes()
-	ptr := C.mlx_array_data_uint8(arr.c)
+	ptr := C.mlx_array_data_int32(a.c)
 	if ptr == nil {
-		for _, t := range temps {
-			t.Free()
-		}
 		return nil
 	}
-
-	raw := make([]byte, nbytes)
-	copy(raw, unsafe.Slice((*byte)(unsafe.Pointer(ptr)), nbytes))
-	data := bytesToInt32s(raw)
-
-	runtime.KeepAlive(arr)
-	runtime.KeepAlive(a)
-
-	for _, t := range temps {
-		t.Free()
-	}
-
+	data := make([]int32, size)
+	copy(data, unsafe.Slice((*int32)(unsafe.Pointer(ptr)), size))
 	return data
 }
 
 // ItemInt32 gets a single scalar value efficiently (no array copy).
+// Note: Triggers cleanup of non-kept arrays.
 func (a *Array) ItemInt32() int32 {
-	if a == nil || a.c.ctx == nil {
-		panic("ItemInt32(): invalid array handle")
-	}
-
-	// Safe and simple: reuse DataInt32() so we avoid the typed item path too.
-	data := a.DataInt32()
-	if len(data) == 0 {
-		return 0
-	}
-	return data[0]
+	cleanup()
+	var val C.int32_t
+	C.mlx_array_item_int32(&val, a.c)
+	return int32(val)
 }
 
 // Bytes copies the raw bytes out of the array without type conversion.
-// For non-contiguous arrays, it makes a contiguous version first.
-// Important:
-// Do not cleanup before materializing/readback. Realize the exact array first,
-// then read back immediately.
+// Works with common dtypes (float32, int32, uint32, uint8).
+// For non-contiguous arrays, call Contiguous() first.
+// Note: Triggers cleanup of non-kept arrays.
 func (a *Array) Bytes() []byte {
-	if a == nil || a.c.ctx == nil {
-		panic("Bytes(): invalid array handle")
-	}
-
-	arr := a
-
-	if !arr.IsContiguous() {
-		arr = Contiguous(arr)
-	}
-
-	// Materialize the exact array we will read back.
-	Eval(arr)
-	Sync()
-
-	nbytes := arr.Nbytes()
+	cleanup()
+	nbytes := a.Nbytes()
 	if nbytes == 0 {
 		return nil
 	}
 
-	fmt.Printf("DEBUG Bytes: dtype=%v contiguous=%v shape=%v nbytes=%d\n",
-		arr.Dtype(), arr.IsContiguous(), arr.Shape(), nbytes)
-
+	// Get raw pointer based on dtype
 	var ptr unsafe.Pointer
-
-	switch arr.Dtype() {
-	case DtypeUint8:
-		fmt.Println("DEBUG Bytes: before mlx_array_data_uint8")
-		ptr = unsafe.Pointer(C.mlx_array_data_uint8(arr.c))
-		fmt.Println("DEBUG Bytes: after mlx_array_data_uint8")
-
+	switch a.Dtype() {
 	case DtypeFloat32:
-		fmt.Println("DEBUG Bytes: before mlx_array_data_float32")
-		ptr = unsafe.Pointer(C.mlx_array_data_float32(arr.c))
-		fmt.Println("DEBUG Bytes: after mlx_array_data_float32")
-
+		ptr = unsafe.Pointer(C.mlx_array_data_float32(a.c))
 	case DtypeInt32:
-		fmt.Println("DEBUG Bytes: before mlx_array_data_int32")
-		ptr = unsafe.Pointer(C.mlx_array_data_int32(arr.c))
-		fmt.Println("DEBUG Bytes: after mlx_array_data_int32")
-
+		ptr = unsafe.Pointer(C.mlx_array_data_int32(a.c))
 	case DtypeUint32:
-		fmt.Println("DEBUG Bytes: before mlx_array_data_uint32")
-		ptr = unsafe.Pointer(C.mlx_array_data_uint32(arr.c))
-		fmt.Println("DEBUG Bytes: after mlx_array_data_uint32")
-
+		ptr = unsafe.Pointer(C.mlx_array_data_uint32(a.c))
+	case DtypeUint8:
+		ptr = unsafe.Pointer(C.mlx_array_data_uint8(a.c))
 	default:
-		// Fallback: convert to uint8, then read bytes
-		converted := AsType(arr, DtypeUint8)
-		converted = Contiguous(converted)
-		Eval(converted)
-		Sync()
-
-		fmt.Printf("DEBUG Bytes fallback: shape=%v dtype=%v nbytes=%d\n",
-			converted.Shape(), converted.Dtype(), converted.Nbytes())
-
-		fmt.Println("DEBUG Bytes fallback: before mlx_array_data_uint8")
-		ptr = unsafe.Pointer(C.mlx_array_data_uint8(converted.c))
-		fmt.Println("DEBUG Bytes fallback: after mlx_array_data_uint8")
-
-		arr = converted
+		// For other types (bf16, f16, etc), convert to float32
+		arr := AsType(a, DtypeFloat32)
+		arr.Eval()
+		ptr = unsafe.Pointer(C.mlx_array_data_float32(arr.c))
 		nbytes = arr.Nbytes()
 	}
 
 	if ptr == nil {
-		fmt.Println("DEBUG Bytes: ptr=nil")
 		return nil
 	}
-
-	data := make([]byte, int(nbytes))
-	copy(data, unsafe.Slice((*byte)(ptr), int(nbytes)))
-
-	// Make sure arr stays alive through the copy.
-	runtime.KeepAlive(arr)
-
+	data := make([]byte, nbytes)
+	copy(data, unsafe.Slice((*byte)(ptr), nbytes))
 	return data
 }
 
