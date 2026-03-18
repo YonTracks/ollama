@@ -88,11 +88,9 @@ func ArrayToImage(arr *mlx.Array) (*image.RGBA, error) {
 		return nil, fmt.Errorf("expected RGB tensor in BCHW or BHWC format, got %v", shape)
 	}
 
-	// Materialize final image tensor before releasing intermediates.
 	mlx.Eval(img)
 	mlx.Sync()
 
-	// Mark intermediates releasable now that img is realized.
 	if squeezed != nil {
 		squeezed.Free()
 	}
@@ -110,37 +108,73 @@ func ArrayToImage(arr *mlx.Array) (*image.RGBA, error) {
 	W := int(imgShape[1])
 	C := int(imgShape[2])
 
-	fmt.Printf("DEBUG ArrayToImage: input.Shape()=%v final.Shape()=%v\n", shape, imgShape)
-
 	if C != 3 {
 		img.Free()
 		return nil, fmt.Errorf("expected 3 channels (RGB), got %d", C)
 	}
 
-	// Read back after final tensor is materialized.
-	data := img.Data()
-	img.Free()
+	fmt.Printf("DEBUG ARRAYTOIMAGE UINT8 PATH ACTIVE (x/imagegen/image.go)\n")
+	fmt.Printf("DEBUG ArrayToImage uint8: input.Shape()=%v final.Shape()=%v\n", shape, imgShape)
 
-	expected := H * W * C
-	if len(data) != expected {
-		return nil, fmt.Errorf("image data length mismatch: got %d, expected %d", len(data), expected)
-	}
+	// Convert to uint8 on device before host readback
+	img = mlx.ClipScalar(img, 0.0, 1.0, true, true)
+	img = mlx.MulScalar(img, 255.0)
+	img = mlx.AddScalar(img, 0.5)
+	img = mlx.AsType(img, mlx.DtypeUint8)
+	img = mlx.Contiguous(img)
+	mlx.Eval(img)
+	mlx.Sync()
+
+	fmt.Printf("DEBUG ArrayToImage uint8: shape=%v dtype=%v\n", img.Shape(), img.Dtype())
 
 	goImg := image.NewRGBA(image.Rect(0, 0, W, H))
 	pix := goImg.Pix
 
-	for y := 0; y < H; y++ {
-		for x := 0; x < W; x++ {
-			srcIdx := (y*W + x) * 3
-			dstIdx := (y*W + x) * 4
+	// Read back in row chunks to avoid one large host transfer.
+	const rowChunk = 128
 
-			pix[dstIdx+0] = uint8(clampF(data[srcIdx+0]*255+0.5, 0, 255))
-			pix[dstIdx+1] = uint8(clampF(data[srcIdx+1]*255+0.5, 0, 255))
-			pix[dstIdx+2] = uint8(clampF(data[srcIdx+2]*255+0.5, 0, 255))
-			pix[dstIdx+3] = 255
+	for y0 := 0; y0 < H; y0 += rowChunk {
+		y1 := y0 + rowChunk
+		if y1 > H {
+			y1 = H
+		}
+
+		chunk := mlx.Slice(
+			img,
+			[]int32{int32(y0), 0, 0},
+			[]int32{int32(y1), int32(W), 3},
+		)
+		chunk = mlx.Contiguous(chunk)
+		mlx.Eval(chunk)
+		mlx.Sync()
+
+		fmt.Printf("DEBUG ArrayToImage chunk: rows=[%d:%d] shape=%v dtype=%v\n",
+			y0, y1, chunk.Shape(), chunk.Dtype())
+
+		raw := chunk.Bytes()
+		chunk.Free()
+
+		expected := (y1 - y0) * W * 3
+		if len(raw) != expected {
+			img.Free()
+			return nil, fmt.Errorf("chunk data length mismatch: got %d, expected %d for rows [%d:%d]",
+				len(raw), expected, y0, y1)
+		}
+
+		src := 0
+		for y := y0; y < y1; y++ {
+			for x := 0; x < W; x++ {
+				dstIdx := (y*W + x) * 4
+				pix[dstIdx+0] = raw[src+0]
+				pix[dstIdx+1] = raw[src+1]
+				pix[dstIdx+2] = raw[src+2]
+				pix[dstIdx+3] = 255
+				src += 3
+			}
 		}
 	}
 
+	img.Free()
 	return goImg, nil
 }
 
