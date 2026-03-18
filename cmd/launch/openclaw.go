@@ -429,13 +429,17 @@ func ensureOpenclawInstalled() (string, error) {
 		return "clawdbot", nil
 	}
 
-	if _, err := exec.LookPath("npm"); err != nil {
-		return "", fmt.Errorf("openclaw is not installed and npm was not found\n\n" +
-			"Install Node.js first:\n" +
-			"  https://nodejs.org/\n\n" +
-			"Then rerun:\n" +
-			"  ollama launch\n" +
-			"and select OpenClaw")
+	_, npmErr := exec.LookPath("npm")
+	_, gitErr := exec.LookPath("git")
+	if npmErr != nil || gitErr != nil {
+		var missing []string
+		if npmErr != nil {
+			missing = append(missing, "npm (Node.js): https://nodejs.org/")
+		}
+		if gitErr != nil {
+			missing = append(missing, "git: https://git-scm.com/")
+		}
+		return "", fmt.Errorf("openclaw is not installed and required dependencies are missing\n\nInstall the following first:\n  %s", strings.Join(missing, "\n  "))
 	}
 
 	ok, err := ConfirmPrompt("OpenClaw is not installed. Install with npm?")
@@ -726,6 +730,34 @@ func registerWebSearchPlugin() {
 	}
 	entries["openclaw-web-search"] = map[string]any{"enabled": true}
 	plugins["entries"] = entries
+
+	// Pin trust so the gateway doesn't warn about untracked plugins.
+	allow, _ := plugins["allow"].([]any)
+	hasAllow := false
+	for _, v := range allow {
+		if s, ok := v.(string); ok && s == "openclaw-web-search" {
+			hasAllow = true
+			break
+		}
+	}
+	if !hasAllow {
+		allow = append(allow, "openclaw-web-search")
+	}
+	plugins["allow"] = allow
+
+	// Record install provenance so the loader can verify the plugin origin.
+	installs, _ := plugins["installs"].(map[string]any)
+	if installs == nil {
+		installs = make(map[string]any)
+	}
+	pluginDir := filepath.Join(home, ".openclaw", "extensions", "openclaw-web-search")
+	installs["openclaw-web-search"] = map[string]any{
+		"source":      "npm",
+		"spec":        webSearchNpmPackage,
+		"installPath": pluginDir,
+	}
+	plugins["installs"] = installs
+
 	config["plugins"] = plugins
 
 	// Add plugin tools to tools.alsoAllow so they survive the coding profile's
