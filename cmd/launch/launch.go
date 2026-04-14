@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/ollama/ollama/api"
@@ -500,7 +501,7 @@ func (c *launcherClient) launchEditorIntegration(ctx context.Context, name strin
 		return nil
 	}
 
-	if needsConfigure || req.ModelOverride != "" {
+	if (needsConfigure || req.ModelOverride != "") && !savedMatchesModels(saved, models) {
 		if err := prepareEditorIntegration(name, runner, editor, models); err != nil {
 			return err
 		}
@@ -539,15 +540,6 @@ func (c *launcherClient) selectMultiModelsForIntegration(ctx context.Context, ru
 	items, orderedChecked, err := c.loadSelectableModels(ctx, preChecked, current, "no models available")
 	if err != nil {
 		return nil, err
-	}
-	if len(preChecked) > 0 {
-		// Keep list order stable in multi-select even when there are existing checks.
-		// checked/default state still comes from orderedChecked.
-		stableItems, _, stableErr := c.loadSelectableModels(ctx, nil, current, "no models available")
-		if stableErr != nil {
-			return nil, stableErr
-		}
-		items = stableItems
 	}
 
 	selected, err := DefaultMultiSelector(fmt.Sprintf("Select models for %s:", runner), items, orderedChecked)
@@ -765,7 +757,6 @@ func (c *launcherClient) loadModelInventoryOnce(ctx context.Context) error {
 }
 
 func runIntegration(runner Runner, modelName string, args []string) error {
-	fmt.Fprintf(os.Stderr, "\nLaunching %s with %s...\n", runner, modelName)
 	return runner.Run(modelName, args)
 }
 
@@ -854,6 +845,13 @@ func firstModel(models []string) string {
 		return ""
 	}
 	return models[0]
+}
+
+func savedMatchesModels(saved *config.IntegrationConfig, models []string) bool {
+	if saved == nil {
+		return false
+	}
+	return slices.Equal(saved.Models, models)
 }
 
 func editorPreCheckedModels(saved *config.IntegrationConfig, override string) []string {
