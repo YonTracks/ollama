@@ -206,6 +206,7 @@ Supported integrations:
   claude    Claude Code
   cline     Cline
   codex     Codex
+  copilot   Copilot CLI (aliases: copilot-cli)
   droid     Droid
   hermes    Hermes Agent
   opencode  OpenCode
@@ -586,7 +587,7 @@ func (c *launcherClient) launchManagedSingleIntegration(ctx context.Context, nam
 		return nil
 	}
 
-	if current == "" || needsConfigure || req.ModelOverride != "" || target != current {
+	if (current == "" || needsConfigure || req.ModelOverride != "" || target != current) && !savedMatchesModels(saved, []string{target}) {
 		if err := prepareManagedSingleIntegration(name, runner, managed, target); err != nil {
 			return err
 		}
