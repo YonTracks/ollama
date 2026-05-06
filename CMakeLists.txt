@@ -204,12 +204,43 @@ if(MLX_ENGINE)
 
     # Build list of directories for runtime dependency resolution
     set(MLX_RUNTIME_DIRS ${CUDAToolkit_BIN_DIR} ${CUDAToolkit_BIN_DIR}/x64 ${CUDAToolkit_LIBRARY_DIR})
-    # Add cuDNN bin paths for DLLs (Windows MLX CUDA builds)
-    # CUDNN_ROOT_DIR is the standard CMake variable for cuDNN location
-    if(DEFINED ENV{CUDNN_ROOT_DIR})
-        # cuDNN 9.x has versioned subdirectories under bin/ (e.g., bin/13.0/)
-        file(GLOB CUDNN_BIN_SUBDIRS "$ENV{CUDNN_ROOT_DIR}/bin/*")
-        list(APPEND MLX_RUNTIME_DIRS ${CUDNN_BIN_SUBDIRS})
+    # Add cuDNN bin paths for DLLs (Windows MLX CUDA builds).
+    # CUDNN_ROOT_DIR is the standard CMake variable for cuDNN location.
+    # NVIDIA's Windows installer uses versioned bin directories, sometimes with
+    # an extra arch level, e.g. bin/13.2/x64.
+    set(MLX_CUDNN_RUNTIME_DIRS)
+    foreach(_cudnn_library_path IN ITEMS "${CUDNN_LIBRARY_PATH}" "$ENV{CUDNN_LIBRARY_PATH}")
+        if(_cudnn_library_path)
+            file(TO_CMAKE_PATH "${_cudnn_library_path}" _cudnn_library_path)
+            string(REPLACE "/lib/" "/bin/" _cudnn_runtime_path "${_cudnn_library_path}")
+            if(EXISTS "${_cudnn_runtime_path}")
+                list(APPEND MLX_CUDNN_RUNTIME_DIRS "${_cudnn_runtime_path}")
+            endif()
+        endif()
+    endforeach()
+    foreach(_cudnn_root_candidate IN ITEMS
+            "${CUDNN_ROOT_DIR}"
+            "$ENV{CUDNN_ROOT_DIR}"
+            "C:/Program Files/NVIDIA/CUDNN"
+            "C:/Program Files/NVIDIA/CUDNN/v*")
+        if(_cudnn_root_candidate)
+            file(TO_CMAKE_PATH "${_cudnn_root_candidate}" _cudnn_root_candidate)
+            file(GLOB _cudnn_roots "${_cudnn_root_candidate}")
+            foreach(_cudnn_root ${_cudnn_roots})
+                if(EXISTS "${_cudnn_root}")
+                    file(GLOB CUDNN_BIN_SUBDIRS
+                        "${_cudnn_root}/bin"
+                        "${_cudnn_root}/bin/x64"
+                        "${_cudnn_root}/bin/*"
+                        "${_cudnn_root}/bin/*/x64")
+                    list(APPEND MLX_CUDNN_RUNTIME_DIRS ${CUDNN_BIN_SUBDIRS})
+                endif()
+            endforeach()
+        endif()
+    endforeach()
+    if(MLX_CUDNN_RUNTIME_DIRS)
+        list(REMOVE_DUPLICATES MLX_CUDNN_RUNTIME_DIRS)
+        list(APPEND MLX_RUNTIME_DIRS ${MLX_CUDNN_RUNTIME_DIRS})
     endif()
     # Add build output directory and MLX dependency build directories
     list(APPEND MLX_RUNTIME_DIRS ${OLLAMA_BUILD_DIR})
@@ -350,6 +381,22 @@ if(MLX_ENGINE)
         install(FILES ${OLLAMA_BUILD_DIR}/dl.dll
             DESTINATION ${OLLAMA_INSTALL_DIR}
             COMPONENT MLX)
+    endif()
+
+    # cuDNN 9 has companion DLLs that may be loaded dynamically. Install the
+    # full cuDNN runtime set from the discovered runtime directories.
+    if(WIN32 AND MLX_CUDNN_RUNTIME_DIRS)
+        set(MLX_CUDNN_DLLS)
+        foreach(_cudnn_runtime_dir ${MLX_CUDNN_RUNTIME_DIRS})
+            file(GLOB _mlx_cudnn_dlls "${_cudnn_runtime_dir}/cudnn*.dll")
+            list(APPEND MLX_CUDNN_DLLS ${_mlx_cudnn_dlls})
+        endforeach()
+        if(MLX_CUDNN_DLLS)
+            list(REMOVE_DUPLICATES MLX_CUDNN_DLLS)
+            install(FILES ${MLX_CUDNN_DLLS}
+                DESTINATION ${OLLAMA_INSTALL_DIR}
+                COMPONENT MLX)
+        endif()
     endif()
 
     # Manually install CUDA runtime libraries that MLX loads via dlopen

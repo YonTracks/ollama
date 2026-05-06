@@ -287,12 +287,20 @@ function mlxCuda13 {
                 # Official installer layout (versioned)
                 $cudnnRoot = $null
                 $resolved = Resolve-Path -Path "C:\Program Files\NVIDIA\CUDNN\v*" -ErrorAction SilentlyContinue | Sort-Object -Descending | Select-Object -First 1
-                if ($resolved -and (Test-Path "$($resolved.Path)\include\$cudaMajorVer.0\cudnn.h")) {
+                $cudnnCudaDir = $null
+                if ($resolved) {
+                    $cudnnCudaDir = Resolve-Path -Path "$($resolved.Path)\include\$cudaMajorVer.*" -ErrorAction SilentlyContinue |
+                        Where-Object { Test-Path "$($_.Path)\cudnn.h" } |
+                        Sort-Object -Property Path -Descending |
+                        Select-Object -First 1
+                }
+                if ($resolved -and $cudnnCudaDir) {
                     $cudnnRoot = $resolved.Path
+                    $cudnnCudaVer = Split-Path -Path $cudnnCudaDir.Path -Leaf
                     $env:CUDNN_ROOT_DIR = $cudnnRoot
-                    $env:CUDNN_INCLUDE_PATH = "$cudnnRoot\include\$cudaMajorVer.0"
-                    $env:CUDNN_LIBRARY_PATH = "$cudnnRoot\lib\$cudaMajorVer.0\x64"
-                    Write-Output "Found cuDNN at $cudnnRoot (official installer, CUDA $cudaMajorVer.0)"
+                    $env:CUDNN_INCLUDE_PATH = $cudnnCudaDir.Path
+                    $env:CUDNN_LIBRARY_PATH = "$cudnnRoot\lib\$cudnnCudaVer\x64"
+                    Write-Output "Found cuDNN at $cudnnRoot (official installer, CUDA $cudnnCudaVer)"
                 } else {
                     Write-Output "cuDNN not found - set CUDNN_INCLUDE_PATH and CUDNN_LIBRARY_PATH environment variables"
                     Write-Output "Skipping MLX build"

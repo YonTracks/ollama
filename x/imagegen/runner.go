@@ -15,6 +15,7 @@ import (
 
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/x/imagegen/mlx"
+	"github.com/ollama/ollama/x/internal/mlxthread"
 )
 
 // Execute is the entry point for the unified MLX runner subprocess.
@@ -45,18 +46,35 @@ func Execute(args []string) error {
 		return fmt.Errorf("imagegen runner only supports image generation models")
 	}
 
-	// Initialize MLX only for image generation mode.
-	if err := mlx.InitMLX(); err != nil {
+	mlxThread, err := mlxthread.Start("imagegen", func() error {
+		if err := mlx.InitMLX(); err != nil {
+			return err
+		}
+		slog.Info("MLX library initialized")
+		return nil
+	})
+	if err != nil {
 		slog.Error("unable to initialize MLX", "error", err)
 		return err
 	}
-	slog.Info("MLX library initialized")
 
 	// Create and start server
-	server, err := newServer(*modelName, *port)
+	server, err := newServer(*modelName, *port, mlxThread)
 	if err != nil {
+		_ = mlxThread.Stop(context.Background(), func() {
+			mlx.ClearCache()
+		})
 		return fmt.Errorf("failed to create server: %w", err)
 	}
+	defer func() {
+		_ = mlxThread.Stop(context.Background(), func() {
+			if server.imageModel != nil {
+				mlx.FreeStruct(server.imageModel)
+				mlx.Eval()
+			}
+			mlx.ClearCache()
+		})
+	}()
 
 	// Set up HTTP handlers
 	mux := http.NewServeMux()
@@ -113,16 +131,24 @@ type server struct {
 
 	// Image generation model.
 	imageModel ImageModel
+	mlxThread  *mlxthread.Thread
 }
 
 // newServer creates a new server instance for image generation models.
-func newServer(modelName string, port int) (*server, error) {
+func newServer(modelName string, port int, mlxThread *mlxthread.Thread) (*server, error) {
 	s := &server{
 		modelName: modelName,
 		port:      port,
+		mlxThread: mlxThread,
 	}
 
-	if err := s.loadImageModel(); err != nil {
+	load := s.loadImageModel
+	if mlxThread != nil {
+		load = func() error {
+			return mlxThread.Do(context.Background(), s.loadImageModel)
+		}
+	}
+	if err := load(); err != nil {
 		return nil, fmt.Errorf("failed to load image model: %w", err)
 	}
 
@@ -144,6 +170,20 @@ func (s *server) completionHandler(w http.ResponseWriter, r *http.Request) {
 	var req Request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if s.mlxThread != nil {
+		if err := s.mlxThread.Do(r.Context(), func() error {
+			s.handleImageCompletion(w, r, req)
+			return nil
+		}); err != nil {
+			if r.Context().Err() != nil {
+				return
+			}
+			slog.Error("image completion failed on MLX thread", "error", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 
