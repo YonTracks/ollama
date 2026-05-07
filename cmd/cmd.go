@@ -2485,6 +2485,14 @@ func NewCLI() *cobra.Command {
 				envVars["OLLAMA_LLM_LIBRARY"],
 				envVars["OLLAMA_GPU_OVERHEAD"],
 				envVars["OLLAMA_LOAD_TIMEOUT"],
+				envVars["OLLAMA_LOW_VRAM_OPTIMIZE"],
+				envVars["OLLAMA_LOW_VRAM_NUM_CTX"],
+				envVars["OLLAMA_LOW_VRAM_RETRY_CTX"],
+				envVars["OLLAMA_LOW_VRAM_KV_CACHE_TYPE"],
+				envVars["OLLAMA_LOW_VRAM_FLASH_ATTENTION"],
+				envVars["OLLAMA_LOW_VRAM_NUM_PARALLEL"],
+				envVars["OLLAMA_LOW_VRAM_MAX_LOADED_MODELS"],
+				envVars["OLLAMA_LOW_VRAM_VERBOSE"],
 			})
 		default:
 			appendEnvDocs(cmd, envs)

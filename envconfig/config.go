@@ -196,6 +196,21 @@ func Bool(k string) func() bool {
 	}
 }
 
+func OptionalBool(key string) (bool, bool) {
+	s := Var(key)
+	if s == "" {
+		return false, false
+	}
+
+	b, err := strconv.ParseBool(s)
+	if err != nil {
+		slog.Warn("invalid environment variable, using default", "key", key, "value", s, "default", false)
+		return false, true
+	}
+
+	return b, true
+}
+
 // LogLevel returns the log level for the application.
 // Values are 0 or false INFO (Default), 1 or true DEBUG, 2 TRACE
 func LogLevel() slog.Level {
@@ -236,7 +251,173 @@ var (
 	EnableVulkan = Bool("OLLAMA_VULKAN")
 	// NoCloudEnv checks the OLLAMA_NO_CLOUD environment variable.
 	NoCloudEnv = Bool("OLLAMA_NO_CLOUD")
+	// LowVRAMOptimize enables experimental low-VRAM optimization behavior.
+	LowVRAMOptimize = Bool("OLLAMA_LOW_VRAM_OPTIMIZE")
+	// LowVRAMVerbose enables detailed low-VRAM decision logging.
+	LowVRAMVerbose = Bool("OLLAMA_LOW_VRAM_VERBOSE")
 )
+
+const (
+	LowVRAMDefaultNumCtx = 4096
+)
+
+var lowVRAMDefaultRetryCtx = []int{4096, 2048, 1024}
+
+// IsSet returns true when an environment variable has a non-empty value after
+// applying Ollama's usual environment value trimming.
+func IsSet(key string) bool {
+	return Var(key) != ""
+}
+
+func parsePositiveUint(key string) (uint, bool) {
+	s := Var(key)
+	if s == "" {
+		return 0, false
+	}
+
+	n, err := strconv.ParseUint(s, 10, 64)
+	if err != nil || n == 0 {
+		slog.Warn("invalid environment variable, ignoring", "key", key, "value", s)
+		return 0, false
+	}
+
+	return uint(n), true
+}
+
+// LowVRAMNumCtx returns the configured low-VRAM default context length, or
+// the safe default used by low-VRAM mode.
+func LowVRAMNumCtx() uint {
+	if n, ok := parsePositiveUint("OLLAMA_LOW_VRAM_NUM_CTX"); ok {
+		return n
+	}
+
+	return LowVRAMDefaultNumCtx
+}
+
+// LowVRAMRetryContexts returns the finite retry context list for low-VRAM
+// load fallback. Invalid entries are skipped with a warning.
+func LowVRAMRetryContexts() []int {
+	s := Var("OLLAMA_LOW_VRAM_RETRY_CTX")
+	if s == "" {
+		return append([]int(nil), lowVRAMDefaultRetryCtx...)
+	}
+
+	var out []int
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		n, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || n <= 0 {
+			slog.Warn("invalid low VRAM retry context, ignoring", "value", part)
+			continue
+		}
+
+		out = append(out, int(n))
+	}
+
+	if len(out) == 0 {
+		slog.Warn("invalid low VRAM retry context list, using default", "value", s)
+		return append([]int(nil), lowVRAMDefaultRetryCtx...)
+	}
+
+	return out
+}
+
+func normalizeKVCacheType(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// ValidKVCacheType reports whether a low-VRAM KV cache type is supported by
+// the low-VRAM policy layer. Model-specific support is checked later.
+func ValidKVCacheType(cacheType string) bool {
+	switch normalizeKVCacheType(cacheType) {
+	case "", "f16", "q8_0", "q4_0":
+		return true
+	default:
+		return false
+	}
+}
+
+// LowVRAMKVCacheType returns a validated low-VRAM KV cache type override.
+func LowVRAMKVCacheType() string {
+	s := normalizeKVCacheType(Var("OLLAMA_LOW_VRAM_KV_CACHE_TYPE"))
+	if s == "" {
+		return ""
+	}
+
+	if !ValidKVCacheType(s) {
+		slog.Warn("invalid OLLAMA_LOW_VRAM_KV_CACHE_TYPE, ignoring", "type", s)
+		return ""
+	}
+
+	return s
+}
+
+// EffectiveKVCacheType returns the KV cache type preference after applying
+// low-VRAM defaults. Runner/model support is still validated by the loader.
+func EffectiveKVCacheType() string {
+	if !LowVRAMOptimize() {
+		return normalizeKVCacheType(KvCacheType())
+	}
+
+	if low := LowVRAMKVCacheType(); low != "" {
+		return low
+	}
+
+	if kv := normalizeKVCacheType(KvCacheType()); kv != "" {
+		return kv
+	}
+
+	return "q8_0"
+}
+
+// LowVRAMFlashAttention returns true only when low-VRAM flash attention was
+// explicitly requested.
+func LowVRAMFlashAttention() bool {
+	b, _ := OptionalBool("OLLAMA_LOW_VRAM_FLASH_ATTENTION")
+	return b
+}
+
+// EffectiveNumParallel returns the scheduler parallelism after applying the
+// low-VRAM default. Existing explicit OLLAMA_NUM_PARALLEL wins unless the
+// low-VRAM-specific override is set.
+func EffectiveNumParallel() uint {
+	if !LowVRAMOptimize() {
+		return NumParallel()
+	}
+
+	if n, ok := parsePositiveUint("OLLAMA_LOW_VRAM_NUM_PARALLEL"); ok {
+		return n
+	}
+
+	if IsSet("OLLAMA_NUM_PARALLEL") {
+		return NumParallel()
+	}
+
+	return 1
+}
+
+// EffectiveMaxRunners returns the maximum number of concurrently loaded
+// models after applying the low-VRAM default. Existing explicit
+// OLLAMA_MAX_LOADED_MODELS wins unless the low-VRAM-specific override is set.
+func EffectiveMaxRunners() uint {
+	if !LowVRAMOptimize() {
+		return MaxRunners()
+	}
+
+	if n, ok := parsePositiveUint("OLLAMA_LOW_VRAM_MAX_LOADED_MODELS"); ok {
+		return n
+	}
+
+	if IsSet("OLLAMA_MAX_LOADED_MODELS") {
+		return MaxRunners()
+	}
+
+	return 1
+}
 
 func String(s string) func() string {
 	return func() string {
@@ -327,6 +508,15 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_EDITOR":             {"OLLAMA_EDITOR", Editor(), "Path to editor for interactive prompt editing (Ctrl+G)"},
 		"OLLAMA_NEW_ENGINE":         {"OLLAMA_NEW_ENGINE", NewEngine(), "Enable the new Ollama engine"},
 		"OLLAMA_REMOTES":            {"OLLAMA_REMOTES", Remotes(), "Allowed hosts for remote models (default \"ollama.com\")"},
+
+		"OLLAMA_LOW_VRAM_OPTIMIZE":          {"OLLAMA_LOW_VRAM_OPTIMIZE", LowVRAMOptimize(), "Enable experimental low-VRAM optimization mode"},
+		"OLLAMA_LOW_VRAM_NUM_CTX":           {"OLLAMA_LOW_VRAM_NUM_CTX", LowVRAMNumCtx(), "Default context length when low-VRAM mode is enabled and no context is explicitly set"},
+		"OLLAMA_LOW_VRAM_RETRY_CTX":         {"OLLAMA_LOW_VRAM_RETRY_CTX", LowVRAMRetryContexts(), "Comma-separated context lengths to retry after memory-related load failures in low-VRAM mode"},
+		"OLLAMA_LOW_VRAM_KV_CACHE_TYPE":     {"OLLAMA_LOW_VRAM_KV_CACHE_TYPE", LowVRAMKVCacheType(), "KV cache type for low-VRAM mode (f16, q8_0, or q4_0)"},
+		"OLLAMA_LOW_VRAM_FLASH_ATTENTION":   {"OLLAMA_LOW_VRAM_FLASH_ATTENTION", LowVRAMFlashAttention(), "Prefer flash attention when low-VRAM mode is enabled"},
+		"OLLAMA_LOW_VRAM_NUM_PARALLEL":      {"OLLAMA_LOW_VRAM_NUM_PARALLEL", EffectiveNumParallel(), "Parallel request count to prefer when low-VRAM mode is enabled"},
+		"OLLAMA_LOW_VRAM_MAX_LOADED_MODELS": {"OLLAMA_LOW_VRAM_MAX_LOADED_MODELS", EffectiveMaxRunners(), "Maximum loaded models to prefer when low-VRAM mode is enabled"},
+		"OLLAMA_LOW_VRAM_VERBOSE":           {"OLLAMA_LOW_VRAM_VERBOSE", LowVRAMVerbose(), "Enable detailed low-VRAM decision logging"},
 
 		// Informational
 		"HTTP_PROXY":  {"HTTP_PROXY", String("HTTP_PROXY")(), "HTTP proxy"},

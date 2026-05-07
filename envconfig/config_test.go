@@ -226,6 +226,124 @@ func TestUint(t *testing.T) {
 	}
 }
 
+func TestLowVRAMRetryContexts(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		want := []int{4096, 2048, 1024}
+		if diff := cmp.Diff(want, LowVRAMRetryContexts()); diff != "" {
+			t.Fatalf("retry contexts mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("custom list", func(t *testing.T) {
+		t.Setenv("OLLAMA_LOW_VRAM_RETRY_CTX", "8192, 4096,2048")
+		want := []int{8192, 4096, 2048}
+		if diff := cmp.Diff(want, LowVRAMRetryContexts()); diff != "" {
+			t.Fatalf("retry contexts mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("invalid entries skipped", func(t *testing.T) {
+		t.Setenv("OLLAMA_LOW_VRAM_RETRY_CTX", "4096,bad,-1,1024")
+		want := []int{4096, 1024}
+		if diff := cmp.Diff(want, LowVRAMRetryContexts()); diff != "" {
+			t.Fatalf("retry contexts mismatch (-want +got):\n%s", diff)
+		}
+	})
+}
+
+func TestLowVRAMEffectiveKVCacheType(t *testing.T) {
+	t.Run("disabled keeps existing default", func(t *testing.T) {
+		if got := EffectiveKVCacheType(); got != "" {
+			t.Fatalf("EffectiveKVCacheType() = %q, want empty", got)
+		}
+	})
+
+	t.Run("enabled defaults q8", func(t *testing.T) {
+		t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "1")
+		if got := EffectiveKVCacheType(); got != "q8_0" {
+			t.Fatalf("EffectiveKVCacheType() = %q, want q8_0", got)
+		}
+	})
+
+	t.Run("existing kv wins", func(t *testing.T) {
+		t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "1")
+		t.Setenv("OLLAMA_KV_CACHE_TYPE", "f16")
+		if got := EffectiveKVCacheType(); got != "f16" {
+			t.Fatalf("EffectiveKVCacheType() = %q, want f16", got)
+		}
+	})
+
+	t.Run("low vram kv override wins", func(t *testing.T) {
+		t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "1")
+		t.Setenv("OLLAMA_KV_CACHE_TYPE", "f16")
+		t.Setenv("OLLAMA_LOW_VRAM_KV_CACHE_TYPE", "q4_0")
+		if got := EffectiveKVCacheType(); got != "q4_0" {
+			t.Fatalf("EffectiveKVCacheType() = %q, want q4_0", got)
+		}
+	})
+
+	t.Run("invalid low vram kv does not panic", func(t *testing.T) {
+		t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "1")
+		t.Setenv("OLLAMA_LOW_VRAM_KV_CACHE_TYPE", "nope")
+		if got := EffectiveKVCacheType(); got != "q8_0" {
+			t.Fatalf("EffectiveKVCacheType() = %q, want q8_0 fallback", got)
+		}
+	})
+}
+
+func TestLowVRAMEffectiveParallelAndMaxRunners(t *testing.T) {
+	t.Run("disabled ignores low vram overrides", func(t *testing.T) {
+		t.Setenv("OLLAMA_LOW_VRAM_NUM_PARALLEL", "2")
+		t.Setenv("OLLAMA_LOW_VRAM_MAX_LOADED_MODELS", "2")
+
+		if got := EffectiveNumParallel(); got != 1 {
+			t.Fatalf("EffectiveNumParallel() = %d, want 1", got)
+		}
+		if got := EffectiveMaxRunners(); got != 0 {
+			t.Fatalf("EffectiveMaxRunners() = %d, want 0", got)
+		}
+	})
+
+	t.Run("enabled defaults to one", func(t *testing.T) {
+		t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "1")
+
+		if got := EffectiveNumParallel(); got != 1 {
+			t.Fatalf("EffectiveNumParallel() = %d, want 1", got)
+		}
+		if got := EffectiveMaxRunners(); got != 1 {
+			t.Fatalf("EffectiveMaxRunners() = %d, want 1", got)
+		}
+	})
+
+	t.Run("existing explicit settings win", func(t *testing.T) {
+		t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "1")
+		t.Setenv("OLLAMA_NUM_PARALLEL", "3")
+		t.Setenv("OLLAMA_MAX_LOADED_MODELS", "4")
+
+		if got := EffectiveNumParallel(); got != 3 {
+			t.Fatalf("EffectiveNumParallel() = %d, want 3", got)
+		}
+		if got := EffectiveMaxRunners(); got != 4 {
+			t.Fatalf("EffectiveMaxRunners() = %d, want 4", got)
+		}
+	})
+
+	t.Run("low vram explicit settings win", func(t *testing.T) {
+		t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "1")
+		t.Setenv("OLLAMA_NUM_PARALLEL", "3")
+		t.Setenv("OLLAMA_MAX_LOADED_MODELS", "4")
+		t.Setenv("OLLAMA_LOW_VRAM_NUM_PARALLEL", "2")
+		t.Setenv("OLLAMA_LOW_VRAM_MAX_LOADED_MODELS", "2")
+
+		if got := EffectiveNumParallel(); got != 2 {
+			t.Fatalf("EffectiveNumParallel() = %d, want 2", got)
+		}
+		if got := EffectiveMaxRunners(); got != 2 {
+			t.Fatalf("EffectiveMaxRunners() = %d, want 2", got)
+		}
+	})
+}
+
 func TestKeepAlive(t *testing.T) {
 	cases := map[string]time.Duration{
 		"":       5 * time.Minute,

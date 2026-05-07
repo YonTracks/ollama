@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"slices"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -21,8 +20,6 @@ import (
 	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/ml"
 	"github.com/ollama/ollama/types/model"
-	"github.com/ollama/ollama/x/imagegen"
-	"github.com/ollama/ollama/x/mlxrunner"
 )
 
 type LlmRequest struct {
@@ -153,7 +150,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 }
 
 func (s *Scheduler) processPending(ctx context.Context) {
-	maxRunners := envconfig.MaxRunners()
+	maxRunners := envconfig.EffectiveMaxRunners()
 
 	for {
 		select {
@@ -409,7 +406,7 @@ func (pending *LlmRequest) useLoadedRunner(runner *runnerRef, finished chan *Llm
 // load creates a new model based on req and loads it. If requireFull is true then the model must be loaded fully onto GPUs
 // (if any). Returns whether the scheduler needs to evict a model to make this one fit.
 func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, requireFull bool) bool {
-	numParallel := max(int(envconfig.NumParallel()), 1)
+	numParallel := max(int(envconfig.EffectiveNumParallel()), 1)
 
 	// Embedding models should always be loaded with parallel=1
 	if req.model.CheckCapabilities(model.CapabilityCompletion) != nil {
@@ -433,31 +430,7 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 
 	if llama == nil {
 		var err error
-		if !req.model.IsMLX() {
-			f, loadErr := llm.LoadModel(req.model.ModelPath, 1024)
-			if loadErr != nil {
-				slog.Info("failed to load model metadata", "model", req.model.ModelPath, "error", loadErr)
-				req.errCh <- loadErr
-				s.loadedMu.Unlock()
-				return false
-			}
-			llama, err = s.newServerFn(systemInfo, gpus, req.model.ModelPath, f, req.model.AdapterPaths, req.model.ProjectorPaths, req.opts, numParallel)
-			if err != nil {
-				// some older models are not compatible with newer versions of llama.cpp
-				// show a generalized compatibility error until there is a better way to
-				// check for model compatibility
-				if errors.Is(err, ggml.ErrUnsupportedFormat) || strings.Contains(err.Error(), "failed to load model") {
-					err = fmt.Errorf("%v: this model may be incompatible with your version of Ollama. If you previously pulled this model, try updating it by running `ollama pull %s`", err, req.model.ShortName)
-				}
-			}
-		} else {
-			modelName := req.model.ShortName
-			if slices.Contains(req.model.Config.Capabilities, "image") {
-				llama, err = imagegen.NewServer(modelName)
-			} else {
-				llama, err = mlxrunner.NewClient(modelName)
-			}
-		}
+		llama, err = s.newServerForRequest(req, systemInfo, gpus, req.opts, numParallel)
 		if err != nil {
 			slog.Info("failed to create server", "model", req.model.ShortName, "error", err)
 			req.errCh <- err
@@ -495,25 +468,40 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 			"overhead", format.HumanBytes2(envconfig.GpuOverhead()))
 	}
 
+	logLowVRAMMemorySnapshot("before_load", req, systemInfo, gpus, llama)
 	gpuIDs, err := llama.Load(req.ctx, systemInfo, gpus, requireFull)
 	if err != nil {
 		if errors.Is(err, llm.ErrLoadRequiredFull) {
 			if !requireFull {
-				// No other models loaded, yet we still don't fit, so report an error
+				llama, gpuIDs, err = s.retryLowVRAMLoad(req, systemInfo, gpus, requireFull, numParallel, llama, err)
+				if err == nil {
+					goto loaded
+				}
+
+				// No other models loaded, yet we still don't fit, so report an error.
 				slog.Info("model is too large for system memory", "requireFull", requireFull)
-				s.activeLoading.Close()
-				s.activeLoading = nil
+				logLowVRAMLoadResult("failure", req, err)
+				s.closeActiveLoading()
 				req.errCh <- err
 			}
 			return true
 		}
 
+		llama, gpuIDs, err = s.retryLowVRAMLoad(req, systemInfo, gpus, requireFull, numParallel, llama, err)
+		if err == nil {
+			goto loaded
+		}
+
 		slog.Info("Load failed", "model", req.model.ModelPath, "error", err)
-		s.activeLoading.Close()
-		s.activeLoading = nil
+		logLowVRAMLoadResult("failure", req, err)
+		s.closeActiveLoading()
 		req.errCh <- err
 		return false
 	}
+
+loaded:
+	logLowVRAMMemorySnapshot("after_load", req, systemInfo, gpus, llama)
+	logLowVRAMLoadResult("success", req, nil)
 
 	// Determine if we have discrete GPUs which we should monitor VRAM usage on during shutdown
 	discreteGPUs := false

@@ -196,7 +196,15 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 		faUserSet = true
 	}
 
+	lowVRAMFARequested := envconfig.LowVRAMOptimize() && envconfig.LowVRAMFlashAttention()
+	if lowVRAMFARequested {
+		faUserSet = true
+	}
+
 	fa := envconfig.FlashAttention(f.FlashAttention())
+	if lowVRAMFARequested {
+		fa = true
+	}
 
 	// This will disable flash attention unless all GPUs on the system support it, even if we end up selecting a subset
 	// that can handle it.
@@ -222,7 +230,18 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 		}
 	}
 
-	kvct := strings.ToLower(envconfig.KvCacheType())
+	requestedKVCacheType := envconfig.KvCacheType()
+	kvct := strings.ToLower(opts.Runner.KvCacheType)
+	if kvct != "" {
+		requestedKVCacheType = kvct
+		if !envconfig.ValidKVCacheType(kvct) {
+			slog.Warn("invalid internal KV cache type override", "type", kvct)
+			kvct = ""
+		}
+	}
+	if kvct == "" {
+		kvct = envconfig.EffectiveKVCacheType()
+	}
 
 	if tok == nil {
 		flashAttention := ml.FlashAttentionAuto
@@ -269,6 +288,22 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 		} else if kvct != "" && kvct != "f16" {
 			slog.Warn("quantized kv cache requested but flash attention disabled", "type", kvct)
 		}
+	}
+	if envconfig.LowVRAMOptimize() {
+		effectiveKVCacheType := loadRequest.KvCacheType
+		if effectiveKVCacheType == "" {
+			effectiveKVCacheType = "f16"
+		}
+		slog.Info("low_vram runner settings",
+			"model", modelPath,
+			"requested_context", opts.NumCtx,
+			"effective_context", opts.NumCtx,
+			"requested_kv_cache_type", requestedKVCacheType,
+			"effective_kv_cache_type", effectiveKVCacheType,
+			"flash_attention_requested", lowVRAMFARequested || envconfig.FlashAttention(false),
+			"flash_attention_effective", fa,
+			"flash_attention_mode", loadRequest.FlashAttention,
+			"num_parallel", numParallel)
 	}
 
 	gpuLibs := ml.LibraryPaths(gpus)

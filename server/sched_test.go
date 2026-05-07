@@ -128,6 +128,59 @@ func TestSchedLoad(t *testing.T) {
 	require.Len(t, s.expiredCh, 1)
 }
 
+func TestSchedLowVRAMLoadRetryIsFinite(t *testing.T) {
+	t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "1")
+	t.Setenv("OLLAMA_LOW_VRAM_RETRY_CTX", "4096,2048")
+	t.Setenv("OLLAMA_LOW_VRAM_KV_CACHE_TYPE", "q4_0")
+
+	ctx, done := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer done()
+
+	s := InitScheduler(ctx)
+	modelPath, _ := createBinFile(t, ggml.KV{
+		"general.architecture":          "llama",
+		"llama.context_length":          uint32(8192),
+		"llama.embedding_length":        uint32(4096),
+		"llama.block_count":             uint32(1),
+		"llama.attention.head_count":    uint32(32),
+		"llama.attention.head_count_kv": uint32(32),
+		"tokenizer.ggml.tokens":         []string{" "},
+		"tokenizer.ggml.scores":         []float32{0},
+		"tokenizer.ggml.token_type":     []int32{0},
+	}, []*ggml.Tensor{
+		{Name: "blk.0.attn.weight", Kind: uint32(0), Offset: uint64(0), Shape: []uint64{1, 1, 1, 1}, WriterTo: bytes.NewReader(make([]byte, 32))},
+		{Name: "output.weight", Kind: uint32(0), Offset: uint64(0), Shape: []uint64{1, 1, 1, 1}, WriterTo: bytes.NewReader(make([]byte, 32))},
+	})
+
+	memErr := errors.New("failed to allocate memory for model")
+	server := &mockLlm{
+		loadErrs:  []error{memErr, memErr, memErr, memErr},
+		vramByGPU: map[ml.DeviceID]uint64{},
+	}
+	s.newServerFn = func(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, model string, f *ggml.GGML, adapters []string, projectors []string, opts api.Options, numParallel int) (llm.LlamaServer, error) {
+		server.modelPath = model
+		return server, nil
+	}
+
+	opts := api.DefaultOptions()
+	opts.NumCtx = 8192
+	req := &LlmRequest{
+		ctx:             ctx,
+		model:           &Model{ModelPath: modelPath, ShortName: "retry-test"},
+		opts:            opts,
+		successCh:       make(chan *runnerRef, 1),
+		errCh:           make(chan error, 1),
+		sessionDuration: &api.Duration{Duration: 2 * time.Second},
+	}
+
+	s.load(req, ml.SystemInfo{}, nil, false)
+
+	require.Empty(t, req.successCh)
+	require.Len(t, req.errCh, 1)
+	require.ErrorIs(t, <-req.errCh, memErr)
+	require.Equal(t, 3, server.loadCalls)
+}
+
 type reqBundle struct {
 	ctx     context.Context //nolint:containedctx
 	ctxDone func()
@@ -836,6 +889,8 @@ func TestSchedAlreadyCanceled(t *testing.T) {
 
 type mockLlm struct {
 	modelPath         string
+	loadCalls         int
+	loadErrs          []error
 	pingResp          error
 	waitResp          error
 	completionResp    error
@@ -857,6 +912,13 @@ func (s *mockLlm) ModelPath() string {
 }
 
 func (s *mockLlm) Load(ctx context.Context, sytemInfo ml.SystemInfo, gpus []ml.DeviceInfo, requireFull bool) ([]ml.DeviceID, error) {
+	s.loadCalls++
+	if len(s.loadErrs) > 0 {
+		err := s.loadErrs[0]
+		s.loadErrs = s.loadErrs[1:]
+		return nil, err
+	}
+
 	if requireFull {
 		if len(gpus) == 0 {
 			slog.Info("mockLlm.Load CPU based load")

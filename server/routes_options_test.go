@@ -11,6 +11,8 @@ func TestModelOptionsNumCtxPriority(t *testing.T) {
 		defaultNumCtx  int    // VRAM-based default
 		modelNumCtx    int    // 0 means not set in model
 		requestNumCtx  int    // 0 means not set in request
+		lowVRAM        bool
+		lowVRAMNumCtx  string
 		expectedNumCtx int
 	}{
 		{
@@ -85,6 +87,53 @@ func TestModelOptionsNumCtxPriority(t *testing.T) {
 			requestNumCtx:  0,
 			expectedNumCtx: 262144,
 		},
+		{
+			name:           "low vram disabled keeps existing vram default",
+			envContextLen:  "",
+			defaultNumCtx:  32768,
+			modelNumCtx:    0,
+			requestNumCtx:  0,
+			lowVRAM:        false,
+			lowVRAMNumCtx:  "2048",
+			expectedNumCtx: 32768,
+		},
+		{
+			name:           "low vram enabled applies default when unset",
+			envContextLen:  "",
+			defaultNumCtx:  32768,
+			modelNumCtx:    0,
+			requestNumCtx:  0,
+			lowVRAM:        true,
+			expectedNumCtx: 4096,
+		},
+		{
+			name:           "low vram custom default applies when unset",
+			envContextLen:  "",
+			defaultNumCtx:  32768,
+			modelNumCtx:    0,
+			requestNumCtx:  0,
+			lowVRAM:        true,
+			lowVRAMNumCtx:  "2048",
+			expectedNumCtx: 2048,
+		},
+		{
+			name:           "model num ctx wins in low vram mode",
+			envContextLen:  "",
+			defaultNumCtx:  32768,
+			modelNumCtx:    8192,
+			requestNumCtx:  0,
+			lowVRAM:        true,
+			expectedNumCtx: 8192,
+		},
+		{
+			name:           "request num ctx wins in low vram mode",
+			envContextLen:  "",
+			defaultNumCtx:  32768,
+			modelNumCtx:    8192,
+			requestNumCtx:  6144,
+			lowVRAM:        true,
+			expectedNumCtx: 6144,
+		},
 	}
 
 	for _, tt := range tests {
@@ -92,6 +141,12 @@ func TestModelOptionsNumCtxPriority(t *testing.T) {
 			// Set or clear environment variable
 			if tt.envContextLen != "" {
 				t.Setenv("OLLAMA_CONTEXT_LENGTH", tt.envContextLen)
+			}
+			if tt.lowVRAM {
+				t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "1")
+			}
+			if tt.lowVRAMNumCtx != "" {
+				t.Setenv("OLLAMA_LOW_VRAM_NUM_CTX", tt.lowVRAMNumCtx)
 			}
 
 			// Create server with VRAM-based default

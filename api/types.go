@@ -600,12 +600,13 @@ type Options struct {
 
 // Runner options which must be set when the model is loaded into memory
 type Runner struct {
-	NumCtx    int   `json:"num_ctx,omitempty"`
-	NumBatch  int   `json:"num_batch,omitempty"`
-	NumGPU    int   `json:"num_gpu,omitempty"`
-	MainGPU   int   `json:"main_gpu,omitempty"`
-	UseMMap   *bool `json:"use_mmap,omitempty"`
-	NumThread int   `json:"num_thread,omitempty"`
+	NumCtx      int    `json:"num_ctx,omitempty"`
+	NumBatch    int    `json:"num_batch,omitempty"`
+	NumGPU      int    `json:"num_gpu,omitempty"`
+	MainGPU     int    `json:"main_gpu,omitempty"`
+	UseMMap     *bool  `json:"use_mmap,omitempty"`
+	NumThread   int    `json:"num_thread,omitempty"`
+	KvCacheType string `json:"-"`
 }
 
 // EmbedRequest is the request passed to [Client.Embed].
@@ -981,7 +982,7 @@ func (opts *Options) FromMap(m map[string]any) error {
 	jsonOpts := make(map[string]reflect.StructField)
 	for _, field := range reflect.VisibleFields(typeOpts) {
 		jsonTag := strings.Split(field.Tag.Get("json"), ",")[0]
-		if jsonTag != "" {
+		if jsonTag != "" && jsonTag != "-" {
 			jsonOpts[jsonTag] = field
 		}
 	}
@@ -1253,7 +1254,7 @@ func FormatParams(params map[string][]string) (map[string]any, error) {
 	jsonOpts := make(map[string]reflect.StructField)
 	for _, field := range reflect.VisibleFields(typeOpts) {
 		jsonTag := strings.Split(field.Tag.Get("json"), ",")[0]
-		if jsonTag != "" {
+		if jsonTag != "" && jsonTag != "-" {
 			jsonOpts[jsonTag] = field
 		}
 	}

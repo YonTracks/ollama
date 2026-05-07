@@ -127,8 +127,14 @@ var (
 
 func (s *Server) modelOptions(model *Model, requestOpts map[string]any) (api.Options, error) {
 	opts := api.DefaultOptions()
+	lowVRAMDefaultApplied := false
 	if opts.NumCtx == 0 {
-		opts.NumCtx = s.defaultNumCtx
+		if shouldApplyLowVRAMNumCtxDefault(model, requestOpts) {
+			opts.NumCtx = int(envconfig.LowVRAMNumCtx())
+			lowVRAMDefaultApplied = true
+		} else {
+			opts.NumCtx = s.defaultNumCtx
+		}
 	}
 
 	if err := opts.FromMap(model.Options); err != nil {
@@ -138,6 +144,8 @@ func (s *Server) modelOptions(model *Model, requestOpts map[string]any) (api.Opt
 	if err := opts.FromMap(requestOpts); err != nil {
 		return api.Options{}, err
 	}
+
+	logLowVRAMModelOptions(model, requestOpts, opts, lowVRAMDefaultApplied)
 
 	return opts, nil
 }
@@ -1912,6 +1920,18 @@ func Serve(ln net.Listener) error {
 		s.defaultNumCtx = 4096
 	}
 	slog.Info("vram-based default context", "total_vram", format.HumanBytes2(totalVRAM), "default_num_ctx", s.defaultNumCtx)
+	if envconfig.LowVRAMOptimize() {
+		slog.Info("low_vram optimization enabled",
+			"default_num_ctx", envconfig.LowVRAMNumCtx(),
+			"retry_ctx", envconfig.LowVRAMRetryContexts(),
+			"kv_cache_type", envconfig.EffectiveKVCacheType(),
+			"flash_attention_requested", envconfig.LowVRAMFlashAttention() || envconfig.FlashAttention(false),
+			"num_parallel", envconfig.EffectiveNumParallel(),
+			"max_loaded_models", envconfig.EffectiveMaxRunners(),
+			"verbose", envconfig.LowVRAMVerbose())
+	} else if envconfig.LowVRAMVerbose() {
+		slog.Info("low_vram optimization disabled")
+	}
 
 	err = srvr.Serve(ln)
 	// If server is closed from the signal handler, wait for the ctx to be done
