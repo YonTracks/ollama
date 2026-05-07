@@ -33,7 +33,6 @@ import (
 	"github.com/ollama/ollama/llama"
 	"github.com/ollama/ollama/logutil"
 	"github.com/ollama/ollama/ml"
-	"github.com/ollama/ollama/model"
 	"github.com/ollama/ollama/tokenizer"
 )
 
@@ -95,6 +94,7 @@ type llmServer struct {
 
 	loadRequest LoadRequest       // Parameters used to initialize the runner
 	mem         *ml.BackendMemory // Memory allocations for this model
+	moeDecision moeCPUOffloadDecision
 
 	// llamaModel is an instance of the cgo llama.cpp model definition
 	// nil if this server is running the new engine
@@ -142,26 +142,13 @@ func LoadModel(model string, maxArraySize int) (*ggml.GGML, error) {
 
 // NewLlamaServer will run a server for the given GPUs
 func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath string, f *ggml.GGML, adapters, projectors []string, opts api.Options, numParallel int) (LlamaServer, error) {
-	var llamaModel *llama.Model
-	var tok tokenizer.Tokenizer
-	var err error
-	if envconfig.NewEngine() || f.KV().OllamaEngineRequired() {
-		if len(projectors) == 0 {
-			tok, err = model.NewTextProcessor(modelPath)
-		} else {
-			err = errors.New("split vision models aren't supported")
-		}
-		if err != nil {
-			// To prepare for opt-out mode, instead of treating this as an error, we fallback to the old runner
-			slog.Debug("model not yet supported by Ollama engine, switching to compatibility mode", "model", modelPath, "error", err)
-		}
+	llamaModel, tok, runnerSelection, err := selectAndLoadRunner(newRunnerSelectionConfig(modelPath, f, projectors), newRunnerLoaders(modelPath, projectors))
+	if err != nil {
+		logRunnerSelection(modelPath, runnerSelection)
+		return nil, err
 	}
-	if tok == nil {
-		llamaModel, err = llama.LoadModelFromFile(modelPath, llama.ModelParams{VocabOnly: true})
-		if err != nil {
-			return nil, err
-		}
-	}
+	logRunnerSelection(modelPath, runnerSelection)
+	useOllamaEngine := runnerSelection.Kind == runnerKindOllamaEngine
 
 	// Verify the requested context size is <= the model training size
 	trainCtx := f.KV().ContextLength()
@@ -243,7 +230,7 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 		kvct = envconfig.EffectiveKVCacheType()
 	}
 
-	if tok == nil {
+	if !useOllamaEngine {
 		flashAttention := ml.FlashAttentionAuto
 		if faUserSet {
 			if fa {
@@ -289,6 +276,12 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 			slog.Warn("quantized kv cache requested but flash attention disabled", "type", kvct)
 		}
 	}
+
+	runnerCapabilities := LlamaRunnerCapabilities()
+	moeDecision := resolveLowVRAMMoEOptions(runnerSelection.Kind, f, runnerCapabilities)
+	applyMoECPUOffloadDecision(&loadRequest, moeDecision)
+	logMoECPUOffloadDecision(modelPath, moeDecision)
+
 	if envconfig.LowVRAMEnabled() {
 		effectiveKVCacheType := loadRequest.KvCacheType
 		if effectiveKVCacheType == "" {
@@ -303,17 +296,37 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 			"flash_attention_requested", lowVRAMFARequested || envconfig.FlashAttention(false),
 			"flash_attention_effective", fa,
 			"flash_attention_mode", loadRequest.FlashAttention,
-			"num_parallel", numParallel)
+			"num_parallel", numParallel,
+			"cpu_moe_offload", loadRequest.CpuMoeOffload,
+			"cpu_moe_offload_layers", loadRequest.CpuMoeOffloadLayers,
+			"tensor_overrides", loadRequest.TensorOverrides)
+		if envconfig.LowVRAMVerbose() {
+			slog.Info("low_vram runner load options",
+				"Operation", loadRequest.Operation,
+				"Parallel", loadRequest.Parallel,
+				"BatchSize", loadRequest.BatchSize,
+				"FlashAttention", loadRequest.FlashAttention,
+				"KvSize", loadRequest.KvSize,
+				"KvCacheType", loadRequest.KvCacheType,
+				"NumThreads", loadRequest.NumThreads,
+				"MainGPU", loadRequest.MainGPU,
+				"UseMmap", loadRequest.UseMmap,
+				"CpuMoeOffload", loadRequest.CpuMoeOffload,
+				"CpuMoeOffloadLayers", loadRequest.CpuMoeOffloadLayers,
+				"TensorOverrides", loadRequest.TensorOverrides)
+		}
 	}
 
 	gpuLibs := ml.LibraryPaths(gpus)
 	status := NewStatusWriter(os.Stderr)
+	runnerArgs := buildLowVRAMLlamaRunnerArgs(useOllamaEngine, runnerCapabilities)
 	cmd, port, err := StartRunner(
-		tok != nil,
+		useOllamaEngine,
 		modelPath,
 		gpuLibs,
 		status,
 		ml.GetDevicesEnv(gpus, false),
+		runnerArgs...,
 	)
 
 	s := llmServer{
@@ -323,6 +336,7 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 		options:        opts,
 		modelPath:      modelPath,
 		loadRequest:    loadRequest,
+		moeDecision:    moeDecision,
 		llamaModel:     llamaModel,
 		llamaModelLock: &sync.Mutex{},
 		sem:            semaphore.NewWeighted(int64(numParallel)),
@@ -359,14 +373,14 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 		close(s.done)
 	}()
 
-	if tok != nil {
+	if useOllamaEngine {
 		return &ollamaServer{llmServer: s, tokenizer: tok}, nil
 	} else {
 		return &llamaServer{llmServer: s, ggml: f}, nil
 	}
 }
 
-func StartRunner(ollamaEngine bool, modelPath string, gpuLibs []string, out io.Writer, extraEnvs map[string]string) (cmd *exec.Cmd, port int, err error) {
+func StartRunner(ollamaEngine bool, modelPath string, gpuLibs []string, out io.Writer, extraEnvs map[string]string, extraArgs ...string) (cmd *exec.Cmd, port int, err error) {
 	var exe string
 	exe, err = os.Executable()
 	if err != nil {
@@ -397,6 +411,7 @@ func StartRunner(ollamaEngine bool, modelPath string, gpuLibs []string, out io.W
 		params = append(params, "--model", modelPath)
 	}
 	params = append(params, "--port", strconv.Itoa(port))
+	params = append(params, extraArgs...)
 
 	var pathEnv string
 	switch runtime.GOOS {
@@ -549,11 +564,16 @@ type LoadRequest struct {
 	NumThreads     int
 	GPULayers      ml.GPULayersList
 	MultiUserCache bool
+	CpuMoeOffload  bool
 
 	// Legacy fields - not used with the Ollama engine
 	ProjectorPath string
 	MainGPU       int
 	UseMmap       bool
+
+	// Legacy llama runner tensor placement controls.
+	CpuMoeOffloadLayers int
+	TensorOverrides     []string
 }
 
 type LoadResponse struct {
@@ -712,16 +732,27 @@ func (s *llamaServer) Load(ctx context.Context, systemInfo ml.SystemInfo, system
 		graphSize = graphPartialOffload
 	}
 
+	s.finalizeMoECPUOffloadForGPULayers(&s.loadRequest, gpuLayers)
+	moeOverrideWeights := s.moeTensorOverrideWeightsByLayer()
+	var moeOverrideWeightsTotal uint64
+
 	// For all layers that we have assigned to GPUs, move them in the memory data so
 	// that it is reported accurately
 	for _, gl := range gpuLayers {
 		for i := range s.mem.GPUs {
 			if gl.DeviceID == s.mem.GPUs[i].DeviceID {
 				for _, l := range gl.Layers {
-					s.mem.GPUs[i].Weights[l] = s.mem.CPU.Weights[l]
+					weights := s.mem.CPU.Weights[l]
+					if overrideWeights := min(weights, moeOverrideWeights[l]); overrideWeights > 0 {
+						s.mem.GPUs[i].Weights[l] = weights - overrideWeights
+						s.mem.CPU.Weights[l] = overrideWeights
+						moeOverrideWeightsTotal += overrideWeights
+					} else {
+						s.mem.GPUs[i].Weights[l] = weights
+						s.mem.CPU.Weights[l] = 0
+					}
 					s.mem.GPUs[i].Cache[l] = s.mem.CPU.Cache[l]
 
-					s.mem.CPU.Weights[l] = 0
 					s.mem.CPU.Cache[l] = 0
 				}
 
@@ -729,6 +760,13 @@ func (s *llamaServer) Load(ctx context.Context, systemInfo ml.SystemInfo, system
 				break
 			}
 		}
+	}
+	if moeOverrideWeightsTotal > 0 && envconfig.LowVRAMEnabled() && envconfig.LowVRAMVerbose() {
+		slog.Info("moe tensor override memory estimate adjusted",
+			"note", "scheduler layer selection was made before tensor-level overrides; reported split leaves overridden expert tensors on CPU",
+			"expert_weights_on_cpu", format.HumanBytes2(moeOverrideWeightsTotal),
+			"policy", s.moeDecision.Policy,
+			"selected_layers", compactLayerList(s.moeDecision.SelectedLayers))
 	}
 
 	if projectorGPU > 0 && len(s.mem.GPUs[projectorGPU].Weights) > 0 {

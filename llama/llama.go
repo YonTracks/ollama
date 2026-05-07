@@ -244,13 +244,16 @@ func (c *Context) GetLogitsIth(i int) []float32 {
 }
 
 type ModelParams struct {
-	Devices      []uint64
-	NumGpuLayers int
-	MainGpu      int
-	UseMmap      bool
-	TensorSplit  []float32
-	Progress     func(float32)
-	VocabOnly    bool
+	Devices             []uint64
+	NumGpuLayers        int
+	MainGpu             int
+	UseMmap             bool
+	TensorSplit         []float32
+	Progress            func(float32)
+	VocabOnly           bool
+	CpuMoeOffload       bool
+	CpuMoeOffloadLayers int
+	TensorOverrides     []string
 }
 
 //export llamaProgressCallback
@@ -305,12 +308,78 @@ func LoadModelFromFile(modelPath string, params ModelParams) (*Model, error) {
 		cparams.progress_callback_user_data = unsafe.Pointer(&handle)
 	}
 
-	m := Model{c: C.llama_model_load_from_file(C.CString(modelPath), cparams)}
+	cleanupTensorOverrides, err := applyTensorBufferOverrides(&cparams, params)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanupTensorOverrides()
+
+	cModelPath := C.CString(modelPath)
+	defer C.free(unsafe.Pointer(cModelPath))
+
+	m := Model{c: C.llama_model_load_from_file(cModelPath, cparams)}
 	if m.c == nil {
 		return nil, fmt.Errorf("unable to load model: %s", modelPath)
 	}
 
 	return &m, nil
+}
+
+func SupportsTensorBufferOverrides() bool {
+	// The bundled llama.cpp exposes llama_model_params.tensor_buft_overrides,
+	// and llama-model.cpp applies those regex overrides during tensor placement.
+	return true
+}
+
+func tensorBufferOverridePatterns(params ModelParams) []string {
+	var patterns []string
+
+	patterns = append(patterns, params.TensorOverrides...)
+	if params.CpuMoeOffload && len(patterns) == 0 {
+		if params.CpuMoeOffloadLayers > 0 {
+			for i := range params.CpuMoeOffloadLayers {
+				patterns = append(patterns, fmt.Sprintf("blk\\.%d\\.ffn_(up|down|gate)_(ch|)exps", i))
+			}
+		} else {
+			patterns = append(patterns, "blk\\.\\d+\\.ffn_(up|down|gate)_(ch|)exps")
+		}
+	}
+
+	return patterns
+}
+
+func applyTensorBufferOverrides(cparams *C.struct_llama_model_params, params ModelParams) (func(), error) {
+	patterns := tensorBufferOverridePatterns(params)
+	if len(patterns) == 0 {
+		return func() {}, nil
+	}
+
+	overrides := make([]C.struct_llama_model_tensor_buft_override, len(patterns)+1)
+	cPatterns := make([]*C.char, 0, len(patterns))
+	cpuBufferType := C.ggml_backend_cpu_buffer_type()
+
+	for i, pattern := range patterns {
+		if strings.TrimSpace(pattern) == "" || strings.ContainsAny(pattern, "\x00\r\n") {
+			for _, cPattern := range cPatterns {
+				C.free(unsafe.Pointer(cPattern))
+			}
+			return nil, fmt.Errorf("invalid tensor buffer override pattern")
+		}
+
+		cPattern := C.CString(pattern)
+		cPatterns = append(cPatterns, cPattern)
+		overrides[i].pattern = cPattern
+		overrides[i].buft = cpuBufferType
+	}
+
+	cparams.tensor_buft_overrides = &overrides[0]
+
+	return func() {
+		runtime.KeepAlive(overrides)
+		for _, cPattern := range cPatterns {
+			C.free(unsafe.Pointer(cPattern))
+		}
+	}, nil
 }
 
 func FreeModel(model *Model) {

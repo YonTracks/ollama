@@ -3,6 +3,7 @@ package llama
 import (
 	"bufio"
 	"bytes"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -102,4 +103,34 @@ func TestSchemaToGrammar(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTensorBufferOverridePatterns(t *testing.T) {
+	t.Run("all moe experts", func(t *testing.T) {
+		got := tensorBufferOverridePatterns(ModelParams{CpuMoeOffload: true})
+		want := []string{"blk\\.\\d+\\.ffn_(up|down|gate)_(ch|)exps"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("tensorBufferOverridePatterns() = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("moe expert layers", func(t *testing.T) {
+		got := tensorBufferOverridePatterns(ModelParams{CpuMoeOffload: true, CpuMoeOffloadLayers: 3})
+		want := []string{
+			"blk\\.0\\.ffn_(up|down|gate)_(ch|)exps",
+			"blk\\.1\\.ffn_(up|down|gate)_(ch|)exps",
+			"blk\\.2\\.ffn_(up|down|gate)_(ch|)exps",
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("tensorBufferOverridePatterns() = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("custom tensor override", func(t *testing.T) {
+		got := tensorBufferOverridePatterns(ModelParams{TensorOverrides: []string{".ffn_.*_exps."}})
+		want := []string{".ffn_.*_exps."}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("tensorBufferOverridePatterns() = %v, want %v", got, want)
+		}
+	})
 }

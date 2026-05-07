@@ -920,14 +920,29 @@ func (s *Server) load(w http.ResponseWriter, r *http.Request) {
 		}
 
 		params := llama.ModelParams{
-			Devices:      llamaIDs,
-			NumGpuLayers: numGPU,
-			MainGpu:      req.MainGPU,
-			UseMmap:      req.UseMmap && len(req.LoraPath) == 0,
-			TensorSplit:  tensorSplit,
+			Devices:             llamaIDs,
+			NumGpuLayers:        numGPU,
+			MainGpu:             req.MainGPU,
+			UseMmap:             req.UseMmap && len(req.LoraPath) == 0,
+			TensorSplit:         tensorSplit,
+			CpuMoeOffload:       req.CpuMoeOffload,
+			CpuMoeOffloadLayers: req.CpuMoeOffloadLayers,
+			TensorOverrides:     req.TensorOverrides,
 			Progress: func(progress float32) {
 				s.progress = progress
 			},
+		}
+
+		if envconfig.LowVRAMEnabled() && envconfig.LowVRAMVerbose() {
+			slog.Info("llama runner load options",
+				"NumGpuLayers", params.NumGpuLayers,
+				"MainGpu", params.MainGpu,
+				"UseMmap", params.UseMmap,
+				"CpuMoeOffload", params.CpuMoeOffload,
+				"CpuMoeOffloadLayers", params.CpuMoeOffloadLayers,
+				"TensorOverrides", params.TensorOverrides,
+				"KvCacheType", req.KvCacheType,
+				"FlashAttention", req.FlashAttention)
 		}
 
 		s.status = llm.ServerStatusLoadingModel

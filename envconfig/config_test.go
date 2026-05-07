@@ -395,6 +395,60 @@ func TestLowVRAMEnabled(t *testing.T) {
 	})
 }
 
+func TestMoECPUOffloadLayers(t *testing.T) {
+	t.Run("unset", func(t *testing.T) {
+		clearEnv(t, "OLLAMA_MOE_CPU_OFFLOAD_LAYERS")
+		if got, ok := MoECPUOffloadLayers(); ok || got != 0 {
+			t.Fatalf("MoECPUOffloadLayers() = %d, %v, want 0, false", got, ok)
+		}
+	})
+
+	t.Run("valid", func(t *testing.T) {
+		t.Setenv("OLLAMA_MOE_CPU_OFFLOAD_LAYERS", "12")
+		got, ok := MoECPUOffloadLayers()
+		if !ok || got != 12 {
+			t.Fatalf("MoECPUOffloadLayers() = %d, %v, want 12, true", got, ok)
+		}
+	})
+
+	t.Run("invalid", func(t *testing.T) {
+		t.Setenv("OLLAMA_MOE_CPU_OFFLOAD_LAYERS", "-1")
+		if got, ok := MoECPUOffloadLayers(); ok || got != 0 {
+			t.Fatalf("MoECPUOffloadLayers() = %d, %v, want 0, false", got, ok)
+		}
+	})
+}
+
+func TestMoECPUOffloadPolicy(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		clearEnv(t, "OLLAMA_MOE_CPU_OFFLOAD_POLICY")
+		if got := MoECPUOffloadPolicy(); got != MoECPUOffloadPolicyFirst {
+			t.Fatalf("MoECPUOffloadPolicy() = %q, want %q", got, MoECPUOffloadPolicyFirst)
+		}
+	})
+
+	for _, policy := range []string{
+		MoECPUOffloadPolicyFirst,
+		MoECPUOffloadPolicyLast,
+		MoECPUOffloadPolicyAll,
+		MoECPUOffloadPolicyGPUResident,
+	} {
+		t.Run(policy, func(t *testing.T) {
+			t.Setenv("OLLAMA_MOE_CPU_OFFLOAD_POLICY", policy)
+			if got := MoECPUOffloadPolicy(); got != policy {
+				t.Fatalf("MoECPUOffloadPolicy() = %q, want %q", got, policy)
+			}
+		})
+	}
+
+	t.Run("invalid", func(t *testing.T) {
+		t.Setenv("OLLAMA_MOE_CPU_OFFLOAD_POLICY", "sideways")
+		if got := MoECPUOffloadPolicy(); got != MoECPUOffloadPolicyFirst {
+			t.Fatalf("MoECPUOffloadPolicy() = %q, want %q", got, MoECPUOffloadPolicyFirst)
+		}
+	})
+}
+
 func TestFilteredRunnerEnvLowVRAMDisabled(t *testing.T) {
 	t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "0")
 
@@ -410,6 +464,11 @@ func TestFilteredRunnerEnvLowVRAMDisabled(t *testing.T) {
 		"OLLAMA_LOW_VRAM_NUM_PARALLEL=1",
 		"OLLAMA_LOW_VRAM_RETRY_CTX=4096,2048",
 		"OLLAMA_LOW_VRAM_VERBOSE=1",
+		"OLLAMA_MOE_CPU_OFFLOAD=1",
+		"OLLAMA_MOE_CPU_OFFLOAD_LAYERS=12",
+		"OLLAMA_MOE_CPU_OFFLOAD_POLICY=gpu_resident",
+		"OLLAMA_MOE_TENSOR_OVERRIDE=.ffn_.*_exps.=CPU",
+		"OLLAMA_LLAMA_ARG_PASSTHROUGH=--n-cpu-moe 12",
 	}
 
 	got := FilteredRunnerEnv(base)
@@ -432,6 +491,11 @@ func TestFilteredRunnerEnvLowVRAMDisabled(t *testing.T) {
 		"OLLAMA_LOW_VRAM_NUM_PARALLEL=",
 		"OLLAMA_LOW_VRAM_RETRY_CTX=",
 		"OLLAMA_LOW_VRAM_VERBOSE=",
+		"OLLAMA_MOE_CPU_OFFLOAD=",
+		"OLLAMA_MOE_CPU_OFFLOAD_LAYERS=",
+		"OLLAMA_MOE_CPU_OFFLOAD_POLICY=",
+		"OLLAMA_MOE_TENSOR_OVERRIDE=",
+		"OLLAMA_LLAMA_ARG_PASSTHROUGH=",
 	} {
 		if envHasPrefix(got, unwanted) {
 			t.Fatalf("FilteredRunnerEnv() kept disabled low-VRAM env %q in %v", unwanted, got)
@@ -446,6 +510,7 @@ func TestFilteredRunnerEnvLowVRAMEnabled(t *testing.T) {
 		"OLLAMA_LOW_VRAM_OPTIMIZE=1",
 		"OLLAMA_LOW_VRAM_KV_CACHE_TYPE=q8_0",
 		"OLLAMA_LOW_VRAM_VERBOSE=1",
+		"OLLAMA_MOE_CPU_OFFLOAD=1",
 	}
 
 	got := FilteredRunnerEnv(base)

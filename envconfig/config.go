@@ -243,6 +243,8 @@ var (
 	MultiUserCache = Bool("OLLAMA_MULTIUSER_CACHE")
 	// Enable the new Ollama engine
 	NewEngine = Bool("OLLAMA_NEW_ENGINE")
+	// Force the classic bundled llama runner when possible for debugging.
+	ForceClassicLlamaRunner = Bool("OLLAMA_FORCE_CLASSIC_LLAMA_RUNNER")
 	// ContextLength sets the default context length
 	ContextLength = Uint(ContextLengthEnvVar, 0)
 	// Auth enables authentication between the Ollama client and server
@@ -255,6 +257,12 @@ var (
 	LowVRAMOptimize = Bool("OLLAMA_LOW_VRAM_OPTIMIZE")
 	// LowVRAMVerbose enables detailed low-VRAM decision logging.
 	LowVRAMVerbose = Bool("OLLAMA_LOW_VRAM_VERBOSE")
+	// MoECPUOffload requests experimental MoE CPU offload for supported llama.cpp runners.
+	MoECPUOffload = Bool("OLLAMA_MOE_CPU_OFFLOAD")
+	// MoETensorOverride contains an advanced llama.cpp tensor override expression.
+	MoETensorOverride = String("OLLAMA_MOE_TENSOR_OVERRIDE")
+	// LlamaArgPassthrough contains advanced raw llama.cpp runner arguments.
+	LlamaArgPassthrough = String("OLLAMA_LLAMA_ARG_PASSTHROUGH")
 )
 
 const (
@@ -263,6 +271,11 @@ const (
 	ContextLengthSourceEnvironment   = "environment"
 	ContextLengthSourceGlobalSetting = "global_setting"
 	LowVRAMDefaultNumCtx             = 4096
+
+	MoECPUOffloadPolicyFirst       = "first"
+	MoECPUOffloadPolicyLast        = "last"
+	MoECPUOffloadPolicyAll         = "all"
+	MoECPUOffloadPolicyGPUResident = "gpu_resident"
 )
 
 var (
@@ -275,6 +288,11 @@ var (
 		"OLLAMA_LOW_VRAM_NUM_PARALLEL",
 		"OLLAMA_LOW_VRAM_RETRY_CTX",
 		"OLLAMA_LOW_VRAM_VERBOSE",
+		"OLLAMA_MOE_CPU_OFFLOAD",
+		"OLLAMA_MOE_CPU_OFFLOAD_LAYERS",
+		"OLLAMA_MOE_CPU_OFFLOAD_POLICY",
+		"OLLAMA_MOE_TENSOR_OVERRIDE",
+		"OLLAMA_LLAMA_ARG_PASSTHROUGH",
 	}
 )
 
@@ -445,6 +463,37 @@ func LowVRAMFlashAttention() bool {
 	return b
 }
 
+// MoECPUOffloadLayers returns the requested MoE CPU-offload layer count.
+// Invalid values are ignored so unsupported or experimental settings never
+// prevent normal model loading.
+func MoECPUOffloadLayers() (int, bool) {
+	s := Var("OLLAMA_MOE_CPU_OFFLOAD_LAYERS")
+	if s == "" {
+		return 0, false
+	}
+
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n <= 0 {
+		slog.Warn("invalid OLLAMA_MOE_CPU_OFFLOAD_LAYERS, ignoring", "value", s)
+		return 0, false
+	}
+
+	return int(n), true
+}
+
+func MoECPUOffloadPolicy() string {
+	s := strings.ToLower(strings.TrimSpace(Var("OLLAMA_MOE_CPU_OFFLOAD_POLICY")))
+	switch s {
+	case "", MoECPUOffloadPolicyFirst:
+		return MoECPUOffloadPolicyFirst
+	case MoECPUOffloadPolicyLast, MoECPUOffloadPolicyAll, MoECPUOffloadPolicyGPUResident:
+		return s
+	default:
+		slog.Warn("invalid OLLAMA_MOE_CPU_OFFLOAD_POLICY, using default", "value", s, "default", MoECPUOffloadPolicyFirst)
+		return MoECPUOffloadPolicyFirst
+	}
+}
+
 // EffectiveNumParallel returns the scheduler parallelism after applying the
 // low-VRAM default. Existing explicit OLLAMA_NUM_PARALLEL wins unless the
 // low-VRAM-specific override is set.
@@ -549,29 +598,30 @@ type EnvVar struct {
 
 func AsMap() map[string]EnvVar {
 	ret := map[string]EnvVar{
-		"OLLAMA_DEBUG":              {"OLLAMA_DEBUG", LogLevel(), "Show additional debug information (e.g. OLLAMA_DEBUG=1)"},
-		"OLLAMA_DEBUG_LOG_REQUESTS": {"OLLAMA_DEBUG_LOG_REQUESTS", DebugLogRequests(), "Log inference request bodies and replay curl commands to a temp directory"},
-		"OLLAMA_FLASH_ATTENTION":    {"OLLAMA_FLASH_ATTENTION", FlashAttention(false), "Enabled flash attention"},
-		"OLLAMA_KV_CACHE_TYPE":      {"OLLAMA_KV_CACHE_TYPE", KvCacheType(), "Quantization type for the K/V cache (default: f16)"},
-		"OLLAMA_GPU_OVERHEAD":       {"OLLAMA_GPU_OVERHEAD", GpuOverhead(), "Reserve a portion of VRAM per GPU (bytes)"},
-		"OLLAMA_HOST":               {"OLLAMA_HOST", Host(), "IP Address for the ollama server (default 127.0.0.1:11434)"},
-		"OLLAMA_KEEP_ALIVE":         {"OLLAMA_KEEP_ALIVE", KeepAlive(), "The duration that models stay loaded in memory (default \"5m\")"},
-		"OLLAMA_LLM_LIBRARY":        {"OLLAMA_LLM_LIBRARY", LLMLibrary(), "Set LLM library to bypass autodetection"},
-		"OLLAMA_LOAD_TIMEOUT":       {"OLLAMA_LOAD_TIMEOUT", LoadTimeout(), "How long to allow model loads to stall before giving up (default \"5m\")"},
-		"OLLAMA_MAX_LOADED_MODELS":  {"OLLAMA_MAX_LOADED_MODELS", MaxRunners(), "Maximum number of loaded models per GPU"},
-		"OLLAMA_MAX_QUEUE":          {"OLLAMA_MAX_QUEUE", MaxQueue(), "Maximum number of queued requests"},
-		"OLLAMA_MODELS":             {"OLLAMA_MODELS", Models(), "The path to the models directory"},
-		"OLLAMA_NO_CLOUD":           {"OLLAMA_NO_CLOUD", NoCloud(), "Disable Ollama cloud features (remote inference and web search)"},
-		"OLLAMA_NOHISTORY":          {"OLLAMA_NOHISTORY", NoHistory(), "Do not preserve readline history"},
-		"OLLAMA_NOPRUNE":            {"OLLAMA_NOPRUNE", NoPrune(), "Do not prune model blobs on startup"},
-		"OLLAMA_NUM_PARALLEL":       {"OLLAMA_NUM_PARALLEL", NumParallel(), "Maximum number of parallel requests"},
-		"OLLAMA_ORIGINS":            {"OLLAMA_ORIGINS", AllowedOrigins(), "A comma separated list of allowed origins"},
-		"OLLAMA_SCHED_SPREAD":       {"OLLAMA_SCHED_SPREAD", SchedSpread(), "Always schedule model across all GPUs"},
-		"OLLAMA_MULTIUSER_CACHE":    {"OLLAMA_MULTIUSER_CACHE", MultiUserCache(), "Optimize prompt caching for multi-user scenarios"},
-		"OLLAMA_CONTEXT_LENGTH":     {"OLLAMA_CONTEXT_LENGTH", ContextLength(), "Context length to use unless otherwise specified (default: 4k/32k/256k based on VRAM)"},
-		"OLLAMA_EDITOR":             {"OLLAMA_EDITOR", Editor(), "Path to editor for interactive prompt editing (Ctrl+G)"},
-		"OLLAMA_NEW_ENGINE":         {"OLLAMA_NEW_ENGINE", NewEngine(), "Enable the new Ollama engine"},
-		"OLLAMA_REMOTES":            {"OLLAMA_REMOTES", Remotes(), "Allowed hosts for remote models (default \"ollama.com\")"},
+		"OLLAMA_DEBUG":                      {"OLLAMA_DEBUG", LogLevel(), "Show additional debug information (e.g. OLLAMA_DEBUG=1)"},
+		"OLLAMA_DEBUG_LOG_REQUESTS":         {"OLLAMA_DEBUG_LOG_REQUESTS", DebugLogRequests(), "Log inference request bodies and replay curl commands to a temp directory"},
+		"OLLAMA_FLASH_ATTENTION":            {"OLLAMA_FLASH_ATTENTION", FlashAttention(false), "Enabled flash attention"},
+		"OLLAMA_KV_CACHE_TYPE":              {"OLLAMA_KV_CACHE_TYPE", KvCacheType(), "Quantization type for the K/V cache (default: f16)"},
+		"OLLAMA_GPU_OVERHEAD":               {"OLLAMA_GPU_OVERHEAD", GpuOverhead(), "Reserve a portion of VRAM per GPU (bytes)"},
+		"OLLAMA_HOST":                       {"OLLAMA_HOST", Host(), "IP Address for the ollama server (default 127.0.0.1:11434)"},
+		"OLLAMA_KEEP_ALIVE":                 {"OLLAMA_KEEP_ALIVE", KeepAlive(), "The duration that models stay loaded in memory (default \"5m\")"},
+		"OLLAMA_LLM_LIBRARY":                {"OLLAMA_LLM_LIBRARY", LLMLibrary(), "Set LLM library to bypass autodetection"},
+		"OLLAMA_LOAD_TIMEOUT":               {"OLLAMA_LOAD_TIMEOUT", LoadTimeout(), "How long to allow model loads to stall before giving up (default \"5m\")"},
+		"OLLAMA_MAX_LOADED_MODELS":          {"OLLAMA_MAX_LOADED_MODELS", MaxRunners(), "Maximum number of loaded models per GPU"},
+		"OLLAMA_MAX_QUEUE":                  {"OLLAMA_MAX_QUEUE", MaxQueue(), "Maximum number of queued requests"},
+		"OLLAMA_MODELS":                     {"OLLAMA_MODELS", Models(), "The path to the models directory"},
+		"OLLAMA_NO_CLOUD":                   {"OLLAMA_NO_CLOUD", NoCloud(), "Disable Ollama cloud features (remote inference and web search)"},
+		"OLLAMA_NOHISTORY":                  {"OLLAMA_NOHISTORY", NoHistory(), "Do not preserve readline history"},
+		"OLLAMA_NOPRUNE":                    {"OLLAMA_NOPRUNE", NoPrune(), "Do not prune model blobs on startup"},
+		"OLLAMA_NUM_PARALLEL":               {"OLLAMA_NUM_PARALLEL", NumParallel(), "Maximum number of parallel requests"},
+		"OLLAMA_ORIGINS":                    {"OLLAMA_ORIGINS", AllowedOrigins(), "A comma separated list of allowed origins"},
+		"OLLAMA_SCHED_SPREAD":               {"OLLAMA_SCHED_SPREAD", SchedSpread(), "Always schedule model across all GPUs"},
+		"OLLAMA_MULTIUSER_CACHE":            {"OLLAMA_MULTIUSER_CACHE", MultiUserCache(), "Optimize prompt caching for multi-user scenarios"},
+		"OLLAMA_CONTEXT_LENGTH":             {"OLLAMA_CONTEXT_LENGTH", ContextLength(), "Context length to use unless otherwise specified (default: 4k/32k/256k based on VRAM)"},
+		"OLLAMA_EDITOR":                     {"OLLAMA_EDITOR", Editor(), "Path to editor for interactive prompt editing (Ctrl+G)"},
+		"OLLAMA_NEW_ENGINE":                 {"OLLAMA_NEW_ENGINE", NewEngine(), "Enable the new Ollama engine"},
+		"OLLAMA_FORCE_CLASSIC_LLAMA_RUNNER": {"OLLAMA_FORCE_CLASSIC_LLAMA_RUNNER", ForceClassicLlamaRunner(), "Force the classic bundled llama runner when possible for debugging"},
+		"OLLAMA_REMOTES":                    {"OLLAMA_REMOTES", Remotes(), "Allowed hosts for remote models (default \"ollama.com\")"},
 
 		"OLLAMA_LOW_VRAM_OPTIMIZE":          {"OLLAMA_LOW_VRAM_OPTIMIZE", LowVRAMOptimize(), "Enable experimental low-VRAM optimization mode"},
 		"OLLAMA_LOW_VRAM_NUM_CTX":           {"OLLAMA_LOW_VRAM_NUM_CTX", LowVRAMNumCtx(), "Default context length when low-VRAM mode is enabled and no context is explicitly set"},
@@ -581,6 +631,11 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_LOW_VRAM_NUM_PARALLEL":      {"OLLAMA_LOW_VRAM_NUM_PARALLEL", EffectiveNumParallel(), "Parallel request count to prefer when low-VRAM mode is enabled"},
 		"OLLAMA_LOW_VRAM_MAX_LOADED_MODELS": {"OLLAMA_LOW_VRAM_MAX_LOADED_MODELS", EffectiveMaxRunners(), "Maximum loaded models to prefer when low-VRAM mode is enabled"},
 		"OLLAMA_LOW_VRAM_VERBOSE":           {"OLLAMA_LOW_VRAM_VERBOSE", LowVRAMVerbose(), "Enable detailed low-VRAM decision logging"},
+		"OLLAMA_MOE_CPU_OFFLOAD":            {"OLLAMA_MOE_CPU_OFFLOAD", MoECPUOffload(), "Request experimental MoE CPU offload when low-VRAM mode and runner support are available"},
+		"OLLAMA_MOE_CPU_OFFLOAD_LAYERS":     {"OLLAMA_MOE_CPU_OFFLOAD_LAYERS", Var("OLLAMA_MOE_CPU_OFFLOAD_LAYERS"), "Optional MoE CPU-offload layer count for supported llama.cpp runners"},
+		"OLLAMA_MOE_CPU_OFFLOAD_POLICY":     {"OLLAMA_MOE_CPU_OFFLOAD_POLICY", MoECPUOffloadPolicy(), "MoE CPU-offload tensor selection policy: first, last, all, or gpu_resident"},
+		"OLLAMA_MOE_TENSOR_OVERRIDE":        {"OLLAMA_MOE_TENSOR_OVERRIDE", MoETensorOverride(), "Advanced llama.cpp tensor override expression for low-VRAM MoE experiments"},
+		"OLLAMA_LLAMA_ARG_PASSTHROUGH":      {"OLLAMA_LLAMA_ARG_PASSTHROUGH", LlamaArgPassthrough(), "Advanced raw llama.cpp runner arguments for low-VRAM experiments"},
 
 		// Informational
 		"HTTP_PROXY":  {"HTTP_PROXY", String("HTTP_PROXY")(), "HTTP proxy"},
