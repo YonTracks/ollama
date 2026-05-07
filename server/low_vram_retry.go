@@ -156,7 +156,7 @@ func lowVRAMRetryOptions(opts api.Options) []api.Options {
 }
 
 func logLowVRAMMemorySnapshot(phase string, req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, llama llm.LlamaServer) {
-	if !envconfig.LowVRAMVerbose() {
+	if !envconfig.LowVRAMEnabled() || !envconfig.LowVRAMVerbose() {
 		return
 	}
 
@@ -193,7 +193,7 @@ func logLowVRAMMemorySnapshot(phase string, req *LlmRequest, systemInfo ml.Syste
 }
 
 func logLowVRAMLoadResult(phase string, req *LlmRequest, err error) {
-	if !envconfig.LowVRAMVerbose() {
+	if !envconfig.LowVRAMEnabled() || !envconfig.LowVRAMVerbose() {
 		return
 	}
 
@@ -213,7 +213,7 @@ func logLowVRAMLoadResult(phase string, req *LlmRequest, err error) {
 }
 
 func (s *Scheduler) retryLowVRAMLoad(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, requireFull bool, numParallel int, current llm.LlamaServer, firstErr error) (llm.LlamaServer, []ml.DeviceID, error) {
-	if !envconfig.LowVRAMOptimize() || !likelyMemoryRelatedLoadError(firstErr) {
+	if !envconfig.LowVRAMEnabled() || !likelyMemoryRelatedLoadError(firstErr) {
 		return current, nil, firstErr
 	}
 

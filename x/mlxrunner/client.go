@@ -290,7 +290,7 @@ func (c *Client) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo
 
 	// Spawn subprocess: ollama runner --mlx-engine --model <name> --port <port>
 	cmd := exec.Command(exe, "runner", "--mlx-engine", "--model", c.modelName, "--port", strconv.Itoa(port))
-	cmd.Env = os.Environ()
+	cmd.Env = envconfig.RunnerEnv()
 
 	// Set library path environment variable for MLX libraries
 	// Linux: LD_LIBRARY_PATH, Windows: PATH

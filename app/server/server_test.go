@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/app/store"
+	"github.com/ollama/ollama/envconfig"
 )
 
 func TestNew(t *testing.T) {
@@ -33,6 +34,8 @@ func TestServerCmd(t *testing.T) {
 	os.Unsetenv("OLLAMA_HOST")
 	os.Unsetenv("OLLAMA_ORIGINS")
 	os.Unsetenv("OLLAMA_MODELS")
+	os.Unsetenv(envconfig.ContextLengthEnvVar)
+	os.Unsetenv(envconfig.ContextLengthSourceEnvVar)
 	var defaultModels string
 	home, err := os.UserHomeDir()
 	if err == nil {
@@ -88,6 +91,18 @@ func TestServerCmd(t *testing.T) {
 				"OLLAMA_HOST=0.0.0.0",
 				"OLLAMA_ORIGINS=*",
 				"OLLAMA_MODELS=" + tmpModels,
+			},
+			dont: []string{},
+		},
+		{
+			name: "context_length",
+			settings: store.Settings{
+				ContextLength: 8192,
+			},
+			want: []string{
+				"OLLAMA_MODELS=" + defaultModels,
+				envconfig.ContextLengthEnvVar + "=8192",
+				envconfig.ContextLengthSourceEnvVar + "=" + envconfig.ContextLengthSourceGlobalSetting,
 			},
 			dont: []string{},
 		},
@@ -202,6 +217,32 @@ func TestServerCmdCloudSettingEnv(t *testing.T) {
 				t.Fatalf("expected environment variable %q in command env", tt.want)
 			}
 		})
+	}
+}
+
+func TestServerCmdInheritedContextLengthSourceEnv(t *testing.T) {
+	t.Setenv(envconfig.ContextLengthEnvVar, "16384")
+	t.Setenv(envconfig.ContextLengthSourceEnvVar, envconfig.ContextLengthSourceGlobalSetting)
+
+	st := &store.Store{DBPath: filepath.Join(t.TempDir(), "db.sqlite")}
+	defer st.Close()
+
+	s := &Server{store: st}
+	cmd, err := s.cmd(t.Context())
+	if err != nil {
+		t.Fatalf("s.cmd() error = %v", err)
+	}
+
+	want := envconfig.ContextLengthSourceEnvVar + "=" + envconfig.ContextLengthSourceEnvironment
+	found := false
+	for _, env := range cmd.Env {
+		if env == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected environment variable %q in command env", want)
 	}
 }
 

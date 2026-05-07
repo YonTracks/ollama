@@ -196,7 +196,7 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 		faUserSet = true
 	}
 
-	lowVRAMFARequested := envconfig.LowVRAMOptimize() && envconfig.LowVRAMFlashAttention()
+	lowVRAMFARequested := envconfig.LowVRAMEnabled() && envconfig.LowVRAMFlashAttention()
 	if lowVRAMFARequested {
 		faUserSet = true
 	}
@@ -289,7 +289,7 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 			slog.Warn("quantized kv cache requested but flash attention disabled", "type", kvct)
 		}
 	}
-	if envconfig.LowVRAMOptimize() {
+	if envconfig.LowVRAMEnabled() {
 		effectiveKVCacheType := loadRequest.KvCacheType
 		if effectiveKVCacheType == "" {
 			effectiveKVCacheType = "f16"
@@ -417,7 +417,7 @@ func StartRunner(ollamaEngine bool, modelPath string, gpuLibs []string, out io.W
 
 	cmd = exec.Command(exe, params...)
 
-	cmd.Env = os.Environ()
+	cmd.Env = envconfig.RunnerEnv()
 
 	if out != nil {
 		// os/exec serializes Write calls when shared

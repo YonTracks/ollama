@@ -244,7 +244,7 @@ var (
 	// Enable the new Ollama engine
 	NewEngine = Bool("OLLAMA_NEW_ENGINE")
 	// ContextLength sets the default context length
-	ContextLength = Uint("OLLAMA_CONTEXT_LENGTH", 0)
+	ContextLength = Uint(ContextLengthEnvVar, 0)
 	// Auth enables authentication between the Ollama client and server
 	UseAuth = Bool("OLLAMA_AUTH")
 	// Enable Vulkan backend
@@ -258,15 +258,79 @@ var (
 )
 
 const (
-	LowVRAMDefaultNumCtx = 4096
+	ContextLengthEnvVar              = "OLLAMA_CONTEXT_LENGTH"
+	ContextLengthSourceEnvVar        = "OLLAMA_CONTEXT_LENGTH_SOURCE"
+	ContextLengthSourceEnvironment   = "environment"
+	ContextLengthSourceGlobalSetting = "global_setting"
+	LowVRAMDefaultNumCtx             = 4096
 )
 
-var lowVRAMDefaultRetryCtx = []int{4096, 2048, 1024}
+var (
+	lowVRAMDefaultRetryCtx = []int{4096, 2048, 1024}
+	lowVRAMRunnerEnvVars   = []string{
+		"OLLAMA_LOW_VRAM_FLASH_ATTENTION",
+		"OLLAMA_LOW_VRAM_KV_CACHE_TYPE",
+		"OLLAMA_LOW_VRAM_MAX_LOADED_MODELS",
+		"OLLAMA_LOW_VRAM_NUM_CTX",
+		"OLLAMA_LOW_VRAM_NUM_PARALLEL",
+		"OLLAMA_LOW_VRAM_RETRY_CTX",
+		"OLLAMA_LOW_VRAM_VERBOSE",
+	}
+)
 
 // IsSet returns true when an environment variable has a non-empty value after
 // applying Ollama's usual environment value trimming.
 func IsSet(key string) bool {
 	return Var(key) != ""
+}
+
+func LowVRAMEnabled() bool {
+	return LowVRAMOptimize()
+}
+
+func ContextLengthSource() string {
+	if !IsSet(ContextLengthEnvVar) {
+		return ""
+	}
+
+	switch Var(ContextLengthSourceEnvVar) {
+	case ContextLengthSourceGlobalSetting:
+		return ContextLengthSourceGlobalSetting
+	default:
+		return ContextLengthSourceEnvironment
+	}
+}
+
+func isLowVRAMRunnerEnv(key string) bool {
+	for _, lowVRAMKey := range lowVRAMRunnerEnvVars {
+		if strings.EqualFold(key, lowVRAMKey) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func FilteredRunnerEnv(env []string) []string {
+	if LowVRAMEnabled() {
+		return append([]string(nil), env...)
+	}
+
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && isLowVRAMRunnerEnv(key) {
+			continue
+		}
+
+		filtered = append(filtered, entry)
+	}
+
+	return filtered
+}
+
+func RunnerEnv() []string {
+	return FilteredRunnerEnv(os.Environ())
 }
 
 func parsePositiveUint(key string) (uint, bool) {
@@ -359,7 +423,7 @@ func LowVRAMKVCacheType() string {
 // EffectiveKVCacheType returns the KV cache type preference after applying
 // low-VRAM defaults. Runner/model support is still validated by the loader.
 func EffectiveKVCacheType() string {
-	if !LowVRAMOptimize() {
+	if !LowVRAMEnabled() {
 		return normalizeKVCacheType(KvCacheType())
 	}
 
@@ -385,7 +449,7 @@ func LowVRAMFlashAttention() bool {
 // low-VRAM default. Existing explicit OLLAMA_NUM_PARALLEL wins unless the
 // low-VRAM-specific override is set.
 func EffectiveNumParallel() uint {
-	if !LowVRAMOptimize() {
+	if !LowVRAMEnabled() {
 		return NumParallel()
 	}
 
@@ -404,7 +468,7 @@ func EffectiveNumParallel() uint {
 // models after applying the low-VRAM default. Existing explicit
 // OLLAMA_MAX_LOADED_MODELS wins unless the low-VRAM-specific override is set.
 func EffectiveMaxRunners() uint {
-	if !LowVRAMOptimize() {
+	if !LowVRAMEnabled() {
 		return MaxRunners()
 	}
 

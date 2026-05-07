@@ -20,6 +20,7 @@ import (
 
 	"github.com/ollama/ollama/app/logrotate"
 	"github.com/ollama/ollama/app/store"
+	"github.com/ollama/ollama/envconfig"
 )
 
 const restartDelay = time.Second
@@ -247,6 +248,10 @@ func (s *Server) cmd(ctx context.Context) (*exec.Cmd, error) {
 		s := strings.SplitN(kv, "=", 2)
 		env[s[0]] = s[1]
 	}
+	delete(env, envconfig.ContextLengthSourceEnvVar)
+	if value, ok := env[envconfig.ContextLengthEnvVar]; ok && strings.Trim(strings.TrimSpace(value), "\"'") != "" {
+		env[envconfig.ContextLengthSourceEnvVar] = envconfig.ContextLengthSourceEnvironment
+	}
 	if settings.Expose {
 		env["OLLAMA_HOST"] = "0.0.0.0"
 	}
@@ -261,7 +266,8 @@ func (s *Server) cmd(ctx context.Context) (*exec.Cmd, error) {
 		}
 	}
 	if settings.ContextLength > 0 {
-		env["OLLAMA_CONTEXT_LENGTH"] = strconv.Itoa(settings.ContextLength)
+		env[envconfig.ContextLengthEnvVar] = strconv.Itoa(settings.ContextLength)
+		env[envconfig.ContextLengthSourceEnvVar] = envconfig.ContextLengthSourceGlobalSetting
 	}
 	if cloudDisabled {
 		env["OLLAMA_NO_CLOUD"] = "1"

@@ -39,7 +39,7 @@ func optionInt(m map[string]any, key string) (int, bool) {
 }
 
 func shouldApplyLowVRAMNumCtxDefault(model *Model, requestOpts map[string]any) bool {
-	if !envconfig.LowVRAMOptimize() {
+	if !envconfig.LowVRAMEnabled() {
 		return false
 	}
 
@@ -51,7 +51,7 @@ func shouldApplyLowVRAMNumCtxDefault(model *Model, requestOpts map[string]any) b
 }
 
 func logLowVRAMModelOptions(model *Model, requestOpts map[string]any, opts api.Options, lowDefaultApplied bool) {
-	if !envconfig.LowVRAMVerbose() {
+	if !envconfig.LowVRAMEnabled() || !envconfig.LowVRAMVerbose() {
 		return
 	}
 
@@ -68,7 +68,10 @@ func logLowVRAMModelOptions(model *Model, requestOpts map[string]any, opts api.O
 	modelCtx, modelCtxSet := optionInt(modelOpts, "num_ctx")
 	requestCtx, requestCtxSet := optionInt(requestOpts, "num_ctx")
 	requestedCtx := int(envconfig.ContextLength())
-	requestedCtxSource := "environment"
+	requestedCtxSource := "default"
+	if requestedCtx != 0 {
+		requestedCtxSource = envconfig.ContextLengthSource()
+	}
 	switch {
 	case requestCtxSet:
 		requestedCtx = requestCtx
@@ -81,7 +84,7 @@ func logLowVRAMModelOptions(model *Model, requestOpts map[string]any, opts api.O
 	}
 
 	slog.Info("low_vram model options",
-		"enabled", envconfig.LowVRAMOptimize(),
+		"enabled", envconfig.LowVRAMEnabled(),
 		"model", modelName,
 		"requested_context", requestedCtx,
 		"requested_context_source", requestedCtxSource,

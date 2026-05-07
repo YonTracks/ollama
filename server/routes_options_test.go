@@ -2,7 +2,22 @@ package server
 
 import (
 	"testing"
+
+	"github.com/ollama/ollama/envconfig"
 )
+
+func clearModelOptionsEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		envconfig.ContextLengthEnvVar,
+		envconfig.ContextLengthSourceEnvVar,
+		"OLLAMA_LOW_VRAM_OPTIMIZE",
+		"OLLAMA_LOW_VRAM_NUM_CTX",
+		"OLLAMA_LOW_VRAM_VERBOSE",
+	} {
+		t.Setenv(key, "")
+	}
+}
 
 func TestModelOptionsNumCtxPriority(t *testing.T) {
 	tests := []struct {
@@ -12,6 +27,7 @@ func TestModelOptionsNumCtxPriority(t *testing.T) {
 		modelNumCtx    int    // 0 means not set in model
 		requestNumCtx  int    // 0 means not set in request
 		lowVRAM        bool
+		lowVRAMEnv     string
 		lowVRAMNumCtx  string
 		expectedNumCtx int
 	}{
@@ -98,6 +114,16 @@ func TestModelOptionsNumCtxPriority(t *testing.T) {
 			expectedNumCtx: 32768,
 		},
 		{
+			name:           "low vram explicitly disabled keeps existing vram default",
+			envContextLen:  "",
+			defaultNumCtx:  32768,
+			modelNumCtx:    0,
+			requestNumCtx:  0,
+			lowVRAMEnv:     "0",
+			lowVRAMNumCtx:  "2048",
+			expectedNumCtx: 32768,
+		},
+		{
 			name:           "low vram enabled applies default when unset",
 			envContextLen:  "",
 			defaultNumCtx:  32768,
@@ -138,11 +164,15 @@ func TestModelOptionsNumCtxPriority(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			clearModelOptionsEnv(t)
+
 			// Set or clear environment variable
 			if tt.envContextLen != "" {
-				t.Setenv("OLLAMA_CONTEXT_LENGTH", tt.envContextLen)
+				t.Setenv(envconfig.ContextLengthEnvVar, tt.envContextLen)
 			}
-			if tt.lowVRAM {
+			if tt.lowVRAMEnv != "" {
+				t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", tt.lowVRAMEnv)
+			} else if tt.lowVRAM {
 				t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "1")
 			}
 			if tt.lowVRAMNumCtx != "" {

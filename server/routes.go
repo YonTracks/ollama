@@ -1920,7 +1920,7 @@ func Serve(ln net.Listener) error {
 		s.defaultNumCtx = 4096
 	}
 	slog.Info("vram-based default context", "total_vram", format.HumanBytes2(totalVRAM), "default_num_ctx", s.defaultNumCtx)
-	if envconfig.LowVRAMOptimize() {
+	if envconfig.LowVRAMEnabled() {
 		slog.Info("low_vram optimization enabled",
 			"default_num_ctx", envconfig.LowVRAMNumCtx(),
 			"retry_ctx", envconfig.LowVRAMRetryContexts(),

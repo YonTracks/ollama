@@ -20,6 +20,18 @@ import (
 
 func TestMain(m *testing.M) {
 	os.Setenv("OLLAMA_DEBUG", "1")
+	for _, key := range []string{
+		"OLLAMA_LOW_VRAM_OPTIMIZE",
+		"OLLAMA_LOW_VRAM_FLASH_ATTENTION",
+		"OLLAMA_LOW_VRAM_KV_CACHE_TYPE",
+		"OLLAMA_LOW_VRAM_MAX_LOADED_MODELS",
+		"OLLAMA_LOW_VRAM_NUM_CTX",
+		"OLLAMA_LOW_VRAM_NUM_PARALLEL",
+		"OLLAMA_LOW_VRAM_RETRY_CTX",
+		"OLLAMA_LOW_VRAM_VERBOSE",
+	} {
+		os.Unsetenv(key)
+	}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	slog.SetDefault(logger)
 	os.Exit(m.Run())

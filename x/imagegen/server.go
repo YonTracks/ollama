@@ -114,7 +114,7 @@ func (s *Server) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo
 
 	// Spawn subprocess: ollama runner --imagegen-engine --model <path> --port <port>
 	cmd := exec.Command(exe, "runner", "--imagegen-engine", "--model", s.modelName, "--port", strconv.Itoa(port))
-	cmd.Env = os.Environ()
+	cmd.Env = envconfig.RunnerEnv()
 	configureMLXSubprocessEnv(cmd, ml.LibraryPaths(gpus))
 
 	s.cmd = cmd

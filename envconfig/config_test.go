@@ -5,12 +5,20 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/ollama/ollama/logutil"
 )
+
+func clearEnv(t *testing.T, keys ...string) {
+	t.Helper()
+	for _, key := range keys {
+		t.Setenv(key, "")
+	}
+}
 
 func TestHost(t *testing.T) {
 	cases := map[string]struct {
@@ -228,6 +236,7 @@ func TestUint(t *testing.T) {
 
 func TestLowVRAMRetryContexts(t *testing.T) {
 	t.Run("default", func(t *testing.T) {
+		clearEnv(t, "OLLAMA_LOW_VRAM_RETRY_CTX")
 		want := []int{4096, 2048, 1024}
 		if diff := cmp.Diff(want, LowVRAMRetryContexts()); diff != "" {
 			t.Fatalf("retry contexts mismatch (-want +got):\n%s", diff)
@@ -253,12 +262,32 @@ func TestLowVRAMRetryContexts(t *testing.T) {
 
 func TestLowVRAMEffectiveKVCacheType(t *testing.T) {
 	t.Run("disabled keeps existing default", func(t *testing.T) {
+		clearEnv(t, "OLLAMA_LOW_VRAM_OPTIMIZE", "OLLAMA_LOW_VRAM_KV_CACHE_TYPE", "OLLAMA_KV_CACHE_TYPE")
 		if got := EffectiveKVCacheType(); got != "" {
 			t.Fatalf("EffectiveKVCacheType() = %q, want empty", got)
 		}
 	})
 
+	t.Run("explicit disabled ignores low vram kv", func(t *testing.T) {
+		clearEnv(t, "OLLAMA_KV_CACHE_TYPE")
+		t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "0")
+		t.Setenv("OLLAMA_LOW_VRAM_KV_CACHE_TYPE", "q4_0")
+		if got := EffectiveKVCacheType(); got != "" {
+			t.Fatalf("EffectiveKVCacheType() = %q, want empty", got)
+		}
+	})
+
+	t.Run("explicit disabled keeps normal kv", func(t *testing.T) {
+		t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "0")
+		t.Setenv("OLLAMA_LOW_VRAM_KV_CACHE_TYPE", "q4_0")
+		t.Setenv("OLLAMA_KV_CACHE_TYPE", "f16")
+		if got := EffectiveKVCacheType(); got != "f16" {
+			t.Fatalf("EffectiveKVCacheType() = %q, want f16", got)
+		}
+	})
+
 	t.Run("enabled defaults q8", func(t *testing.T) {
+		clearEnv(t, "OLLAMA_LOW_VRAM_KV_CACHE_TYPE", "OLLAMA_KV_CACHE_TYPE")
 		t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "1")
 		if got := EffectiveKVCacheType(); got != "q8_0" {
 			t.Fatalf("EffectiveKVCacheType() = %q, want q8_0", got)
@@ -266,6 +295,7 @@ func TestLowVRAMEffectiveKVCacheType(t *testing.T) {
 	})
 
 	t.Run("existing kv wins", func(t *testing.T) {
+		clearEnv(t, "OLLAMA_LOW_VRAM_KV_CACHE_TYPE")
 		t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "1")
 		t.Setenv("OLLAMA_KV_CACHE_TYPE", "f16")
 		if got := EffectiveKVCacheType(); got != "f16" {
@@ -283,6 +313,7 @@ func TestLowVRAMEffectiveKVCacheType(t *testing.T) {
 	})
 
 	t.Run("invalid low vram kv does not panic", func(t *testing.T) {
+		clearEnv(t, "OLLAMA_KV_CACHE_TYPE")
 		t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "1")
 		t.Setenv("OLLAMA_LOW_VRAM_KV_CACHE_TYPE", "nope")
 		if got := EffectiveKVCacheType(); got != "q8_0" {
@@ -293,6 +324,8 @@ func TestLowVRAMEffectiveKVCacheType(t *testing.T) {
 
 func TestLowVRAMEffectiveParallelAndMaxRunners(t *testing.T) {
 	t.Run("disabled ignores low vram overrides", func(t *testing.T) {
+		clearEnv(t, "OLLAMA_NUM_PARALLEL", "OLLAMA_MAX_LOADED_MODELS")
+		t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "0")
 		t.Setenv("OLLAMA_LOW_VRAM_NUM_PARALLEL", "2")
 		t.Setenv("OLLAMA_LOW_VRAM_MAX_LOADED_MODELS", "2")
 
@@ -305,6 +338,7 @@ func TestLowVRAMEffectiveParallelAndMaxRunners(t *testing.T) {
 	})
 
 	t.Run("enabled defaults to one", func(t *testing.T) {
+		clearEnv(t, "OLLAMA_LOW_VRAM_NUM_PARALLEL", "OLLAMA_LOW_VRAM_MAX_LOADED_MODELS", "OLLAMA_NUM_PARALLEL", "OLLAMA_MAX_LOADED_MODELS")
 		t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "1")
 
 		if got := EffectiveNumParallel(); got != 1 {
@@ -316,6 +350,7 @@ func TestLowVRAMEffectiveParallelAndMaxRunners(t *testing.T) {
 	})
 
 	t.Run("existing explicit settings win", func(t *testing.T) {
+		clearEnv(t, "OLLAMA_LOW_VRAM_NUM_PARALLEL", "OLLAMA_LOW_VRAM_MAX_LOADED_MODELS")
 		t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "1")
 		t.Setenv("OLLAMA_NUM_PARALLEL", "3")
 		t.Setenv("OLLAMA_MAX_LOADED_MODELS", "4")
@@ -342,6 +377,103 @@ func TestLowVRAMEffectiveParallelAndMaxRunners(t *testing.T) {
 			t.Fatalf("EffectiveMaxRunners() = %d, want 2", got)
 		}
 	})
+}
+
+func TestLowVRAMEnabled(t *testing.T) {
+	t.Run("disabled", func(t *testing.T) {
+		t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "0")
+		if LowVRAMEnabled() {
+			t.Fatal("LowVRAMEnabled() = true, want false")
+		}
+	})
+
+	t.Run("enabled", func(t *testing.T) {
+		t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "1")
+		if !LowVRAMEnabled() {
+			t.Fatal("LowVRAMEnabled() = false, want true")
+		}
+	})
+}
+
+func TestFilteredRunnerEnvLowVRAMDisabled(t *testing.T) {
+	t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "0")
+
+	base := []string{
+		"PATH=C:\\tools",
+		"CUDA_VISIBLE_DEVICES=0",
+		"OLLAMA_HOST=127.0.0.1:11434",
+		"OLLAMA_LOW_VRAM_OPTIMIZE=0",
+		"OLLAMA_LOW_VRAM_FLASH_ATTENTION=1",
+		"OLLAMA_LOW_VRAM_KV_CACHE_TYPE=q8_0",
+		"OLLAMA_LOW_VRAM_MAX_LOADED_MODELS=1",
+		"OLLAMA_LOW_VRAM_NUM_CTX=4096",
+		"OLLAMA_LOW_VRAM_NUM_PARALLEL=1",
+		"OLLAMA_LOW_VRAM_RETRY_CTX=4096,2048",
+		"OLLAMA_LOW_VRAM_VERBOSE=1",
+	}
+
+	got := FilteredRunnerEnv(base)
+	for _, want := range []string{
+		"PATH=C:\\tools",
+		"CUDA_VISIBLE_DEVICES=0",
+		"OLLAMA_HOST=127.0.0.1:11434",
+		"OLLAMA_LOW_VRAM_OPTIMIZE=0",
+	} {
+		if !envContains(got, want) {
+			t.Fatalf("FilteredRunnerEnv() missing %q in %v", want, got)
+		}
+	}
+
+	for _, unwanted := range []string{
+		"OLLAMA_LOW_VRAM_FLASH_ATTENTION=",
+		"OLLAMA_LOW_VRAM_KV_CACHE_TYPE=",
+		"OLLAMA_LOW_VRAM_MAX_LOADED_MODELS=",
+		"OLLAMA_LOW_VRAM_NUM_CTX=",
+		"OLLAMA_LOW_VRAM_NUM_PARALLEL=",
+		"OLLAMA_LOW_VRAM_RETRY_CTX=",
+		"OLLAMA_LOW_VRAM_VERBOSE=",
+	} {
+		if envHasPrefix(got, unwanted) {
+			t.Fatalf("FilteredRunnerEnv() kept disabled low-VRAM env %q in %v", unwanted, got)
+		}
+	}
+}
+
+func TestFilteredRunnerEnvLowVRAMEnabled(t *testing.T) {
+	t.Setenv("OLLAMA_LOW_VRAM_OPTIMIZE", "1")
+
+	base := []string{
+		"OLLAMA_LOW_VRAM_OPTIMIZE=1",
+		"OLLAMA_LOW_VRAM_KV_CACHE_TYPE=q8_0",
+		"OLLAMA_LOW_VRAM_VERBOSE=1",
+	}
+
+	got := FilteredRunnerEnv(base)
+	for _, want := range base {
+		if !envContains(got, want) {
+			t.Fatalf("FilteredRunnerEnv() missing %q in %v", want, got)
+		}
+	}
+}
+
+func envContains(env []string, want string) bool {
+	for _, entry := range env {
+		if entry == want {
+			return true
+		}
+	}
+
+	return false
+}
+
+func envHasPrefix(env []string, prefix string) bool {
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func TestKeepAlive(t *testing.T) {
@@ -445,6 +577,31 @@ func TestContextLength(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestContextLengthSource(t *testing.T) {
+	t.Run("unset", func(t *testing.T) {
+		clearEnv(t, ContextLengthEnvVar, ContextLengthSourceEnvVar)
+		if got := ContextLengthSource(); got != "" {
+			t.Fatalf("ContextLengthSource() = %q, want empty", got)
+		}
+	})
+
+	t.Run("environment", func(t *testing.T) {
+		clearEnv(t, ContextLengthSourceEnvVar)
+		t.Setenv(ContextLengthEnvVar, "2048")
+		if got := ContextLengthSource(); got != ContextLengthSourceEnvironment {
+			t.Fatalf("ContextLengthSource() = %q, want %q", got, ContextLengthSourceEnvironment)
+		}
+	})
+
+	t.Run("global setting", func(t *testing.T) {
+		t.Setenv(ContextLengthEnvVar, "2048")
+		t.Setenv(ContextLengthSourceEnvVar, ContextLengthSourceGlobalSetting)
+		if got := ContextLengthSource(); got != ContextLengthSourceGlobalSetting {
+			t.Fatalf("ContextLengthSource() = %q, want %q", got, ContextLengthSourceGlobalSetting)
+		}
+	})
 }
 
 func TestLogLevel(t *testing.T) {
