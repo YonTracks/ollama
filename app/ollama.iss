@@ -84,8 +84,9 @@ SetupMutex=OllamaSetupMutex
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+; normalize installer window with DialogFontSize=8 as DialogFontSize=12 forces installer window to be undesirably oversized
 [LangOptions]
-DialogFontSize=12
+DialogFontSize=8
 
 [Files]
 #if FileExists("..\dist\windows-ollama-app-amd64.exe")
