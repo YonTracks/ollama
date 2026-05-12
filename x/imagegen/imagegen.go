@@ -87,7 +87,6 @@ func (s *server) handleImageCompletion(w http.ResponseWriter, r *http.Request, r
 	progress := func(step, total int) {
 		resp := Response{Step: step, Total: total}
 		enc.Encode(resp)
-		w.Write([]byte("\n"))
 		flusher.Flush()
 	}
 

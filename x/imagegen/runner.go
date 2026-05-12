@@ -46,31 +46,35 @@ func Execute(args []string) error {
 		return fmt.Errorf("imagegen runner only supports image generation models")
 	}
 
-	worker, err := mlxthread.Start("imagegen", func() error {
+	mlxThread, err := mlxthread.Start("imagegen", func() error {
 		if err := mlx.InitMLX(); err != nil {
-			slog.Error("unable to initialize MLX", "error", err)
 			return err
 		}
 		slog.Info("MLX library initialized")
 		return nil
 	})
 	if err != nil {
+		slog.Error("unable to initialize MLX", "error", err)
 		return err
 	}
 
 	// Create and start server
-	var server *server
-	if err := worker.Do(context.Background(), func() error {
-		var err error
-		server, err = newServer(*modelName, *port)
-		if err != nil {
-			return fmt.Errorf("failed to create server: %w", err)
-		}
-		server.mlxThread = worker
-		return nil
-	}); err != nil {
-		return err
+	server, err := newServer(*modelName, *port, mlxThread)
+	if err != nil {
+		_ = mlxThread.Stop(context.Background(), func() {
+			mlx.ClearCache()
+		})
+		return fmt.Errorf("failed to create server: %w", err)
 	}
+	defer func() {
+		_ = mlxThread.Stop(context.Background(), func() {
+			if server.imageModel != nil {
+				mlx.FreeStruct(server.imageModel)
+				mlx.Eval()
+			}
+			mlx.ClearCache()
+		})
+	}()
 
 	// Set up HTTP handlers
 	mux := http.NewServeMux()
@@ -91,17 +95,7 @@ func Execute(args []string) error {
 		slog.Info("shutting down mlx runner")
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := httpServer.Shutdown(ctx); err != nil {
-			slog.Warn("graceful shutdown timed out", "error", err)
-			if err := httpServer.Close(); err != nil {
-				slog.Warn("failed to close http server", "error", err)
-			}
-		}
-		if err := worker.Stop(ctx, func() {
-			mlx.ClearCache()
-		}); err != nil {
-			slog.Warn("failed to stop mlx worker", "error", err)
-		}
+		httpServer.Shutdown(ctx)
 		close(done)
 	}()
 
@@ -134,20 +128,27 @@ func detectModelMode(modelName string) ModelMode {
 type server struct {
 	modelName string
 	port      int
-	mlxThread *mlxthread.Thread
 
 	// Image generation model.
 	imageModel ImageModel
+	mlxThread  *mlxthread.Thread
 }
 
 // newServer creates a new server instance for image generation models.
-func newServer(modelName string, port int) (*server, error) {
+func newServer(modelName string, port int, mlxThread *mlxthread.Thread) (*server, error) {
 	s := &server{
 		modelName: modelName,
 		port:      port,
+		mlxThread: mlxThread,
 	}
 
-	if err := s.loadImageModel(); err != nil {
+	load := s.loadImageModel
+	if mlxThread != nil {
+		load = func() error {
+			return mlxThread.Do(context.Background(), s.loadImageModel)
+		}
+	}
+	if err := load(); err != nil {
 		return nil, fmt.Errorf("failed to load image model: %w", err)
 	}
 
@@ -172,10 +173,19 @@ func (s *server) completionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.mlxThread.Do(r.Context(), func() error {
-		s.handleImageCompletion(w, r, req)
-		return nil
-	}); err != nil && r.Context().Err() == nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if s.mlxThread != nil {
+		if err := s.mlxThread.Do(r.Context(), func() error {
+			s.handleImageCompletion(w, r, req)
+			return nil
+		}); err != nil {
+			if r.Context().Err() != nil {
+				return
+			}
+			slog.Error("image completion failed on MLX thread", "error", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
 	}
+
+	s.handleImageCompletion(w, r, req)
 }
