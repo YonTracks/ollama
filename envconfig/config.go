@@ -571,6 +571,12 @@ var (
 	MaxRunners = Uint("OLLAMA_MAX_LOADED_MODELS", 0)
 	// MaxQueue sets the maximum number of queued requests. MaxQueue can be configured via the OLLAMA_MAX_QUEUE environment variable.
 	MaxQueue = Uint("OLLAMA_MAX_QUEUE", 512)
+	// MaxTransferStreams caps the number of simultaneous body-bearing
+	// transfers during safetensors model pulls/pushes, keeping slower
+	// networks from being saturated. Tune higher for fast networks. Has
+	// no effect on GGUF transfers, which use the legacy upload/download
+	// paths.
+	MaxTransferStreams = Uint("OLLAMA_MAX_TRANSFER_STREAMS", 4)
 )
 
 func Uint64(key string, defaultValue uint64) func() uint64 {
