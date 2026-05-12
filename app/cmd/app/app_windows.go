@@ -172,10 +172,13 @@ func osRun(shutdown func(), hasCompletedFirstRun, startHidden bool) {
 	// Check for pending updates now that the tray is initialized.
 	// The platform-independent check in app.go fires before osRun,
 	// when app.t is still nil, so we must re-check here.
+
+	/* Prevent update for custom build
 	if updater.IsUpdatePending() {
 		slog.Debug("update pending on startup, showing tray notification")
 		UpdateAvailable("")
 	}
+	*/
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
