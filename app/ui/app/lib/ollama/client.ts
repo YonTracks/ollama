@@ -34,6 +34,8 @@ interface RawChatMessage {
   model?: string;
   tool_name?: string;
   stats?: unknown;
+  contextNotice?: unknown;
+  contextWarnings?: unknown;
   created_at?: string;
   updated_at?: string;
 }
@@ -319,6 +321,8 @@ function normalizeMessage(message: RawChatMessage, index: number): ChatMessage {
     stream: message.stream,
     toolName: message.tool_name,
     stats: normalizeResponseStats(message.stats),
+    contextNotice: normalizeContextNotice(message.contextNotice),
+    contextWarnings: normalizeContextWarnings(message.contextWarnings),
     createdAt: message.created_at,
     updatedAt: message.updated_at,
     status: message.stream ? "streaming" : "complete"
@@ -328,6 +332,16 @@ function normalizeMessage(message: RawChatMessage, index: number): ChatMessage {
 function normalizeResponseStats(stats: unknown) {
   if (!stats || typeof stats !== "object") return undefined;
   return stats as ChatMessage["stats"];
+}
+
+function normalizeContextNotice(notice: unknown) {
+  if (!notice || typeof notice !== "object") return undefined;
+  return notice as ChatMessage["contextNotice"];
+}
+
+function normalizeContextWarnings(warnings: unknown) {
+  if (!Array.isArray(warnings)) return undefined;
+  return warnings as ChatMessage["contextWarnings"];
 }
 
 function toDesktopAttachment(attachment: ChatAttachment) {

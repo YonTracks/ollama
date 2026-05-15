@@ -43,6 +43,8 @@ type Message struct {
 	ToolName          string           `json:"tool_name,omitempty"`
 	ToolResult        *json.RawMessage `json:"tool_result,omitempty"`
 	Stats             *ResponseStats   `json:"stats,omitempty"`
+	ContextNotice     *ContextNotice   `json:"contextNotice,omitempty"`
+	ContextWarnings   []ContextWarning `json:"contextWarnings,omitempty"`
 	CreatedAt         time.Time        `json:"created_at"`
 	UpdatedAt         time.Time        `json:"updated_at"`
 	ThinkingTimeStart *time.Time       `json:"thinkingTimeStart,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
@@ -64,12 +66,28 @@ type ResponseStats struct {
 	PromptTokens          *int                `json:"promptTokens"`
 	ContextUsed           *int                `json:"contextUsed"`
 	ContextLimit          *int                `json:"contextLimit"`
+	ContextPercent        *float64            `json:"contextPercent"`
 	OutputTokensPerSecond *float64            `json:"outputTokensPerSecond"`
 	PromptTokensPerSecond *float64            `json:"promptTokensPerSecond"`
 	TotalSeconds          *float64            `json:"totalSeconds"`
 	LoadSeconds           *float64            `json:"loadSeconds"`
 	DoneReason            string              `json:"doneReason,omitempty"`
 	Raw                   *OllamaUsageMetrics `json:"raw,omitempty"`
+}
+
+type ContextNotice struct {
+	Mode                        string `json:"mode"`
+	Action                      string `json:"action"`
+	OmittedMessageCount         *int   `json:"omittedMessageCount,omitempty"`
+	EstimatedOmittedTokens      *int   `json:"estimatedOmittedTokens,omitempty"`
+	EstimatedPromptTokensBefore *int   `json:"estimatedPromptTokensBefore,omitempty"`
+	EstimatedPromptTokensAfter  *int   `json:"estimatedPromptTokensAfter,omitempty"`
+	OutputReserveTokens         *int   `json:"outputReserveTokens,omitempty"`
+}
+
+type ContextWarning struct {
+	Kind    string `json:"kind"`
+	Message string `json:"message"`
 }
 
 // MessageOptions contains optional parameters for creating a Message
@@ -82,6 +100,8 @@ type MessageOptions struct {
 	ToolCall          *ToolCall
 	ToolResult        *json.RawMessage
 	Stats             *ResponseStats
+	ContextNotice     *ContextNotice
+	ContextWarnings   []ContextWarning
 	ThinkingTimeStart *time.Time
 	ThinkingTimeEnd   *time.Time
 }
@@ -105,6 +125,8 @@ func NewMessage(role, content string, opts *MessageOptions) Message {
 		msg.ToolCall = opts.ToolCall
 		msg.ToolResult = opts.ToolResult
 		msg.Stats = opts.Stats
+		msg.ContextNotice = opts.ContextNotice
+		msg.ContextWarnings = opts.ContextWarnings
 		msg.ThinkingTimeStart = opts.ThinkingTimeStart
 		msg.ThinkingTimeEnd = opts.ThinkingTimeEnd
 	}

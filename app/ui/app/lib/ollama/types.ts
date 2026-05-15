@@ -69,12 +69,46 @@ export interface ResponseStats {
   promptTokens: number | null;
   contextUsed: number | null;
   contextLimit: number | null;
+  contextPercent: number | null;
   outputTokensPerSecond: number | null;
   promptTokensPerSecond: number | null;
   totalSeconds: number | null;
   loadSeconds: number | null;
   doneReason?: string;
   raw?: OllamaUsageMetrics;
+}
+
+export type ContextManagementMode = "strict" | "friendly";
+
+export interface OllamaContextSettings {
+  mode: ContextManagementMode;
+  numCtx: number | null;
+  numPredict: number | null;
+  reserveOutputTokens: number;
+  nearFullThresholdPercent: number;
+  enableAutoSummarize: boolean;
+  enableAutoTrim: boolean;
+}
+
+export interface ContextNotice {
+  mode: ContextManagementMode;
+  action: "none" | "trimmed" | "summarized";
+  omittedMessageCount?: number;
+  estimatedOmittedTokens?: number;
+  estimatedPromptTokensBefore?: number;
+  estimatedPromptTokensAfter?: number;
+  outputReserveTokens?: number;
+}
+
+export interface ContextWarning {
+  kind:
+    | "near-limit"
+    | "full"
+    | "possible-truncation"
+    | "trimmed"
+    | "summarized"
+    | "strict-input-too-long";
+  message: string;
 }
 
 export interface ChatMessage {
@@ -92,6 +126,8 @@ export interface ChatMessage {
   updatedAt?: string;
   status?: "sending" | "streaming" | "complete" | "error";
   stats?: ResponseStats;
+  contextNotice?: ContextNotice;
+  contextWarnings?: ContextWarning[];
 }
 
 export interface Chat {
@@ -121,6 +157,14 @@ export interface ChatRequest {
   file_tools?: boolean;
   forceUpdate?: boolean;
   think?: boolean | "low" | "medium" | "high";
+  contextMode?: ContextManagementMode;
+  numCtx?: number | null;
+  numPredict?: number | null;
+  reserveOutputTokens?: number;
+  nearFullThresholdPercent?: number;
+  enableAutoTrim?: boolean;
+  enableAutoSummarize?: boolean;
+  estimatedPromptTokens?: number;
 }
 
 export interface ChatTextEvent {
@@ -140,6 +184,8 @@ export interface ChatTextEvent {
   thinkingTimeEnd?: string;
   chatId?: string;
   stats?: ResponseStats;
+  contextNotice?: ContextNotice;
+  contextWarnings?: ContextWarning[];
   toolName?: string;
   toolResult?: boolean;
   toolResultData?: unknown;

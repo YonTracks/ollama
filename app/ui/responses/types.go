@@ -58,12 +58,14 @@ type ChatEvent struct {
 	EventName string `json:"eventName" ts_type:"\"chat\" | \"thinking\" | \"assistant_with_tools\" | \"tool_call\" | \"tool\" | \"tool_result\" | \"done\" | \"chat_created\""`
 
 	// Chat/Assistant message fields
-	Content           *string               `json:"content,omitempty"`
-	Thinking          *string               `json:"thinking,omitempty"`
-	Attachments       []ChatEventAttachment `json:"attachments,omitempty"`
-	ThinkingTimeStart *time.Time            `json:"thinkingTimeStart,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
-	ThinkingTimeEnd   *time.Time            `json:"thinkingTimeEnd,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
-	Stats             *store.ResponseStats  `json:"stats,omitempty"`
+	Content           *string                `json:"content,omitempty"`
+	Thinking          *string                `json:"thinking,omitempty"`
+	Attachments       []ChatEventAttachment  `json:"attachments,omitempty"`
+	ThinkingTimeStart *time.Time             `json:"thinkingTimeStart,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
+	ThinkingTimeEnd   *time.Time             `json:"thinkingTimeEnd,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
+	Stats             *store.ResponseStats   `json:"stats,omitempty"`
+	ContextNotice     *store.ContextNotice   `json:"contextNotice,omitempty"`
+	ContextWarnings   []store.ContextWarning `json:"contextWarnings,omitempty"`
 
 	// Tool-related fields
 	ToolCalls      []store.ToolCall `json:"toolCalls,omitempty"`
@@ -129,17 +131,24 @@ type Attachment struct {
 }
 
 type ChatRequest struct {
-	Model       string       `json:"model"`
-	Prompt      string       `json:"prompt"`
-	Index       *int         `json:"index,omitempty"`
-	Attachments []Attachment `json:"attachments,omitempty"`
-	Width       int32        `json:"width,omitempty"`
-	Height      int32        `json:"height,omitempty"`
-	Steps       int32        `json:"steps,omitempty"`
-	WebSearch   *bool        `json:"web_search,omitempty"`
-	FileTools   *bool        `json:"file_tools,omitempty"`
-	ForceUpdate bool         `json:"forceUpdate,omitempty"`
-	Think       any          `json:"think,omitempty"`
+	Model                    string       `json:"model"`
+	Prompt                   string       `json:"prompt"`
+	Index                    *int         `json:"index,omitempty"`
+	Attachments              []Attachment `json:"attachments,omitempty"`
+	Width                    int32        `json:"width,omitempty"`
+	Height                   int32        `json:"height,omitempty"`
+	Steps                    int32        `json:"steps,omitempty"`
+	WebSearch                *bool        `json:"web_search,omitempty"`
+	FileTools                *bool        `json:"file_tools,omitempty"`
+	ForceUpdate              bool         `json:"forceUpdate,omitempty"`
+	Think                    any          `json:"think,omitempty"`
+	ContextMode              string       `json:"contextMode,omitempty"`
+	NumCtx                   *int         `json:"numCtx,omitempty"`
+	NumPredict               *int         `json:"numPredict,omitempty"`
+	ReserveOutputTokens      int          `json:"reserveOutputTokens,omitempty"`
+	NearFullThresholdPercent int          `json:"nearFullThresholdPercent,omitempty"`
+	EnableAutoTrim           *bool        `json:"enableAutoTrim,omitempty"`
+	EnableAutoSummarize      *bool        `json:"enableAutoSummarize,omitempty"`
 }
 
 type Error struct {

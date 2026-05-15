@@ -17,6 +17,7 @@ import {
   saveStandaloneChat
 } from "@/lib/ollama/standalone-db";
 import { sendStandaloneChat } from "@/lib/ollama/standalone";
+import { buildContextWarnings, strictContextWarning } from "@/lib/ollama/context";
 import { isImageGenerationModel } from "@/lib/ollama/models";
 import type {
   Chat,
@@ -25,7 +26,10 @@ import type {
   ChatMessage,
   ChatRequest,
   ChatTextEvent,
+  ContextNotice,
+  ContextWarning,
   DownloadEvent,
+  OllamaContextSettings,
   ResponseStats
 } from "@/lib/ollama/types";
 import type { AppMode } from "@/lib/appMode";
@@ -86,13 +90,19 @@ function mergeAttachments(
   return [...(current ?? []), ...incoming];
 }
 
-function createPendingAssistantMessage(model: string): ChatMessage {
+function createPendingAssistantMessage(
+  model: string,
+  contextNotice?: ContextNotice,
+  contextWarnings?: ContextWarning[]
+): ChatMessage {
   return {
     id: createClientId("assistant"),
     role: "assistant",
     content: "",
     model,
-    status: "sending"
+    status: "sending",
+    contextNotice,
+    contextWarnings
   };
 }
 
@@ -106,7 +116,12 @@ function isEmptyPendingAssistantMessage(message: ChatMessage) {
   );
 }
 
-function completeActiveMessages(messages: ChatMessage[], stats?: ResponseStats) {
+function completeActiveMessages(
+  messages: ChatMessage[],
+  stats?: ResponseStats,
+  contextNotice?: ContextNotice,
+  contextWarnings?: ContextWarning[]
+) {
   const next = messages
     .filter((message) => !isEmptyPendingAssistantMessage(message))
     .map((message) =>
@@ -115,20 +130,30 @@ function completeActiveMessages(messages: ChatMessage[], stats?: ResponseStats) 
         : message
     );
 
-  return stats ? attachStatsToLastAssistant(next, stats) : next;
+  return stats || contextNotice || contextWarnings
+    ? attachResponseMetadataToLastAssistant(next, {
+        stats,
+        contextNotice,
+        contextWarnings
+      })
+    : next;
 }
 
 function persistableMessages(messages: ChatMessage[]) {
   return messages.filter((message) => !isEmptyPendingAssistantMessage(message));
 }
 
-function appendAssistantError(messages: ChatMessage[], content: string) {
+function appendAssistantError(
+  messages: ChatMessage[],
+  content: string,
+  contextWarnings?: ContextWarning[]
+) {
   const next = completeActiveMessages(messages);
   const last = next.at(-1);
 
   if (last?.role === "assistant" && last.status === "error") {
     return next.map((message, index) =>
-      index === next.length - 1 ? { ...message, content } : message
+      index === next.length - 1 ? { ...message, content, contextWarnings } : message
     );
   }
 
@@ -138,19 +163,43 @@ function appendAssistantError(messages: ChatMessage[], content: string) {
       id: createClientId("error"),
       role: "assistant" as const,
       content,
-      status: "error" as const
+      status: "error" as const,
+      contextWarnings
     }
   ];
 }
 
-function attachStatsToLastAssistant(messages: ChatMessage[], stats: ResponseStats) {
+function attachResponseMetadataToLastAssistant(
+  messages: ChatMessage[],
+  metadata: {
+    stats?: ResponseStats;
+    contextNotice?: ContextNotice;
+    contextWarnings?: ContextWarning[];
+  }
+) {
   const index = [...messages].reverse().findIndex((message) => message.role === "assistant");
   if (index < 0) return messages;
 
   const assistantIndex = messages.length - 1 - index;
-  return messages.map((message, messageIndex) =>
-    messageIndex === assistantIndex ? { ...message, stats } : message
-  );
+  return messages.map((message, messageIndex) => {
+    if (messageIndex !== assistantIndex) return message;
+
+    const stats = metadata.stats ?? message.stats;
+    const contextNotice = metadata.contextNotice ?? message.contextNotice;
+    const contextWarnings =
+      metadata.contextWarnings ??
+      buildContextWarnings({
+        stats,
+        contextNotice
+      });
+
+    return {
+      ...message,
+      stats,
+      contextNotice,
+      contextWarnings: contextWarnings.length > 0 ? contextWarnings : undefined
+    };
+  });
 }
 
 function toThinkRequest(settings: LocalSettings, model?: string): ChatRequest["think"] {
@@ -164,6 +213,27 @@ function toImageGenerationOptions(settings: LocalSettings) {
     width: settings.imageGenerationWidth,
     height: settings.imageGenerationHeight,
     steps: settings.imageGenerationSteps
+  };
+}
+
+function toContextSettings(settings: LocalSettings): OllamaContextSettings {
+  return {
+    mode: settings.contextMode,
+    numCtx: settings.contextLength > 0 ? settings.contextLength : null,
+    numPredict: settings.maxOutputTokens > 0 ? settings.maxOutputTokens : null,
+    reserveOutputTokens: settings.reserveOutputTokens,
+    nearFullThresholdPercent: settings.nearFullThresholdPercent,
+    enableAutoSummarize: settings.enableAutoSummarize,
+    enableAutoTrim: settings.enableAutoTrim
+  };
+}
+
+function contextErrorMessage(errorMessage: string, settings: LocalSettings) {
+  const warning =
+    settings.contextMode === "strict" ? strictContextWarning(errorMessage) : null;
+  return {
+    message: warning?.message ?? errorMessage,
+    warnings: warning ? [warning] : undefined
   };
 }
 
@@ -348,6 +418,7 @@ export function useChatSession({
         const now = new Date().toISOString();
         const targetChatId = chatId ?? createClientId("chat");
         const controller = new AbortController();
+        const contextSettings = toContextSettings(settings);
         const userMessage: ChatMessage = {
           id: createClientId("user"),
           role: "user",
@@ -393,14 +464,20 @@ export function useChatSession({
             workingMessages,
             toThinkRequest(settings, selectedModel),
             toImageGenerationOptions(settings),
-            settings.contextLength || null,
+            contextSettings.numCtx,
+            contextSettings,
             controller.signal
           )) {
             if (event.eventName === "error") {
+              const contextError = contextErrorMessage(event.error, settings);
               setModelLoading(false);
               setModelLoadingName(null);
-              setError(event.error);
-              workingMessages = appendAssistantError(workingMessages, event.error);
+              setError(contextError.message);
+              workingMessages = appendAssistantError(
+                workingMessages,
+                contextError.message,
+                contextError.warnings
+              );
               const nextChat = completeChat(currentChat, workingMessages);
               chatRef.current = nextChat;
               setMessages(workingMessages);
@@ -429,7 +506,12 @@ export function useChatSession({
             if (event.eventName === "done") {
               setModelLoading(false);
               setModelLoadingName(null);
-              workingMessages = completeActiveMessages(workingMessages, event.stats);
+              workingMessages = completeActiveMessages(
+                workingMessages,
+                event.stats,
+                event.contextNotice,
+                event.contextWarnings
+              );
               const nextChat = completeChat(currentChat, workingMessages);
               chatRef.current = nextChat;
               setMessages(workingMessages);
@@ -440,9 +522,14 @@ export function useChatSession({
           onRefreshNeeded();
         } catch (sendError) {
           if (controller.signal.aborted) return;
-          const message = sendError instanceof Error ? sendError.message : "Failed to send message";
-          workingMessages = appendAssistantError(workingMessages, message);
-          setError(message);
+          const rawMessage = sendError instanceof Error ? sendError.message : "Failed to send message";
+          const contextError = contextErrorMessage(rawMessage, settings);
+          workingMessages = appendAssistantError(
+            workingMessages,
+            contextError.message,
+            contextError.warnings
+          );
+          setError(contextError.message);
           setMessages(workingMessages);
           const nextChat = completeChat(currentChat, workingMessages);
           chatRef.current = nextChat;
@@ -480,6 +567,7 @@ export function useChatSession({
       ]);
 
       try {
+        const contextSettings = toContextSettings(settings);
         const request: ChatRequest = {
           model: selectedModel,
           prompt: trimmed,
@@ -487,7 +575,14 @@ export function useChatSession({
           ...toImageGenerationOptions(settings),
           web_search: settings.webSearchEnabled,
           file_tools: false,
-          think: toThinkRequest(settings, selectedModel)
+          think: toThinkRequest(settings, selectedModel),
+          contextMode: contextSettings.mode,
+          numCtx: contextSettings.numCtx,
+          numPredict: contextSettings.numPredict,
+          reserveOutputTokens: contextSettings.reserveOutputTokens,
+          nearFullThresholdPercent: contextSettings.nearFullThresholdPercent,
+          enableAutoTrim: contextSettings.enableAutoTrim,
+          enableAutoSummarize: contextSettings.enableAutoSummarize
         };
 
         for await (const event of sendChat(targetChatId, request, controller.signal)) {
@@ -503,10 +598,13 @@ export function useChatSession({
           }
 
           if (event.eventName === "error") {
+            const contextError = contextErrorMessage(event.error, settings);
             setModelLoading(false);
             setModelLoadingName(null);
-            setError(event.error);
-            setMessages((current) => appendAssistantError(current, event.error));
+            setError(contextError.message);
+            setMessages((current) =>
+              appendAssistantError(current, contextError.message, contextError.warnings)
+            );
             continue;
           }
 
@@ -540,18 +638,28 @@ export function useChatSession({
           if (event.eventName === "done") {
             setModelLoading(false);
             setModelLoadingName(null);
-            setMessages((current) => completeActiveMessages(current, event.stats));
+            setMessages((current) =>
+              completeActiveMessages(
+                current,
+                event.stats,
+                event.contextNotice,
+                event.contextWarnings
+              )
+            );
           }
         }
 
         onRefreshNeeded();
       } catch (sendError) {
         if (controller.signal.aborted) return;
-        const message = sendError instanceof Error ? sendError.message : "Failed to send message";
-        setError(message);
+        const rawMessage = sendError instanceof Error ? sendError.message : "Failed to send message";
+        const contextError = contextErrorMessage(rawMessage, settings);
+        setError(contextError.message);
         setModelLoading(false);
         setModelLoadingName(null);
-        setMessages((current) => appendAssistantError(current, message));
+        setMessages((current) =>
+          appendAssistantError(current, contextError.message, contextError.warnings)
+        );
       } finally {
         abortRef.current = null;
         setModelLoading(false);

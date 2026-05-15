@@ -51,6 +51,36 @@ export class Time {
 
     }
 }
+export class ContextWarning {
+    kind: string;
+    message: string;
+
+    constructor(source: any = {}) {
+        if ('string' === typeof source) source = JSON.parse(source);
+        this.kind = source["kind"];
+        this.message = source["message"];
+    }
+}
+export class ContextNotice {
+    mode: string;
+    action: string;
+    omittedMessageCount?: number;
+    estimatedOmittedTokens?: number;
+    estimatedPromptTokensBefore?: number;
+    estimatedPromptTokensAfter?: number;
+    outputReserveTokens?: number;
+
+    constructor(source: any = {}) {
+        if ('string' === typeof source) source = JSON.parse(source);
+        this.mode = source["mode"];
+        this.action = source["action"];
+        this.omittedMessageCount = source["omittedMessageCount"];
+        this.estimatedOmittedTokens = source["estimatedOmittedTokens"];
+        this.estimatedPromptTokensBefore = source["estimatedPromptTokensBefore"];
+        this.estimatedPromptTokensAfter = source["estimatedPromptTokensAfter"];
+        this.outputReserveTokens = source["outputReserveTokens"];
+    }
+}
 export class OllamaUsageMetrics {
     total_duration?: number;
     load_duration?: number;
@@ -76,6 +106,7 @@ export class ResponseStats {
     promptTokens?: number;
     contextUsed?: number;
     contextLimit?: number;
+    contextPercent?: number;
     outputTokensPerSecond?: number;
     promptTokensPerSecond?: number;
     totalSeconds?: number;
@@ -89,6 +120,7 @@ export class ResponseStats {
         this.promptTokens = source["promptTokens"];
         this.contextUsed = source["contextUsed"];
         this.contextLimit = source["contextLimit"];
+        this.contextPercent = source["contextPercent"];
         this.outputTokensPerSecond = source["outputTokensPerSecond"];
         this.promptTokensPerSecond = source["promptTokensPerSecond"];
         this.totalSeconds = source["totalSeconds"];
@@ -177,6 +209,8 @@ export class Message {
     tool_name?: string;
     tool_result?: number[];
     stats?: ResponseStats;
+    contextNotice?: ContextNotice;
+    contextWarnings?: ContextWarning[];
     created_at: Time;
     updated_at: Time;
     thinkingTimeStart?: Date | undefined;
@@ -195,6 +229,8 @@ export class Message {
         this.tool_name = source["tool_name"];
         this.tool_result = source["tool_result"];
         this.stats = this.convertValues(source["stats"], ResponseStats);
+        this.contextNotice = this.convertValues(source["contextNotice"], ContextNotice);
+        this.contextWarnings = this.convertValues(source["contextWarnings"], ContextWarning);
         this.created_at = this.convertValues(source["created_at"], Time);
         this.updated_at = this.convertValues(source["updated_at"], Time);
         this.thinkingTimeStart = source["thinkingTimeStart"] && new Date(source["thinkingTimeStart"]);
@@ -415,6 +451,8 @@ export class ChatEvent {
     thinkingTimeStart?: Date | undefined;
     thinkingTimeEnd?: Date | undefined;
     stats?: ResponseStats;
+    contextNotice?: ContextNotice;
+    contextWarnings?: ContextWarning[];
     toolCalls?: ToolCall[];
     toolCall?: ToolCall;
     toolName?: string;
@@ -432,6 +470,8 @@ export class ChatEvent {
         this.thinkingTimeStart = source["thinkingTimeStart"] && new Date(source["thinkingTimeStart"]);
         this.thinkingTimeEnd = source["thinkingTimeEnd"] && new Date(source["thinkingTimeEnd"]);
         this.stats = this.convertValues(source["stats"], ResponseStats);
+        this.contextNotice = this.convertValues(source["contextNotice"], ContextNotice);
+        this.contextWarnings = this.convertValues(source["contextWarnings"], ContextWarning);
         this.toolCalls = this.convertValues(source["toolCalls"], ToolCall);
         this.toolCall = this.convertValues(source["toolCall"], ToolCall);
         this.toolName = source["toolName"];
@@ -604,6 +644,13 @@ export class ChatRequest {
     file_tools?: boolean;
     forceUpdate?: boolean;
     think?: any;
+    contextMode?: string;
+    numCtx?: number;
+    numPredict?: number;
+    reserveOutputTokens?: number;
+    nearFullThresholdPercent?: number;
+    enableAutoTrim?: boolean;
+    enableAutoSummarize?: boolean;
 
     constructor(source: any = {}) {
         if ('string' === typeof source) source = JSON.parse(source);
@@ -618,6 +665,13 @@ export class ChatRequest {
         this.file_tools = source["file_tools"];
         this.forceUpdate = source["forceUpdate"];
         this.think = source["think"];
+        this.contextMode = source["contextMode"];
+        this.numCtx = source["numCtx"];
+        this.numPredict = source["numPredict"];
+        this.reserveOutputTokens = source["reserveOutputTokens"];
+        this.nearFullThresholdPercent = source["nearFullThresholdPercent"];
+        this.enableAutoTrim = source["enableAutoTrim"];
+        this.enableAutoSummarize = source["enableAutoSummarize"];
     }
 
 	convertValues(a: any, classs: any, asMap: boolean = false): any {

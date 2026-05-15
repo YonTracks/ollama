@@ -288,6 +288,13 @@ export function SettingsDrawer({
         thinkEnabled: true,
         thinkLevel: "none",
         compactMessages: false,
+        contextMode: "friendly",
+        contextLength: 0,
+        maxOutputTokens: 0,
+        reserveOutputTokens: 1024,
+        nearFullThresholdPercent: 85,
+        enableAutoTrim: true,
+        enableAutoSummarize: false,
         imageGenerationWidth: 1024,
         imageGenerationHeight: 1024,
         imageGenerationSteps: 20
@@ -304,6 +311,12 @@ export function SettingsDrawer({
         tools: false,
         workingDir: "",
         contextLength: 0,
+        maxOutputTokens: 0,
+        contextMode: "friendly",
+        reserveOutputTokens: 1024,
+        nearFullThresholdPercent: 85,
+        enableAutoTrim: true,
+        enableAutoSummarize: false,
         autoUpdateEnabled: true,
         imageGenerationWidth: 1024,
         imageGenerationHeight: 1024,
@@ -751,6 +764,80 @@ export function SettingsDrawer({
                 <option value="high">High</option>
               </select>
             </div>
+            <div className="rounded-md border border-border bg-panel-strong px-3 py-3">
+              <div className="mb-3">
+                <div className="text-sm font-medium">Context mode</div>
+                <div className="mt-0.5 text-xs text-muted-foreground">
+                  Strict prevents Ollama from silently truncating or shifting context. Friendly keeps recent turns and warns when older messages are omitted.
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {(["friendly", "strict"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => handleUpdate({ contextMode: mode })}
+                    className={cn(
+                      "h-10 rounded-md border px-3 text-sm capitalize transition focus:focus-ring",
+                      settings.contextMode === mode
+                        ? "border-accent/45 bg-accent text-accent-foreground"
+                        : "border-border text-muted-foreground hover:bg-muted hover:text-foreground"
+                    )}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <NumericRow
+              label="Context window"
+              value={settings.contextLength}
+              placeholder="Auto"
+              min={0}
+              step={1024}
+              onChange={(contextLength) => handleUpdate({ contextLength })}
+            />
+            <NumericRow
+              label="Max output tokens"
+              value={settings.maxOutputTokens}
+              placeholder="Auto"
+              min={0}
+              step={128}
+              onChange={(maxOutputTokens) => handleUpdate({ maxOutputTokens })}
+            />
+            <NumericRow
+              label="Reserve output budget"
+              value={settings.reserveOutputTokens}
+              min={0}
+              step={128}
+              onChange={(reserveOutputTokens) => handleUpdate({ reserveOutputTokens })}
+            />
+            <NumericRow
+              label="Near-full warning"
+              value={settings.nearFullThresholdPercent}
+              suffix="%"
+              min={1}
+              max={100}
+              step={1}
+              onChange={(nearFullThresholdPercent) =>
+                handleUpdate({ nearFullThresholdPercent })
+              }
+            />
+            <ToggleRow
+              icon={<HardDrive className="h-4 w-4" />}
+              label="Auto-trim old messages"
+              description="Friendly mode can omit oldest outbound messages when the estimate exceeds the selected context."
+              checked={settings.enableAutoTrim}
+              onChange={(enableAutoTrim) => handleUpdate({ enableAutoTrim })}
+            />
+            <ToggleRow
+              icon={<HardDrive className="h-4 w-4" />}
+              label="Auto-summarize old messages"
+              description="Reserved for a future summarization pass. Trimming is used for now."
+              checked={settings.enableAutoSummarize}
+              disabled
+              onChange={() => handleUpdate({ enableAutoSummarize: false })}
+            />
           </SettingsSection>
           ) : null}
 
@@ -939,6 +1026,48 @@ function ToggleRow({
         className="mt-0.5 h-5 w-5 flex-none accent-[var(--accent)] focus:focus-ring"
       />
     </label>
+  );
+}
+
+function NumericRow({
+  label,
+  value,
+  placeholder,
+  suffix,
+  min,
+  max,
+  step,
+  onChange
+}: {
+  label: string;
+  value: number;
+  placeholder?: string;
+  suffix?: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  onChange(value: number): void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-panel-strong px-3 py-3">
+      <label htmlFor={`settings-${label.toLowerCase().replace(/\s+/g, "-")}`} className="text-sm">
+        {label}
+      </label>
+      <div className="flex items-center gap-2">
+        <input
+          id={`settings-${label.toLowerCase().replace(/\s+/g, "-")}`}
+          type="number"
+          value={value || ""}
+          min={min}
+          max={max}
+          step={step}
+          placeholder={placeholder}
+          onChange={(event) => onChange(Number(event.target.value) || 0)}
+          className="h-9 w-32 rounded-md border border-border bg-background px-2 text-sm focus:focus-ring"
+        />
+        {suffix ? <span className="text-xs text-muted-foreground">{suffix}</span> : null}
+      </div>
+    </div>
   );
 }
 

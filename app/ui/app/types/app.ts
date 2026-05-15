@@ -1,5 +1,7 @@
 export type ConnectionStatus = "checking" | "connected" | "disconnected" | "offline";
 
+export type ContextManagementMode = "strict" | "friendly";
+
 export interface LocalSettings {
   selectedModel: string;
   coreApiBase: string;
@@ -11,6 +13,12 @@ export interface LocalSettings {
   tools: boolean;
   workingDir: string;
   contextLength: number;
+  maxOutputTokens: number;
+  contextMode: ContextManagementMode;
+  reserveOutputTokens: number;
+  nearFullThresholdPercent: number;
+  enableAutoTrim: boolean;
+  enableAutoSummarize: boolean;
   webSearchEnabled: boolean;
   thinkEnabled: boolean;
   thinkLevel: "none" | "low" | "medium" | "high";

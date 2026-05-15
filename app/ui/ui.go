@@ -836,6 +836,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 	} else if think {
 		thinkValue = true
 	}
+	contextSettings := contextSettingsFromRequest(req)
 
 	if isImageGenerationModelName(req.Model) {
 		finalMetrics, err := s.generateChat(ctx, w, flusher, c, chat, req, thinkValue, &loading, cancelLoading)
@@ -847,12 +848,13 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 			return nil
 		}
 
-		stats := s.responseStatsFromMetrics(ctx, c, req.Model, finalMetrics)
-		if err := s.attachStatsToLastAssistant(chat, stats); err != nil {
+		stats := s.responseStatsFromMetrics(ctx, c, req.Model, finalMetrics, contextSettings.NumCtx)
+		warnings := contextWarnings(stats, nil, contextSettings)
+		if err := s.attachContextMetadataToLastAssistant(chat, stats, nil, warnings); err != nil {
 			return err
 		}
 
-		json.NewEncoder(w).Encode(responses.ChatEvent{EventName: "done", Stats: stats})
+		json.NewEncoder(w).Encode(responses.ChatEvent{EventName: "done", Stats: stats, ContextWarnings: warnings})
 		flusher.Flush()
 
 		if len(chat.Messages) > 0 {
@@ -900,6 +902,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 	var thinkingTimeStart *time.Time = nil
 	var thinkingTimeEnd *time.Time = nil
 	var finalMetrics *store.OllamaUsageMetrics
+	var contextNotice *store.ContextNotice
 	// Request-only assistant tool_calls buffer
 	// if tool_calls arrive before any assistant text, we keep them here,
 	// inject them into the next request, and attach on first assistant content/thinking.
@@ -937,7 +940,12 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 				reqChat = &temp
 			}
 		}
-		chatReq, err := s.buildChatRequest(reqChat, req.Model, thinkValue, availableTools)
+		preparedChat, notice := prepareContextChat(reqChat, contextSettings)
+		if contextNotice == nil || (notice != nil && notice.Action != "none") {
+			contextNotice = notice
+		}
+
+		chatReq, err := s.buildChatRequest(preparedChat, req.Model, thinkValue, availableTools, contextSettings)
 		if err != nil {
 			return err
 		}
@@ -1262,12 +1270,18 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
-	stats := s.responseStatsFromMetrics(ctx, c, req.Model, finalMetrics)
-	if err := s.attachStatsToLastAssistant(chat, stats); err != nil {
+	stats := s.responseStatsFromMetrics(ctx, c, req.Model, finalMetrics, contextSettings.NumCtx)
+	warnings := contextWarnings(stats, contextNotice, contextSettings)
+	if err := s.attachContextMetadataToLastAssistant(chat, stats, contextNotice, warnings); err != nil {
 		return err
 	}
 
-	json.NewEncoder(w).Encode(responses.ChatEvent{EventName: "done", Stats: stats})
+	json.NewEncoder(w).Encode(responses.ChatEvent{
+		EventName:       "done",
+		Stats:           stats,
+		ContextNotice:   contextNotice,
+		ContextWarnings: warnings,
+	})
 	flusher.Flush()
 
 	if len(chat.Messages) > 0 {
@@ -1511,7 +1525,7 @@ func countPtrIfPresent(count int, present bool) *int {
 	return &count
 }
 
-func (s *Server) responseStatsFromMetrics(ctx context.Context, c *api.Client, model string, metrics *store.OllamaUsageMetrics) *store.ResponseStats {
+func (s *Server) responseStatsFromMetrics(ctx context.Context, c *api.Client, model string, metrics *store.OllamaUsageMetrics, fallbackNumCtx *int) *store.ResponseStats {
 	if metrics == nil {
 		return nil
 	}
@@ -1519,7 +1533,7 @@ func (s *Server) responseStatsFromMetrics(ctx context.Context, c *api.Client, mo
 	stats := &store.ResponseStats{
 		OutputTokens:          metrics.EvalCount,
 		PromptTokens:          metrics.PromptEvalCount,
-		ContextLimit:          s.contextLimitForModel(ctx, c, model),
+		ContextLimit:          s.contextLimitForModel(ctx, c, model, fallbackNumCtx),
 		OutputTokensPerSecond: tokensPerSecondPtr(metrics.EvalCount, metrics.EvalDuration),
 		PromptTokensPerSecond: tokensPerSecondPtr(metrics.PromptEvalCount, metrics.PromptEvalDuration),
 		TotalSeconds:          secondsPtr(metrics.TotalDuration),
@@ -1532,12 +1546,19 @@ func (s *Server) responseStatsFromMetrics(ctx context.Context, c *api.Client, mo
 		contextUsed := *metrics.EvalCount + *metrics.PromptEvalCount
 		stats.ContextUsed = &contextUsed
 	}
+	if stats.ContextUsed != nil && stats.ContextLimit != nil && *stats.ContextLimit > 0 {
+		contextPercent := float64(*stats.ContextUsed) / float64(*stats.ContextLimit) * 100
+		stats.ContextPercent = &contextPercent
+	}
 
 	return stats
 }
 
-func (s *Server) contextLimitForModel(ctx context.Context, c *api.Client, requestedModel string) *int {
-	fallback := s.fallbackContextLength()
+func (s *Server) contextLimitForModel(ctx context.Context, c *api.Client, requestedModel string, fallbackNumCtx *int) *int {
+	fallback := positiveIntPtr(fallbackNumCtx)
+	if fallback == nil {
+		fallback = s.fallbackContextLength()
+	}
 	ps, err := c.ListRunning(ctx)
 	if err != nil || ps == nil {
 		return fallback
@@ -1604,17 +1625,338 @@ func secondsPtr(durationNs *int64) *float64 {
 	return &seconds
 }
 
-func (s *Server) attachStatsToLastAssistant(chat *store.Chat, stats *store.ResponseStats) error {
-	if stats == nil || chat == nil {
+type contextRequestSettings struct {
+	Mode                     string
+	NumCtx                   *int
+	NumPredict               *int
+	ReserveOutputTokens      int
+	NearFullThresholdPercent int
+	EnableAutoTrim           bool
+	EnableAutoSummarize      bool
+}
+
+func contextSettingsFromRequest(req responses.ChatRequest) contextRequestSettings {
+	mode := req.ContextMode
+	if mode != "strict" {
+		mode = "friendly"
+	}
+
+	reserve := req.ReserveOutputTokens
+	if reserve <= 0 {
+		reserve = 1024
+	}
+
+	threshold := req.NearFullThresholdPercent
+	if threshold <= 0 || threshold > 100 {
+		threshold = 85
+	}
+
+	enableAutoTrim := true
+	if req.EnableAutoTrim != nil {
+		enableAutoTrim = *req.EnableAutoTrim
+	}
+
+	return contextRequestSettings{
+		Mode:                     mode,
+		NumCtx:                   positiveIntPtr(req.NumCtx),
+		NumPredict:               positiveIntPtr(req.NumPredict),
+		ReserveOutputTokens:      reserve,
+		NearFullThresholdPercent: threshold,
+		EnableAutoTrim:           enableAutoTrim,
+		EnableAutoSummarize:      req.EnableAutoSummarize != nil && *req.EnableAutoSummarize,
+	}
+}
+
+func positiveIntPtr(value *int) *int {
+	if value == nil || *value <= 0 {
 		return nil
 	}
 
-	if len(chat.Messages) == 0 || chat.Messages[len(chat.Messages)-1].Role != "assistant" {
+	return value
+}
+
+func applyContextOptions(options map[string]any, settings contextRequestSettings) map[string]any {
+	if settings.NumCtx == nil && settings.NumPredict == nil {
+		return options
+	}
+
+	if options == nil {
+		options = map[string]any{}
+	}
+	if settings.NumCtx != nil {
+		options["num_ctx"] = *settings.NumCtx
+	}
+	if settings.NumPredict != nil {
+		options["num_predict"] = *settings.NumPredict
+	}
+
+	return options
+}
+
+const (
+	contextMessageOverheadTokens = 12
+	contextImageAttachmentTokens = 512
+)
+
+func estimateStoreMessagesTokens(messages []store.Message) int {
+	total := 0
+	for _, message := range messages {
+		if isOutboundStoreMessage(message) {
+			total += estimateStoreMessageTokens(message)
+		}
+	}
+
+	return total
+}
+
+func estimateStoreMessageTokens(message store.Message) int {
+	content := message.Content
+	if message.Role == "user" && len(message.Attachments) > 0 {
+		content, _ = promptAndImagesFromMessage(message)
+	}
+
+	tokens := contextMessageOverheadTokens + approximateContextTokens(content)
+	tokens += approximateContextTokens(message.Thinking)
+	tokens += approximateContextTokens(message.ToolName)
+
+	for _, toolCall := range message.ToolCalls {
+		tokens += 8
+		tokens += approximateContextTokens(toolCall.Function.Name)
+		tokens += approximateContextTokens(toolCall.Function.Arguments)
+	}
+
+	if message.ToolResult != nil {
+		tokens += approximateContextTokens(string(*message.ToolResult))
+	}
+
+	for _, attachment := range message.Attachments {
+		if isImageAttachment(attachment.Filename) {
+			tokens += contextImageAttachmentTokens
+		}
+	}
+
+	return tokens
+}
+
+func approximateContextTokens(text string) int {
+	if text == "" {
+		return 0
+	}
+
+	return (len([]rune(text)) + 3) / 4
+}
+
+func trimStoreMessagesToBudget(messages []store.Message, promptBudget int) []store.Message {
+	outboundIndexes := outboundStoreMessageIndexes(messages)
+	latestUserIndex := -1
+	required := map[int]bool{}
+
+	for _, index := range outboundIndexes {
+		message := messages[index]
+		if message.Role == "system" || message.Role == "tool" || len(message.ToolCalls) > 0 {
+			required[index] = true
+		}
+		if message.Role == "user" {
+			latestUserIndex = index
+		}
+	}
+	if latestUserIndex >= 0 {
+		required[latestUserIndex] = true
+	}
+
+	selected := map[int]bool{}
+	selectedTokens := 0
+	for index := range required {
+		selected[index] = true
+		selectedTokens += estimateStoreMessageTokens(messages[index])
+	}
+
+	for i := len(outboundIndexes) - 1; i >= 0; i-- {
+		index := outboundIndexes[i]
+		if selected[index] {
+			continue
+		}
+
+		tokens := estimateStoreMessageTokens(messages[index])
+		if selectedTokens+tokens <= promptBudget {
+			selected[index] = true
+			selectedTokens += tokens
+		}
+	}
+
+	trimmed := make([]store.Message, 0, len(messages))
+	for index, message := range messages {
+		if !isOutboundStoreMessage(message) || selected[index] {
+			trimmed = append(trimmed, message)
+		}
+	}
+
+	return trimmed
+}
+
+func omittedMessageStats(original []store.Message, trimmed []store.Message) (int, int) {
+	kept := map[string]int{}
+	for _, message := range trimmed {
+		if isOutboundStoreMessage(message) {
+			kept[storeMessageKey(message)]++
+		}
+	}
+
+	count := 0
+	tokens := 0
+	for _, message := range original {
+		if !isOutboundStoreMessage(message) {
+			continue
+		}
+
+		key := storeMessageKey(message)
+		if kept[key] > 0 {
+			kept[key]--
+			continue
+		}
+
+		count++
+		tokens += estimateStoreMessageTokens(message)
+	}
+
+	return count, tokens
+}
+
+func outboundStoreMessageIndexes(messages []store.Message) []int {
+	indexes := make([]int, 0, len(messages))
+	for index, message := range messages {
+		if isOutboundStoreMessage(message) {
+			indexes = append(indexes, index)
+		}
+	}
+
+	return indexes
+}
+
+func isOutboundStoreMessage(message store.Message) bool {
+	switch message.Role {
+	case "system", "user", "assistant", "tool":
+	default:
+		return false
+	}
+
+	return strings.TrimSpace(message.Content) != "" ||
+		strings.TrimSpace(message.Thinking) != "" ||
+		message.ToolName != "" ||
+		len(message.ToolCalls) > 0 ||
+		message.ToolResult != nil ||
+		len(message.Attachments) > 0
+}
+
+func storeMessageKey(message store.Message) string {
+	return strings.Join([]string{
+		message.CreatedAt.Format(time.RFC3339Nano),
+		message.Role,
+		message.Model,
+		message.ToolName,
+		message.Content,
+		message.Thinking,
+	}, "\x00")
+}
+
+func prepareContextChat(chat *store.Chat, settings contextRequestSettings) (*store.Chat, *store.ContextNotice) {
+	beforeTokens := estimateStoreMessagesTokens(chat.Messages)
+	notice := &store.ContextNotice{
+		Mode:                        settings.Mode,
+		Action:                      "none",
+		EstimatedPromptTokensBefore: &beforeTokens,
+		EstimatedPromptTokensAfter:  &beforeTokens,
+		OutputReserveTokens:         &settings.ReserveOutputTokens,
+	}
+
+	if settings.Mode != "friendly" || !settings.EnableAutoTrim || settings.NumCtx == nil {
+		return chat, notice
+	}
+
+	promptBudget := *settings.NumCtx - settings.ReserveOutputTokens
+	if promptBudget <= 0 || beforeTokens+settings.ReserveOutputTokens <= *settings.NumCtx {
+		return chat, notice
+	}
+
+	trimmedMessages := trimStoreMessagesToBudget(chat.Messages, promptBudget)
+	afterTokens := estimateStoreMessagesTokens(trimmedMessages)
+	omittedCount, omittedTokens := omittedMessageStats(chat.Messages, trimmedMessages)
+	trimmed := *chat
+	trimmed.Messages = trimmedMessages
+
+	if omittedCount > 0 {
+		notice.Action = "trimmed"
+		notice.OmittedMessageCount = &omittedCount
+		notice.EstimatedOmittedTokens = &omittedTokens
+	}
+	notice.EstimatedPromptTokensAfter = &afterTokens
+
+	return &trimmed, notice
+}
+
+func contextWarnings(stats *store.ResponseStats, notice *store.ContextNotice, settings contextRequestSettings) []store.ContextWarning {
+	var warnings []store.ContextWarning
+	if stats != nil && stats.ContextLimit != nil && stats.ContextUsed != nil && *stats.ContextUsed >= *stats.ContextLimit {
+		warnings = append(warnings, store.ContextWarning{
+			Kind:    "full",
+			Message: "Context is full. New responses may need more context or a shorter prompt.",
+		})
+	} else if stats != nil && stats.ContextPercent != nil && *stats.ContextPercent >= float64(settings.NearFullThresholdPercent) {
+		warnings = append(warnings, store.ContextWarning{
+			Kind:    "near-limit",
+			Message: "Near context limit. Consider increasing context or trimming older messages.",
+		})
+	}
+
+	if notice != nil && notice.Action == "trimmed" {
+		count := "Some"
+		if notice.OmittedMessageCount != nil {
+			count = strconv.Itoa(*notice.OmittedMessageCount)
+		}
+		warnings = append(warnings, store.ContextWarning{
+			Kind:    "trimmed",
+			Message: fmt.Sprintf("%s older messages omitted to fit the selected context.", count),
+		})
+	}
+
+	if notice != nil && notice.Action == "summarized" {
+		warnings = append(warnings, store.ContextWarning{
+			Kind:    "summarized",
+			Message: "Older messages were summarized to fit the selected context.",
+		})
+	}
+
+	estimatedPromptTokens := 0
+	if notice != nil && notice.EstimatedPromptTokensAfter != nil {
+		estimatedPromptTokens = *notice.EstimatedPromptTokensAfter
+	} else if notice != nil && notice.EstimatedPromptTokensBefore != nil {
+		estimatedPromptTokens = *notice.EstimatedPromptTokensBefore
+	}
+	contextUnderPressure := stats != nil && stats.ContextLimit != nil && stats.ContextPercent != nil &&
+		*stats.ContextPercent >= float64(settings.NearFullThresholdPercent)
+	appManagedContext := notice != nil && (notice.Action == "trimmed" || notice.Action == "summarized")
+	if contextUnderPressure && !appManagedContext &&
+		stats != nil && stats.PromptTokens != nil && estimatedPromptTokens > 0 &&
+		float64(estimatedPromptTokens) > float64(*stats.PromptTokens)*1.25 &&
+		estimatedPromptTokens-*stats.PromptTokens >= 512 {
+		warnings = append(warnings, store.ContextWarning{
+			Kind:    "possible-truncation",
+			Message: "Ollama processed fewer prompt tokens than the app estimated while near the context limit. Some context may have been truncated or omitted.",
+		})
+	}
+
+	return warnings
+}
+
+func (s *Server) attachContextMetadataToLastAssistant(chat *store.Chat, stats *store.ResponseStats, notice *store.ContextNotice, warnings []store.ContextWarning) error {
+	if chat == nil || len(chat.Messages) == 0 || chat.Messages[len(chat.Messages)-1].Role != "assistant" {
 		return nil
 	}
 
 	lastMsg := &chat.Messages[len(chat.Messages)-1]
 	lastMsg.Stats = stats
+	lastMsg.ContextNotice = notice
+	lastMsg.ContextWarnings = warnings
 	lastMsg.UpdatedAt = time.Now()
 	return s.Store.UpdateLastMessage(chat.ID, *lastMsg)
 }
@@ -2038,8 +2380,9 @@ func (s *Server) buildGenerateRequest(chat *store.Chat, req responses.ChatReques
 	}
 
 	prompt, images := promptAndImagesFromMessage(*userMessage)
+	settings := contextSettingsFromRequest(req)
 
-	return &api.GenerateRequest{
+	generateReq := &api.GenerateRequest{
 		Model:  req.Model,
 		Prompt: prompt,
 		Images: images,
@@ -2048,7 +2391,14 @@ func (s *Server) buildGenerateRequest(chat *store.Chat, req responses.ChatReques
 		Width:  req.Width,
 		Height: req.Height,
 		Steps:  req.Steps,
-	}, nil
+	}
+	generateReq.Options = applyContextOptions(generateReq.Options, settings)
+	if settings.Mode == "strict" {
+		generateReq.Truncate = ptr(false)
+		generateReq.Shift = ptr(false)
+	}
+
+	return generateReq, nil
 }
 
 func (s *Server) generateChat(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, c *api.Client, chat *store.Chat, req responses.ChatRequest, think any, loading *bool, cancelLoading context.CancelFunc) (*store.OllamaUsageMetrics, error) {
@@ -2196,7 +2546,7 @@ func (s *Server) generateChat(ctx context.Context, w http.ResponseWriter, flushe
 }
 
 // buildChatRequest converts store.Chat to api.ChatRequest
-func (s *Server) buildChatRequest(chat *store.Chat, model string, think any, availableTools []map[string]any) (*api.ChatRequest, error) {
+func (s *Server) buildChatRequest(chat *store.Chat, model string, think any, availableTools []map[string]any, settings contextRequestSettings) (*api.ChatRequest, error) {
 	var msgs []api.Message
 	for _, m := range chat.Messages {
 		// Skip empty messages if present
@@ -2256,6 +2606,11 @@ func (s *Server) buildChatRequest(chat *store.Chat, model string, think any, ava
 		Messages: msgs,
 		Stream:   ptr(true),
 		Think:    apiThinkValue(think),
+	}
+	req.Options = applyContextOptions(req.Options, settings)
+	if settings.Mode == "strict" {
+		req.Truncate = ptr(false)
+		req.Shift = ptr(false)
 	}
 
 	if len(availableTools) > 0 {

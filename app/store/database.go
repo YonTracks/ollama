@@ -14,7 +14,7 @@ import (
 
 // currentSchemaVersion defines the current database schema version.
 // Increment this when making schema changes that require migrations.
-const currentSchemaVersion = 17
+const currentSchemaVersion = 18
 
 // database wraps the SQLite connection.
 // SQLite handles its own locking for concurrent access:
@@ -117,6 +117,8 @@ func (db *database) init() error {
 		thinking_time_end TIMESTAMP,
 		tool_result TEXT,
 		stats TEXT,
+		context_notice TEXT,
+		context_warnings TEXT,
 		FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
 	);
 
@@ -278,6 +280,12 @@ func (db *database) migrate() error {
 				return fmt.Errorf("migrate v16 to v17: %w", err)
 			}
 			version = 17
+		case 17:
+			// add context notice and warning columns to messages table
+			if err := db.migrateV17ToV18(); err != nil {
+				return fmt.Errorf("migrate v17 to v18: %w", err)
+			}
+			version = 18
 		default:
 			// If we have a version we don't recognize, just set it to current
 			// This might happen during development
@@ -562,6 +570,26 @@ func (db *database) migrateV16ToV17() error {
 	return nil
 }
 
+// migrateV17ToV18 adds context notice and warning columns to the messages table.
+func (db *database) migrateV17ToV18() error {
+	_, err := db.conn.Exec(`ALTER TABLE messages ADD COLUMN context_notice TEXT`)
+	if err != nil && !duplicateColumnError(err) {
+		return fmt.Errorf("add context_notice column: %w", err)
+	}
+
+	_, err = db.conn.Exec(`ALTER TABLE messages ADD COLUMN context_warnings TEXT`)
+	if err != nil && !duplicateColumnError(err) {
+		return fmt.Errorf("add context_warnings column: %w", err)
+	}
+
+	_, err = db.conn.Exec(`UPDATE settings SET schema_version = 18`)
+	if err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+
+	return nil
+}
+
 // cleanupOrphanedData removes orphaned records that may exist due to the foreign key bug
 func (db *database) cleanupOrphanedData() error {
 	_, err := db.conn.Exec(`
@@ -809,7 +837,7 @@ func (db *database) updateLastMessage(chatID string, msg Message) error {
 
 	query := `
 		UPDATE messages 
-		SET content = ?, thinking = ?, model_name = ?, updated_at = ?, thinking_time_start = ?, thinking_time_end = ?, tool_result = ?, stats = ?
+		SET content = ?, thinking = ?, model_name = ?, updated_at = ?, thinking_time_start = ?, thinking_time_end = ?, tool_result = ?, stats = ?, context_notice = ?, context_warnings = ?
 		WHERE id = ?
 	`
 
@@ -839,6 +867,14 @@ func (db *database) updateLastMessage(chatID string, msg Message) error {
 	if err != nil {
 		return err
 	}
+	contextNoticeJSON, err := messageContextNoticeSQL(msg.ContextNotice)
+	if err != nil {
+		return err
+	}
+	contextWarningsJSON, err := messageContextWarningsSQL(msg.ContextWarnings)
+	if err != nil {
+		return err
+	}
 
 	result, err := tx.Exec(query,
 		msg.Content,
@@ -849,6 +885,8 @@ func (db *database) updateLastMessage(chatID string, msg Message) error {
 		thinkingTimeEnd,
 		toolResultJSON,
 		statsJSON,
+		contextNoticeJSON,
+		contextWarningsJSON,
 		messageID,
 	)
 	if err != nil {
@@ -913,7 +951,7 @@ func (db *database) appendMessage(chatID string, msg Message) error {
 
 func (db *database) getMessages(chatID string, loadAttachmentData bool) ([]Message, error) {
 	query := `
-		SELECT id, role, content, thinking, stream, model_name, created_at, updated_at, thinking_time_start, thinking_time_end, tool_result, stats
+		SELECT id, role, content, thinking, stream, model_name, created_at, updated_at, thinking_time_start, thinking_time_end, tool_result, stats, context_notice, context_warnings
 		FROM messages
 		WHERE chat_id = ?
 		ORDER BY id ASC
@@ -933,6 +971,8 @@ func (db *database) getMessages(chatID string, loadAttachmentData bool) ([]Messa
 		var modelName sql.NullString
 		var toolResult sql.NullString
 		var stats sql.NullString
+		var contextNotice sql.NullString
+		var contextWarnings sql.NullString
 
 		err := rows.Scan(
 			&messageID,
@@ -947,6 +987,8 @@ func (db *database) getMessages(chatID string, loadAttachmentData bool) ([]Messa
 			&thinkingTimeEnd,
 			&toolResult,
 			&stats,
+			&contextNotice,
+			&contextWarnings,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
@@ -979,6 +1021,18 @@ func (db *database) getMessages(chatID string, loadAttachmentData bool) ([]Messa
 				msg.Stats = &messageStats
 			}
 		}
+		if contextNotice.Valid && contextNotice.String != "" {
+			var notice ContextNotice
+			if err := json.Unmarshal([]byte(contextNotice.String), &notice); err == nil {
+				msg.ContextNotice = &notice
+			}
+		}
+		if contextWarnings.Valid && contextWarnings.String != "" {
+			var warnings []ContextWarning
+			if err := json.Unmarshal([]byte(contextWarnings.String), &warnings); err == nil {
+				msg.ContextWarnings = warnings
+			}
+		}
 
 		// Set model if present
 		if modelName.Valid && modelName.String != "" {
@@ -1004,8 +1058,8 @@ func (db *database) getMessages(chatID string, loadAttachmentData bool) ([]Messa
 
 func (db *database) insertMessage(tx *sql.Tx, chatID string, msg Message) (int64, error) {
 	query := `
-		INSERT INTO messages (chat_id, role, content, thinking, stream, model_name, created_at, updated_at, thinking_time_start, thinking_time_end, tool_result, stats)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO messages (chat_id, role, content, thinking, stream, model_name, created_at, updated_at, thinking_time_start, thinking_time_end, tool_result, stats, context_notice, context_warnings)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	var thinkingTimeStart, thinkingTimeEnd sql.NullTime
@@ -1034,6 +1088,14 @@ func (db *database) insertMessage(tx *sql.Tx, chatID string, msg Message) (int64
 	if err != nil {
 		return 0, err
 	}
+	contextNoticeJSON, err := messageContextNoticeSQL(msg.ContextNotice)
+	if err != nil {
+		return 0, err
+	}
+	contextWarningsJSON, err := messageContextWarningsSQL(msg.ContextWarnings)
+	if err != nil {
+		return 0, err
+	}
 
 	result, err := tx.Exec(query,
 		chatID,
@@ -1048,6 +1110,8 @@ func (db *database) insertMessage(tx *sql.Tx, chatID string, msg Message) (int64
 		thinkingTimeEnd,
 		toolResultJSON,
 		statsJSON,
+		contextNoticeJSON,
+		contextWarningsJSON,
 	)
 	if err != nil {
 		return 0, err
@@ -1079,6 +1143,32 @@ func messageStatsSQL(stats *ResponseStats) (sql.NullString, error) {
 	}
 
 	return sql.NullString{String: string(statsBytes), Valid: true}, nil
+}
+
+func messageContextNoticeSQL(notice *ContextNotice) (sql.NullString, error) {
+	if notice == nil {
+		return sql.NullString{}, nil
+	}
+
+	noticeBytes, err := json.Marshal(notice)
+	if err != nil {
+		return sql.NullString{}, fmt.Errorf("marshal context notice: %w", err)
+	}
+
+	return sql.NullString{String: string(noticeBytes), Valid: true}, nil
+}
+
+func messageContextWarningsSQL(warnings []ContextWarning) (sql.NullString, error) {
+	if len(warnings) == 0 {
+		return sql.NullString{}, nil
+	}
+
+	warningBytes, err := json.Marshal(warnings)
+	if err != nil {
+		return sql.NullString{}, fmt.Errorf("marshal context warnings: %w", err)
+	}
+
+	return sql.NullString{String: string(warningBytes), Valid: true}, nil
 }
 
 func (db *database) getAttachments(messageID int64, loadData bool) ([]File, error) {

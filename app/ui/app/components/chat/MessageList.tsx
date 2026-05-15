@@ -16,7 +16,12 @@ import { MarkdownContent } from "@/components/chat/MarkdownContent";
 import { imageAttachmentDataUrl } from "@/lib/ollama/attachments";
 import { isImageGenerationModel } from "@/lib/ollama/models";
 import { cn, formatBytes } from "@/lib/utils";
-import type { ChatAttachment, ChatMessage, ResponseStats } from "@/lib/ollama/types";
+import type {
+  ChatAttachment,
+  ChatMessage,
+  ContextWarning,
+  ResponseStats
+} from "@/lib/ollama/types";
 
 interface MessageListProps {
   messages: ChatMessage[];
@@ -136,8 +141,12 @@ export function MessageList({ messages, compact }: MessageListProps) {
                     <span className="ml-1 inline-block h-4 w-2 animate-pulse rounded-sm bg-accent align-text-bottom" />
                   ) : null}
                 </div>
-                {message.role === "assistant" && message.stats ? (
-                  <MessageStatsFooter stats={message.stats} />
+                {message.role === "assistant" &&
+                (message.stats || message.contextWarnings?.length) ? (
+                  <MessageStatsFooter
+                    stats={message.stats}
+                    warnings={message.contextWarnings}
+                  />
                 ) : null}
               </div>
             </article>
@@ -152,23 +161,45 @@ export function MessageList({ messages, compact }: MessageListProps) {
   );
 }
 
-function MessageStatsFooter({ stats }: { stats: ResponseStats }) {
-  const parts = responseStatsParts(stats);
-  if (parts.length === 0) return null;
+function MessageStatsFooter({
+  stats,
+  warnings
+}: {
+  stats?: ResponseStats;
+  warnings?: ContextWarning[];
+}) {
+  const parts = stats ? responseStatsParts(stats) : [];
+  if (parts.length === 0 && (!warnings || warnings.length === 0)) return null;
 
-  const label = parts.join(" · ");
+  const label = parts.join(" \u00b7 ");
 
   return (
-    <div
-      className="mt-2 flex flex-wrap gap-x-2 gap-y-1 text-xs leading-5 text-muted-foreground"
-      title={label}
-      aria-label={`Response stats: ${label}`}
-    >
-      {parts.map((part, index) => (
-        <span key={`${part}-${index}`} className="whitespace-nowrap">
-          {part}
-        </span>
-      ))}
+    <div className="mt-2 space-y-1">
+      {parts.length > 0 ? (
+        <div
+          className="flex flex-wrap gap-x-2 gap-y-1 text-xs leading-5 text-muted-foreground"
+          title={label}
+          aria-label={`Response stats: ${label}`}
+        >
+          {parts.map((part, index) => (
+            <span key={`${part}-${index}`} className="whitespace-nowrap">
+              {part}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {warnings?.length ? (
+        <div className="flex flex-col gap-1 text-xs leading-5 text-warning">
+          {warnings.map((warning) => (
+            <div
+              key={warning.kind}
+              className="rounded-md border border-warning/25 bg-warning/10 px-2 py-1"
+            >
+              {warning.message}
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -416,7 +447,9 @@ function formatCount(value: number) {
 }
 
 function formatContext(contextUsed: number, contextLimit: number | null | undefined) {
-  if (typeof contextLimit !== "number" || contextLimit <= 0) return `ctx ${formatCount(contextUsed)}`;
+  if (typeof contextLimit !== "number" || contextLimit <= 0) {
+    return `ctx ${formatCount(contextUsed)}`;
+  }
 
   const percent = Math.max(0, Math.round((contextUsed / contextLimit) * 100));
   return `ctx ${formatCount(contextUsed)} / ${formatCount(contextLimit)} (${percent}%)`;

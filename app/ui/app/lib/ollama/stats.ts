@@ -37,12 +37,17 @@ export function buildResponseStats(
     outputTokens !== null && promptTokens !== null
       ? outputTokens + promptTokens
       : null;
+  const contextPercent =
+    typeof contextLimit === "number" && contextLimit > 0 && contextUsed !== null
+      ? (contextUsed / contextLimit) * 100
+      : null;
 
   return {
     outputTokens,
     promptTokens,
     contextUsed,
     contextLimit,
+    contextPercent,
     outputTokensPerSecond: tokensPerSecond(
       metrics.eval_count,
       metrics.eval_duration

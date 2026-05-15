@@ -1,6 +1,11 @@
 import { parseJsonlResponse } from "./stream";
 import { OllamaClientError } from "./client";
 import { buildMessageContentWithAttachments, getImagePayloads } from "./attachments";
+import {
+  buildContextWarnings,
+  prepareContextMessages,
+  normalizeContextSettings
+} from "./context";
 import { isImageGenerationModel } from "./models";
 import {
   buildResponseStats,
@@ -13,8 +18,10 @@ import type {
   ChatRequest,
   ChatStreamEvent,
   ChatTextEvent,
+  ContextNotice,
   ModelOperationEvent,
   OllamaUsageMetrics,
+  OllamaContextSettings,
   OllamaModel,
   OllamaTagsResponse,
   ResponseStats,
@@ -57,6 +64,9 @@ interface CoreChatRequest {
   }>;
   stream: true;
   think?: ChatRequest["think"];
+  options?: Record<string, number>;
+  truncate?: boolean;
+  shift?: boolean;
 }
 
 interface CoreGenerateRequest {
@@ -68,6 +78,9 @@ interface CoreGenerateRequest {
   steps?: number;
   stream: true;
   think?: ChatRequest["think"];
+  options?: Record<string, number>;
+  truncate?: boolean;
+  shift?: boolean;
 }
 
 export interface CreateStandaloneModelRequest {
@@ -208,11 +221,24 @@ function toCoreMessages(messages: ChatMessage[]): CoreChatRequest["messages"] {
     }));
 }
 
-function doneEvent(end?: string, stats?: ResponseStats): ChatTextEvent {
+function doneEvent(
+  end?: string,
+  stats?: ResponseStats,
+  contextNotice?: ContextNotice,
+  contextSettings?: OllamaContextSettings
+): ChatTextEvent {
+  const contextWarnings = buildContextWarnings({
+    stats,
+    contextNotice,
+    settings: contextSettings
+  });
+
   return {
     eventName: "done",
     thinkingTimeEnd: end,
-    stats
+    stats,
+    contextNotice,
+    contextWarnings: contextWarnings.length > 0 ? contextWarnings : undefined
   };
 }
 
@@ -274,6 +300,31 @@ async function statsFromFinalChunk(
   });
 
   return buildResponseStats(metrics, contextLimit);
+}
+
+function applyContextRequestOptions<T extends {
+  options?: Record<string, number>;
+  truncate?: boolean;
+  shift?: boolean;
+}>(
+  request: T,
+  contextSettings: OllamaContextSettings
+): T {
+  const options = { ...(request.options ?? {}) };
+
+  if (contextSettings.numCtx) {
+    options.num_ctx = contextSettings.numCtx;
+  }
+  if (contextSettings.numPredict) {
+    options.num_predict = contextSettings.numPredict;
+  }
+
+  return {
+    ...request,
+    options: Object.keys(options).length > 0 ? options : undefined,
+    truncate: contextSettings.mode === "strict" ? false : request.truncate,
+    shift: contextSettings.mode === "strict" ? false : request.shift
+  };
 }
 
 async function* streamCoreOperation(
@@ -406,15 +457,20 @@ async function* sendStandaloneGenerate(
   think: ChatRequest["think"],
   imageOptions: ImageGenerationOptions = {},
   fallbackNumCtx?: number | null,
+  contextSettingsInput?: Partial<OllamaContextSettings>,
   signal?: AbortSignal
 ): AsyncGenerator<ChatStreamEvent> {
+  const contextSettings = normalizeContextSettings({
+    ...contextSettingsInput,
+    numCtx: contextSettingsInput?.numCtx ?? fallbackNumCtx ?? null
+  });
   const userMessage = latestUserMessage(messages);
   const prompt = buildMessageContentWithAttachments(
     userMessage?.content ?? "",
     userMessage?.attachments
   );
   const images = getImagePayloads(userMessage?.attachments);
-  const request: CoreGenerateRequest = {
+  const request = applyContextRequestOptions<CoreGenerateRequest>({
     model,
     prompt,
     images: images.length > 0 ? images : undefined,
@@ -423,7 +479,7 @@ async function* sendStandaloneGenerate(
     steps: imageOptions.steps,
     stream: true,
     think
-  };
+  }, contextSettings);
 
   const response = await postCore("/api/generate", apiBase, request, signal);
 
@@ -485,7 +541,13 @@ async function* sendStandaloneGenerate(
         if (thinkingStart && !thinkingEnd) thinkingEnd = new Date().toISOString();
         yield doneEvent(
           thinkingEnd,
-          await statsFromFinalChunk(apiBase, model, chunk, fallbackNumCtx, signal)
+          await statsFromFinalChunk(apiBase, model, chunk, contextSettings.numCtx, signal),
+          {
+            mode: contextSettings.mode,
+            action: "none",
+            outputReserveTokens: contextSettings.reserveOutputTokens
+          },
+          contextSettings
         );
       }
     }
@@ -501,8 +563,14 @@ export async function* sendStandaloneChat(
   think: ChatRequest["think"],
   imageOptions: ImageGenerationOptions = {},
   fallbackNumCtx?: number | null,
+  contextSettingsInput?: Partial<OllamaContextSettings>,
   signal?: AbortSignal
 ): AsyncGenerator<ChatStreamEvent> {
+  const contextSettings = normalizeContextSettings({
+    ...contextSettingsInput,
+    numCtx: contextSettingsInput?.numCtx ?? fallbackNumCtx ?? null
+  });
+
   if (isImageGenerationModel(model)) {
     yield* sendStandaloneGenerate(
       apiBase,
@@ -510,18 +578,24 @@ export async function* sendStandaloneChat(
       messages,
       think,
       imageOptions,
-      fallbackNumCtx,
+      contextSettings.numCtx,
+      contextSettings,
       signal
     );
     return;
   }
 
-  const request: CoreChatRequest = {
+  const prepared = prepareContextMessages({
+    messages,
+    settings: contextSettings
+  });
+
+  const request = applyContextRequestOptions<CoreChatRequest>({
     model,
-    messages: toCoreMessages(messages),
+    messages: toCoreMessages(prepared.messages),
     stream: true,
     think
-  };
+  }, contextSettings);
 
   const response = await postCore("/api/chat", apiBase, request, signal);
 
@@ -534,7 +608,8 @@ export async function* sendStandaloneChat(
         messages,
         think,
         imageOptions,
-        fallbackNumCtx,
+        contextSettings.numCtx,
+        contextSettings,
         signal
       );
       return;
@@ -590,7 +665,9 @@ export async function* sendStandaloneChat(
         if (thinkingStart && !thinkingEnd) thinkingEnd = new Date().toISOString();
         yield doneEvent(
           thinkingEnd,
-          await statsFromFinalChunk(apiBase, model, chunk, fallbackNumCtx, signal)
+          await statsFromFinalChunk(apiBase, model, chunk, contextSettings.numCtx, signal),
+          prepared.contextNotice,
+          contextSettings
         );
       }
     }
