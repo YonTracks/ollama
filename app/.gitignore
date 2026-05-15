@@ -4,6 +4,8 @@ ollama.syso
 /app/app
 /app/squirrel
 ollama
+!ui/app/lib/ollama/
+!ui/app/lib/ollama/**
 *cover*
 .vscode
 .env

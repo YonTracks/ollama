@@ -211,7 +211,7 @@ func main() {
 	if devMode {
 		os.Setenv("OLLAMA_CORS", "1")
 
-		// Check if Vite dev server is running on port 5173
+		// Check if the Next.js dev server is running on port 5173
 		var conn net.Conn
 		var err error
 		for _, addr := range []string{"127.0.0.1:5173", "localhost:5173"} {
@@ -223,8 +223,8 @@ func main() {
 		}
 
 		if err != nil {
-			slog.Error("Vite dev server not running on port 5173")
-			fmt.Fprintln(os.Stderr, "Error: Vite dev server is not running on port 5173")
+			slog.Error("Next.js dev server not running on port 5173")
+			fmt.Fprintln(os.Stderr, "Error: Next.js dev server is not running on port 5173")
 			fmt.Fprintln(os.Stderr, "Please run 'npm run dev' in the ui/app directory to start the UI in development mode")
 			os.Exit(1)
 		}

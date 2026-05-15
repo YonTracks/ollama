@@ -188,6 +188,7 @@ func (w *Webview) Run(path string) unsafe.Pointer {
 		}
 
 		init += `
+			window.OLLAMA_DESKTOP = true;
 			window.OLLAMA_WEBSEARCH = true;
 		`
 
@@ -466,9 +467,11 @@ func (w *Webview) Run(path string) unsafe.Pointer {
 		w.webview = wv
 		w.webview.Navigate(url)
 	} else {
+		pathJSON, _ := json.Marshal(path)
 		w.webview.Eval(fmt.Sprintf(`
-			history.pushState({}, '', '%s');
-		`, path))
+			history.pushState({}, '', %s);
+			window.dispatchEvent(new PopStateEvent('popstate'));
+		`, pathJSON))
 		showWindow(w.webview.Window())
 	}
 

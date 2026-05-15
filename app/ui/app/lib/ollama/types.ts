@@ -1,0 +1,173 @@
+export interface OllamaVersion {
+  version: string;
+}
+
+export interface OllamaModelDetails {
+  family?: string;
+  families?: string[];
+  format?: string;
+  parameter_size?: string;
+  quantization_level?: string;
+}
+
+export interface OllamaTagModel {
+  name: string;
+  model?: string;
+  modified_at?: string;
+  size?: number;
+  digest?: string;
+  details?: OllamaModelDetails;
+}
+
+export interface OllamaTagsResponse {
+  models?: OllamaTagModel[];
+}
+
+export interface OllamaModel {
+  name: string;
+  displayName: string;
+  digest?: string;
+  modifiedAt?: string;
+  size?: number;
+  details?: OllamaModelDetails;
+  local: boolean;
+}
+
+export interface ChatInfo {
+  id: string;
+  title: string;
+  userExcerpt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant" | "system" | "tool";
+  content: string;
+  thinking?: string;
+  thinkingTimeStart?: string;
+  thinkingTimeEnd?: string;
+  model?: string;
+  stream?: boolean;
+  toolName?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  status?: "sending" | "streaming" | "complete" | "error";
+}
+
+export interface Chat {
+  id: string;
+  title: string;
+  createdAt?: string;
+  updatedAt?: string;
+  messages: ChatMessage[];
+}
+
+export interface ChatsResponse {
+  chatInfos: ChatInfo[];
+}
+
+export interface ChatResponse {
+  chat: Chat;
+}
+
+export interface ChatRequest {
+  model: string;
+  prompt: string;
+  web_search?: boolean;
+  file_tools?: boolean;
+  forceUpdate?: boolean;
+  think?: boolean | "low" | "medium" | "high";
+}
+
+export interface ChatTextEvent {
+  eventName:
+    | "chat"
+    | "thinking"
+    | "assistant_with_tools"
+    | "tool_call"
+    | "tool"
+    | "tool_result"
+    | "done"
+    | "chat_created";
+  content?: string;
+  thinking?: string;
+  thinkingTimeStart?: string;
+  thinkingTimeEnd?: string;
+  chatId?: string;
+  toolName?: string;
+  toolResult?: boolean;
+  toolResultData?: unknown;
+}
+
+export interface DownloadEvent {
+  eventName: "download";
+  total: number;
+  completed: number;
+  done: boolean;
+}
+
+export interface ErrorEvent {
+  eventName: "error";
+  error: string;
+  code?: string;
+  details?: string;
+}
+
+export type ChatStreamEvent = ChatTextEvent | DownloadEvent | ErrorEvent;
+
+export interface Settings {
+  Expose?: boolean;
+  Browser?: boolean;
+  Survey?: boolean;
+  Models?: string;
+  Agent?: boolean;
+  Tools?: boolean;
+  WorkingDir?: string;
+  ContextLength?: number;
+  TurboEnabled?: boolean;
+  WebSearchEnabled?: boolean;
+  ThinkEnabled?: boolean;
+  ThinkLevel?: string;
+  SelectedModel?: string;
+  SidebarOpen?: boolean;
+  LastHomeView?: string;
+  AutoUpdateEnabled?: boolean;
+}
+
+export interface SettingsResponse {
+  settings: Settings;
+}
+
+export type CloudStatusSource = "env" | "config" | "both" | "none";
+
+export interface CloudStatusResponse {
+  disabled: boolean;
+  source: CloudStatusSource;
+}
+
+export interface OllamaUser {
+  id?: string;
+  email?: string;
+  name?: string;
+  bio?: string;
+  avatarurl?: string;
+  firstname?: string;
+  lastname?: string;
+  plan?: string;
+}
+
+export interface InferenceCompute {
+  library: string;
+  variant: string;
+  compute: string;
+  driver: string;
+  name: string;
+  vram: string;
+}
+
+export interface InferenceComputeResponse {
+  inferenceComputes: InferenceCompute[];
+  defaultContextLength: number;
+}

@@ -1,0 +1,36 @@
+export type ConnectionStatus = "checking" | "connected" | "disconnected" | "offline";
+
+export interface LocalSettings {
+  selectedModel: string;
+  coreApiBase: string;
+  sidebarOpen: boolean;
+  expose: boolean;
+  browser: boolean;
+  models: string;
+  agent: boolean;
+  tools: boolean;
+  workingDir: string;
+  contextLength: number;
+  webSearchEnabled: boolean;
+  thinkEnabled: boolean;
+  thinkLevel: "none" | "low" | "medium" | "high";
+  autoUpdateEnabled: boolean;
+  compactMessages: boolean;
+}
+
+export interface InstallPromptEvent extends Event {
+  readonly platforms: string[];
+  readonly userChoice: Promise<{
+    outcome: "accepted" | "dismissed";
+    platform: string;
+  }>;
+  prompt(): Promise<void>;
+}
+
+export interface ServiceWorkerState {
+  supported: boolean;
+  registered: boolean;
+  installing: boolean;
+  updateReady: boolean;
+  error: string | null;
+}

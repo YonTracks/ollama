@@ -12,24 +12,24 @@ import (
 	"time"
 )
 
-//go:embed app/dist
+//go:embed all:app/dist
 var appFS embed.FS
 
-// appHandler returns an HTTP handler that serves the React SPA.
-// It tries to serve real files first, then falls back to index.html for React Router.
+// appHandler returns an HTTP handler that serves the static Next.js app.
+// It tries to serve real files first, then falls back to index.html for app routes.
 func (s *Server) appHandler() http.Handler {
-	// Strip the dist prefix so URLs look clean
 	fsys, _ := fs.Sub(appFS, "app/dist")
 	fileServer := http.FileServer(http.FS(fsys))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := strings.TrimPrefix(r.URL.Path, "/")
-		if _, err := fsys.Open(p); err == nil {
-			// Serve the file directly
+		if f, err := fsys.Open(p); err == nil {
+			_ = f.Close()
 			fileServer.ServeHTTP(w, r)
 			return
 		}
-		// Fallback – serve index.html for unknown paths so React Router works
+
+		// Fallback to index.html for exported app routes.
 		data, err := fs.ReadFile(fsys, "index.html")
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {

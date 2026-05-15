@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-panel: var(--panel);
+  --color-panel-strong: var(--panel-strong);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --shadow-panel: 0 24px 80px rgb(0 0 0 / 0.38);
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+:root {
+  color-scheme: dark;
+  --background: #11110f;
+  --foreground: #f4f0e8;
+  --panel: #191a17;
+  --panel-strong: #20221d;
+  --muted: #282a24;
+  --muted-foreground: #b7b0a5;
+  --border: #34362f;
+  --accent: #b6f09c;
+  --accent-foreground: #15210d;
+  --danger: #ff8f7a;
+  --success: #7dd3a3;
+  --warning: #f0c36a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 0% 0%, rgb(182 240 156 / 0.08), transparent 32rem),
+    linear-gradient(145deg, #11110f 0%, #171511 48%, #0f1110 100%);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  letter-spacing: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled,
+textarea:disabled,
+select:disabled {
+  cursor: not-allowed;
+}
+
+::selection {
+  background: rgb(182 240 156 / 0.3);
+}
+
+@utility focus-ring {
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px rgb(182 240 156 / 0.55);
+}
+
+@utility scrollbar-subtle {
+  scrollbar-color: rgb(183 176 165 / 0.35) transparent;
+  scrollbar-width: thin;
+}

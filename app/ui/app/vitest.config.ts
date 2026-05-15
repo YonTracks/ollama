@@ -1,21 +1,15 @@
-import { defineConfig, mergeConfig } from "vite";
-import path from "path";
-import baseConfig from "./vite.config";
+import { defineConfig } from "vitest/config";
+import { fileURLToPath } from "node:url";
 
-export default defineConfig((configEnv) =>
-  mergeConfig(
-    baseConfig(configEnv),
-    defineConfig({
-      resolve: {
-        alias: {
-          "@": path.resolve(__dirname, "./src"),
-          "@/gotypes": path.resolve(__dirname, "./codegen/gotypes.gen.ts"),
-        },
-      },
-      test: {
-        environment: "node",
-        globals: true,
-      },
-    }),
-  ),
-);
+export default defineConfig({
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL(".", import.meta.url))
+    }
+  },
+  test: {
+    environment: "node",
+    include: ["**/*.test.ts"],
+    exclude: ["node_modules", "dist", "out", "src"]
+  }
+});

@@ -26,7 +26,7 @@ go install github.com/tkrajina/typescriptify-golang-structs/tscriptify@latest
 
 #### Develop UI (Development Mode)
 
-1. Start the React development server (with hot-reload):
+1. Start the Next.js development server (with hot-reload):
 
 ```bash
 cd ui/app
@@ -43,7 +43,7 @@ OLLAMA_DEBUG=1 go run ./cmd/app -dev
 
 The `-dev` flag enables:
 
-- Loading the UI from the Vite dev server at http://localhost:5173
+- Loading the UI from the Next.js dev server at http://localhost:5173
 - Fixed UI server port at http://127.0.0.1:3001 for API requests
 - CORS headers for cross-origin requests
 - Hot-reload support for UI development

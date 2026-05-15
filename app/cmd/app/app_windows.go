@@ -288,6 +288,7 @@ func logStartup() {
 const (
 	SW_HIDE        = 0  // Hides the window
 	SW_SHOW        = 5  // Shows window in its current size/position
+	SW_MAXIMIZE    = 3  // Shows the window maximized
 	SW_SHOWNA      = 8  // Shows without activating
 	SW_MINIMIZE    = 6  // Minimizes the window
 	SW_RESTORE     = 9  // Restores to previous size/position
@@ -378,8 +379,8 @@ func showWindow(ptr unsafe.Pointer) {
 			pShowWindow.Call(hwnd, uintptr(SW_RESTORE))
 		}
 
-		// Show the window
-		pShowWindow.Call(hwnd, uintptr(SW_SHOW))
+		// Show the UI maximized so tray launches do not reopen half off-screen.
+		pShowWindow.Call(hwnd, uintptr(SW_MAXIMIZE))
 
 		// Bring window to top
 		pBringWindowToTop.Call(hwnd)
