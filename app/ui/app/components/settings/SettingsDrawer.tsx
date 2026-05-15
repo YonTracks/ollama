@@ -18,7 +18,8 @@ import {
   Trash2,
   Wifi,
   Wrench,
-  X
+  X,
+  type LucideIcon
 } from "lucide-react";
 import { ConnectionIndicator } from "@/components/status/ConnectionIndicator";
 import { ModelManager } from "@/components/settings/ModelManager";
@@ -48,6 +49,20 @@ import type {
 import type { LocalSettings } from "@/types/app";
 
 const CONTEXT_LENGTH_OPTIONS = [4096, 8192, 16384, 32768, 65536, 131072, 262144];
+
+type SettingsTabId = "general" | "models" | "chat" | "advanced" | "data";
+
+const SETTINGS_TABS: Array<{
+  id: SettingsTabId;
+  label: string;
+  Icon: LucideIcon;
+}> = [
+  { id: "general", label: "General", Icon: Settings },
+  { id: "models", label: "Models", Icon: Cpu },
+  { id: "chat", label: "Chat", Icon: Bolt },
+  { id: "advanced", label: "Server", Icon: Server },
+  { id: "data", label: "Data", Icon: Database }
+];
 
 interface SettingsDrawerProps {
   open: boolean;
@@ -100,6 +115,7 @@ export function SettingsDrawer({
   const [confirmDeleteChats, setConfirmDeleteChats] = useState(false);
   const [deletingChats, setDeletingChats] = useState(false);
   const [deleteChatsError, setDeleteChatsError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<SettingsTabId>("general");
 
   const standalone = appMode === "standalone";
   const cloudOverriddenByEnv = cloudStatus?.source === "env" || cloudStatus?.source === "both";
@@ -115,6 +131,15 @@ export function SettingsDrawer({
     : getApiBase() || SAME_ORIGIN_CORE_API_BASE;
 
   const visibleModels = useMemo(() => models.slice(0, 7), [models]);
+  const tabs = useMemo(
+    () =>
+      SETTINGS_TABS.map((tab) =>
+        tab.id === "advanced" && standalone
+          ? { ...tab, label: "Storage", Icon: Database }
+          : tab
+      ),
+    [standalone]
+  );
 
   useEffect(() => {
     setToolsAvailable(Boolean(window.OLLAMA_TOOLS));
@@ -353,7 +378,43 @@ export function SettingsDrawer({
           </IconButton>
         </div>
 
-        <div className="scrollbar-subtle min-h-0 flex-1 overflow-y-auto p-4">
+        <div
+          role="tablist"
+          aria-label="Settings sections"
+          className="scrollbar-subtle flex flex-none gap-1 overflow-x-auto border-b border-border px-3 py-2"
+        >
+          {tabs.map(({ id, label, Icon }) => {
+            const selected = activeTab === id;
+
+            return (
+              <button
+                key={id}
+                id={`settings-tab-${id}`}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                aria-controls={`settings-panel-${id}`}
+                onClick={() => setActiveTab(id)}
+                className={cn(
+                  "inline-flex h-9 flex-none items-center gap-2 rounded-md px-3 text-sm transition focus:focus-ring",
+                  selected
+                    ? "bg-accent text-accent-foreground"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                )}
+              >
+                <Icon className="h-4 w-4" />
+                {label}
+              </button>
+            );
+          })}
+        </div>
+
+        <div
+          id={`settings-panel-${activeTab}`}
+          role="tabpanel"
+          aria-labelledby={`settings-tab-${activeTab}`}
+          className="scrollbar-subtle min-h-0 flex-1 overflow-y-auto p-4"
+        >
           {settingsError ? (
             <Notice tone="danger">{settingsError}</Notice>
           ) : null}
@@ -365,139 +426,148 @@ export function SettingsDrawer({
           ) : null}
           {saved ? <Notice tone="success">Saved</Notice> : null}
 
-          <SettingsSection
-            title="Connection"
-            action={
-              <IconButton label="Refresh connection" onClick={onRefreshConnection}>
-                <RefreshCcw className="h-4 w-4" />
-              </IconButton>
-            }
-          >
-            <ConnectionIndicator connection={connection} />
-            <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-panel-strong px-3 py-3">
-              <label htmlFor="app-mode" className="text-sm font-medium">
-                Mode
-              </label>
-              <select
-                id="app-mode"
-                value={appMode}
-                onChange={(event) => onChangeMode(event.target.value as AppMode)}
-                className="h-9 rounded-md border border-border bg-background px-2 text-sm focus:focus-ring"
+          {activeTab === "general" ? (
+            <>
+              <SettingsSection
+                title="Connection"
+                action={
+                  <IconButton label="Refresh connection" onClick={onRefreshConnection}>
+                    <RefreshCcw className="h-4 w-4" />
+                  </IconButton>
+                }
               >
-                <option value="desktop">Desktop app</option>
-                <option value="standalone">Standalone</option>
-              </select>
-            </div>
-            <div className="rounded-md border border-border bg-panel-strong px-3 py-2 text-sm">
-              <div className="mb-1 flex items-center gap-2 text-muted-foreground">
-                <Server className="h-4 w-4" />
-                API base
-              </div>
-              <code className="break-all text-xs text-foreground">
-                {effectiveApiBase}
-              </code>
-            </div>
-            {standalone ? (
-              <>
-                <div className="rounded-md border border-border bg-panel-strong px-3 py-3">
-                  <label htmlFor="core-api-base" className="mb-2 block text-sm font-medium">
-                    Core API base
+                <ConnectionIndicator connection={connection} />
+                <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-panel-strong px-3 py-3">
+                  <label htmlFor="app-mode" className="text-sm font-medium">
+                    Mode
                   </label>
-                  <input
-                    id="core-api-base"
-                    value={settings.coreApiBase}
-                    placeholder={DEFAULT_CORE_API_BASE}
-                    onChange={(event) => onUpdateSettings({ coreApiBase: event.target.value })}
-                    onBlur={onRefreshConnection}
-                    className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm focus:focus-ring"
-                  />
+                  <select
+                    id="app-mode"
+                    value={appMode}
+                    onChange={(event) => onChangeMode(event.target.value as AppMode)}
+                    className="h-9 rounded-md border border-border bg-background px-2 text-sm focus:focus-ring"
+                  >
+                    <option value="desktop">Desktop app</option>
+                    <option value="standalone">Standalone</option>
+                  </select>
                 </div>
-                <Notice tone="warning">
-                  Standalone mode uses the core Ollama API and stores chats in this browser.
-                </Notice>
-              </>
-            ) : null}
-          </SettingsSection>
-
-          {!standalone ? (
-          <SettingsSection title="Ollama Account">
-            {userLoading ? (
-              <div className="rounded-md border border-border bg-panel-strong px-3 py-3 text-sm text-muted-foreground">
-                Checking account...
-              </div>
-            ) : user?.name || user?.email ? (
-              <div className="flex items-center gap-3 rounded-md border border-border bg-panel-strong px-3 py-3">
-                {user.avatarurl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={user.avatarurl}
-                    alt=""
-                    className="h-10 w-10 rounded-full border border-border bg-muted"
-                  />
-                ) : (
-                  <div className="flex h-10 w-10 items-center justify-center rounded-full border border-border bg-muted text-sm font-semibold">
-                    {(user.name || user.email || "O").slice(0, 1).toUpperCase()}
+                <div className="rounded-md border border-border bg-panel-strong px-3 py-2 text-sm">
+                  <div className="mb-1 flex items-center gap-2 text-muted-foreground">
+                    <Server className="h-4 w-4" />
+                    API base
                   </div>
-                )}
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium">{user.name || "Ollama account"}</div>
-                  <div className="truncate text-xs text-muted-foreground">{user.email}</div>
+                  <code className="break-all text-xs text-foreground">
+                    {effectiveApiBase}
+                  </code>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => window.open("https://ollama.com/settings", "_blank", "noopener,noreferrer")}
-                  className="h-9 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring"
-                >
-                  Manage
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSignOut}
-                  className="h-9 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring"
-                >
-                  Sign out
-                </button>
-              </div>
-            ) : (
-              <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-panel-strong px-3 py-3">
-                <div className="min-w-0">
-                  <div className="text-sm font-medium">Not connected</div>
-                  <div className="text-xs text-muted-foreground">Sign in to manage Ollama cloud access.</div>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleSignIn}
-                  disabled={awaitingSignIn}
-                  className="h-9 rounded-md border border-accent/45 bg-accent px-3 text-sm font-medium text-accent-foreground transition hover:bg-accent/90 focus:focus-ring disabled:opacity-55"
-                >
-                  {awaitingSignIn ? "Opening..." : "Sign in"}
-                </button>
-              </div>
-            )}
+                {standalone ? (
+                  <>
+                    <div className="rounded-md border border-border bg-panel-strong px-3 py-3">
+                      <label htmlFor="core-api-base" className="mb-2 block text-sm font-medium">
+                        Core API base
+                      </label>
+                      <input
+                        id="core-api-base"
+                        value={settings.coreApiBase}
+                        placeholder={DEFAULT_CORE_API_BASE}
+                        onChange={(event) => onUpdateSettings({ coreApiBase: event.target.value })}
+                        onBlur={onRefreshConnection}
+                        className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm focus:focus-ring"
+                      />
+                    </div>
+                    <Notice tone="warning">
+                      Standalone mode uses the core Ollama API and stores chats in this browser.
+                    </Notice>
+                  </>
+                ) : null}
+              </SettingsSection>
 
-            <ToggleRow
-              icon={<Cloud className="h-4 w-4" />}
-              label="Cloud"
-              description={
-                cloudOverriddenByEnv
-                  ? "OLLAMA_NO_CLOUD is forcing cloud off."
-                  : "Enable cloud models and web search."
-              }
-              checked={cloudEnabled}
-              disabled={cloudToggleDisabled}
-              onChange={handleCloudToggle}
-            />
-          </SettingsSection>
+              {!standalone ? (
+                <SettingsSection title="Ollama Account">
+                  {userLoading ? (
+                    <div className="rounded-md border border-border bg-panel-strong px-3 py-3 text-sm text-muted-foreground">
+                      Checking account...
+                    </div>
+                  ) : user?.name || user?.email ? (
+                    <div className="flex items-center gap-3 rounded-md border border-border bg-panel-strong px-3 py-3">
+                      {user.avatarurl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={user.avatarurl}
+                          alt=""
+                          className="h-10 w-10 rounded-full border border-border bg-muted"
+                        />
+                      ) : (
+                        <div className="flex h-10 w-10 items-center justify-center rounded-full border border-border bg-muted text-sm font-semibold">
+                          {(user.name || user.email || "O").slice(0, 1).toUpperCase()}
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-medium">
+                          {user.name || "Ollama account"}
+                        </div>
+                        <div className="truncate text-xs text-muted-foreground">{user.email}</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => window.open("https://ollama.com/settings", "_blank", "noopener,noreferrer")}
+                        className="h-9 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring"
+                      >
+                        Manage
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSignOut}
+                        className="h-9 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring"
+                      >
+                        Sign out
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-panel-strong px-3 py-3">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium">Not connected</div>
+                        <div className="text-xs text-muted-foreground">
+                          Sign in to manage Ollama cloud access.
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleSignIn}
+                        disabled={awaitingSignIn}
+                        className="h-9 rounded-md border border-accent/45 bg-accent px-3 text-sm font-medium text-accent-foreground transition hover:bg-accent/90 focus:focus-ring disabled:opacity-55"
+                      >
+                        {awaitingSignIn ? "Opening..." : "Sign in"}
+                      </button>
+                    </div>
+                  )}
+
+                  <ToggleRow
+                    icon={<Cloud className="h-4 w-4" />}
+                    label="Cloud"
+                    description={
+                      cloudOverriddenByEnv
+                        ? "OLLAMA_NO_CLOUD is forcing cloud off."
+                        : "Enable cloud models and web search."
+                    }
+                    checked={cloudEnabled}
+                    disabled={cloudToggleDisabled}
+                    onChange={handleCloudToggle}
+                  />
+                </SettingsSection>
+              ) : null}
+            </>
           ) : null}
 
-          <SettingsSection
-            title="Model"
-            action={
-              <IconButton label="Refresh models" onClick={onRefreshModels}>
-                <RefreshCcw className="h-4 w-4" />
-              </IconButton>
-            }
-          >
+          {activeTab === "models" ? (
+            <SettingsSection
+              title="Model"
+              action={
+                <IconButton label="Refresh models" onClick={onRefreshModels}>
+                  <RefreshCcw className="h-4 w-4" />
+                </IconButton>
+              }
+            >
             <label className="sr-only" htmlFor="settings-model">
               Selected model
             </label>
@@ -552,16 +622,17 @@ export function SettingsDrawer({
               />
             ) : null}
 
-            <ModelManager
-              apiBase={modelManagerApiBase}
-              models={models}
-              selectedModel={selectedModel}
-              onSelectModel={onSelectModel}
-              onRefreshModels={onRefreshModels}
-            />
-          </SettingsSection>
+              <ModelManager
+                apiBase={modelManagerApiBase}
+                models={models}
+                selectedModel={selectedModel}
+                onSelectModel={onSelectModel}
+                onRefreshModels={onRefreshModels}
+              />
+            </SettingsSection>
+          ) : null}
 
-          {!standalone ? (
+          {activeTab === "advanced" && !standalone ? (
           <SettingsSection title="Local Server">
             <ToggleRow
               icon={<Download className="h-4 w-4" />}
@@ -637,6 +708,7 @@ export function SettingsDrawer({
           </SettingsSection>
           ) : null}
 
+          {activeTab === "chat" ? (
           <SettingsSection title="Chat">
             {!standalone ? (
               <ToggleRow
@@ -680,8 +752,9 @@ export function SettingsDrawer({
               </select>
             </div>
           </SettingsSection>
+          ) : null}
 
-          {toolsAvailable && !standalone ? (
+          {activeTab === "advanced" && toolsAvailable && !standalone ? (
             <SettingsSection title="Agent Tools">
               <ToggleRow
                 icon={<Bolt className="h-4 w-4" />}
@@ -708,7 +781,7 @@ export function SettingsDrawer({
             </SettingsSection>
           ) : null}
 
-          {standalone ? (
+          {activeTab === "advanced" && standalone ? (
             <SettingsSection title="Storage">
               <div className="rounded-md border border-border bg-panel-strong px-3 py-3">
                 <div className="flex items-start gap-3">
@@ -724,77 +797,81 @@ export function SettingsDrawer({
             </SettingsSection>
           ) : null}
 
-          <SettingsSection title="Data">
-            <div className="rounded-md border border-danger/30 bg-danger/10 px-3 py-3">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="flex min-w-0 gap-3">
-                  <span className="mt-0.5 flex h-6 w-6 flex-none items-center justify-center text-danger">
-                    <Trash2 className="h-4 w-4" />
-                  </span>
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium text-danger">Delete all chats</div>
-                    <div className="mt-0.5 text-xs text-muted-foreground">
-                      Permanently remove {chatCount === 1 ? "1 chat" : `${chatCount} chats`} stored on this device.
-                    </div>
-                    {confirmDeleteChats ? (
-                      <div className="mt-2 text-xs text-danger">
-                        This cannot be undone.
+          {activeTab === "data" ? (
+            <>
+              <SettingsSection title="Data">
+                <div className="rounded-md border border-danger/30 bg-danger/10 px-3 py-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="flex min-w-0 gap-3">
+                      <span className="mt-0.5 flex h-6 w-6 flex-none items-center justify-center text-danger">
+                        <Trash2 className="h-4 w-4" />
+                      </span>
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-danger">Delete all chats</div>
+                        <div className="mt-0.5 text-xs text-muted-foreground">
+                          Permanently remove {chatCount === 1 ? "1 chat" : `${chatCount} chats`} stored on this device.
+                        </div>
+                        {confirmDeleteChats ? (
+                          <div className="mt-2 text-xs text-danger">
+                            This cannot be undone.
+                          </div>
+                        ) : null}
                       </div>
-                    ) : null}
+                    </div>
+
+                    {confirmDeleteChats ? (
+                      <div className="flex flex-none gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteChats(false)}
+                          disabled={deletingChats}
+                          className="h-9 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring disabled:opacity-55"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleConfirmDeleteAllChats}
+                          disabled={
+                            deletingChats ||
+                            chatCount === 0 ||
+                            (!standalone && connection.status !== "connected")
+                          }
+                          className="h-9 rounded-md border border-danger/50 bg-danger px-3 text-sm font-medium text-background transition hover:bg-danger/90 focus:focus-ring disabled:opacity-55"
+                        >
+                          {deletingChats ? "Deleting..." : "Confirm"}
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteChats(true)}
+                        disabled={
+                          deletingChats ||
+                          chatCount === 0 ||
+                          (!standalone && connection.status !== "connected")
+                        }
+                        className="h-9 flex-none rounded-md border border-danger/40 px-3 text-sm font-medium text-danger transition hover:bg-danger/10 focus:focus-ring disabled:opacity-55"
+                      >
+                        Delete all
+                      </button>
+                    )}
                   </div>
                 </div>
+              </SettingsSection>
 
-                {confirmDeleteChats ? (
-                  <div className="flex flex-none gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDeleteChats(false)}
-                      disabled={deletingChats}
-                      className="h-9 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring disabled:opacity-55"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleConfirmDeleteAllChats}
-                      disabled={
-                        deletingChats ||
-                        chatCount === 0 ||
-                        (!standalone && connection.status !== "connected")
-                      }
-                      className="h-9 rounded-md border border-danger/50 bg-danger px-3 text-sm font-medium text-background transition hover:bg-danger/90 focus:focus-ring disabled:opacity-55"
-                    >
-                      {deletingChats ? "Deleting..." : "Confirm"}
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setConfirmDeleteChats(true)}
-                    disabled={
-                      deletingChats ||
-                      chatCount === 0 ||
-                      (!standalone && connection.status !== "connected")
-                    }
-                    className="h-9 flex-none rounded-md border border-danger/40 px-3 text-sm font-medium text-danger transition hover:bg-danger/10 focus:focus-ring disabled:opacity-55"
-                  >
-                    Delete all
-                  </button>
-                )}
+              <div className="flex justify-end pb-2">
+                <button
+                  type="button"
+                  onClick={handleResetToDefaults}
+                  className="inline-flex h-10 items-center gap-2 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  Reset to defaults
+                </button>
               </div>
-            </div>
-          </SettingsSection>
-
-          <div className="flex justify-end pb-2">
-            <button
-              type="button"
-              onClick={handleResetToDefaults}
-              className="inline-flex h-10 items-center gap-2 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring"
-            >
-              <RotateCcw className="h-4 w-4" />
-              Reset to defaults
-            </button>
-          </div>
+            </>
+          ) : null}
         </div>
       </section>
     </div>

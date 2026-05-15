@@ -35,8 +35,17 @@ interface InlineStrongPart {
   content: string;
 }
 
+interface InlineEmphasisPart {
+  type: "emphasis";
+  content: string;
+}
+
 export type MarkdownPart = TextPart | CodePart;
-export type InlineMarkdownPart = InlineTextPart | InlineCodePart | InlineStrongPart;
+export type InlineMarkdownPart =
+  | InlineTextPart
+  | InlineCodePart
+  | InlineStrongPart
+  | InlineEmphasisPart;
 
 const KEYWORDS = new Set([
   "and",
@@ -94,8 +103,8 @@ const KEYWORDS = new Set([
 
 const TOKEN_PATTERN =
   /(`(?:\\.|[^`\\])*`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\/.*|\/\*.*?\*\/|#.*|\b\d+(?:\.\d+)?\b|\b[A-Za-z_$][\w$-]*\b|[{}()[\].,;:+\-*/%=<>!&|?]+)/g;
-const INLINE_MARKDOWN_PATTERN = /(`[^`\n]+`|\*\*[^*\n]+\*\*)/g;
 const BOLD_PREFIX_PATTERN = /^\s*\*\*[^*\n]{1,160}\*\*(?:\s|$)/;
+const HEADING_PATTERN = /^#{1,6}\s+/;
 const EMOJI_HEADING_PATTERN =
   /^\s*(?:[\u203C-\u3299]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|\uD83E[\uDD00-\uDFFF])/;
 const LIST_ITEM_PATTERN = /^\s*(?:[-*+]\s+|\d+[.)]\s+)/;
@@ -164,7 +173,7 @@ function TextContent({ content }: { content: string }) {
 
 function TextBlock({ block }: { block: string }) {
   const lines = block.split("\n");
-  const heading = block.match(/^(#{1,3})\s+(.+)$/);
+  const heading = block.match(/^\s{0,3}(#{1,6})\s+(.+)$/);
 
   if (isEmojiHeadingLine(block)) {
     return (
@@ -181,6 +190,10 @@ function TextBlock({ block }: { block: string }) {
         {renderInline(heading[2])}
       </Tag>
     );
+  }
+
+  if (isTableBlock(lines)) {
+    return <MarkdownTable lines={lines} />;
   }
 
   if (lines.every((line) => /^\s*[-*]\s+/.test(line))) {
@@ -212,6 +225,49 @@ function TextBlock({ block }: { block: string }) {
         </span>
       ))}
     </p>
+  );
+}
+
+function MarkdownTable({ lines }: { lines: string[] }) {
+  const rows = lines.map(splitTableRow).filter((row) => row.length > 1);
+  const hasHeader = rows.length > 1 && isTableDividerRow(rows[1]);
+  const header = hasHeader ? rows[0] : null;
+  const body = hasHeader ? rows.slice(2) : rows;
+
+  return (
+    <div className="scrollbar-subtle overflow-x-auto rounded-md border border-border">
+      <table className="min-w-full border-collapse text-left text-sm">
+        {header ? (
+          <thead className="bg-panel-strong text-foreground">
+            <tr>
+              {header.map((cell, index) => (
+                <th
+                  key={`${cell}-${index}`}
+                  scope="col"
+                  className="border-b border-border px-3 py-2 font-semibold"
+                >
+                  {renderInline(cell)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+        ) : null}
+        <tbody>
+          {body.map((row, rowIndex) => (
+            <tr key={`${rowIndex}-${row.join("|")}`} className="border-t border-border first:border-t-0">
+              {row.map((cell, cellIndex) => (
+                <td
+                  key={`${cell}-${cellIndex}`}
+                  className="align-top px-3 py-2 text-muted-foreground"
+                >
+                  {renderInline(cell)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -277,6 +333,14 @@ function renderInline(text: string) {
       );
     }
 
+    if (segment.type === "emphasis") {
+      return (
+        <em key={`${segment.content}-${index}`} className="italic text-foreground/95">
+          {segment.content}
+        </em>
+      );
+    }
+
     return <span key={`${segment.content}-${index}`}>{segment.content}</span>;
   });
 }
@@ -303,16 +367,14 @@ export function splitMarkdownTextBlocks(content: string) {
 
     const previousLine = currentLines[currentLines.length - 1] ?? "";
     const shouldStartNewBlock =
-      currentLines.length > 0 &&
-      !isTightMarkdownContext(previousLine, line) &&
-      (previousWasLooseHeading || isLooseSectionLine(line));
+      currentLines.length > 0 && startsNewMarkdownBlock(previousLine, line, previousWasLooseHeading);
 
     if (shouldStartNewBlock) {
       flush();
     }
 
     currentLines.push(line);
-    previousWasLooseHeading = isEmojiHeadingLine(line) || /^#{1,3}\s+/.test(line);
+    previousWasLooseHeading = isEmojiHeadingLine(line) || HEADING_PATTERN.test(line.trim());
   }
 
   flush();
@@ -322,30 +384,150 @@ export function splitMarkdownTextBlocks(content: string) {
 export function parseInlineMarkdown(text: string): InlineMarkdownPart[] {
   const parts: InlineMarkdownPart[] = [];
   let cursor = 0;
-  let match: RegExpExecArray | null;
 
-  INLINE_MARKDOWN_PATTERN.lastIndex = 0;
+  const pushText = (end: number) => {
+    if (end > cursor) {
+      parts.push({ type: "text", content: unescapeMarkdownText(text.slice(cursor, end)) });
+    }
+  };
 
-  while ((match = INLINE_MARKDOWN_PATTERN.exec(text)) !== null) {
-    if (match.index > cursor) {
-      parts.push({ type: "text", content: text.slice(cursor, match.index) });
+  while (cursor < text.length) {
+    const marker = findNextInlineMarker(text, cursor);
+    if (!marker) {
+      pushText(text.length);
+      cursor = text.length;
+      break;
     }
 
-    const markdown = match[0];
-    if (markdown.startsWith("`")) {
-      parts.push({ type: "code", content: markdown.slice(1, -1) });
+    pushText(marker.index);
+
+    if (marker.type === "code") {
+      parts.push({ type: "code", content: marker.content });
+    } else if (marker.type === "strong") {
+      parts.push({ type: "strong", content: unescapeMarkdownText(marker.content) });
     } else {
-      parts.push({ type: "strong", content: markdown.slice(2, -2) });
+      parts.push({ type: "emphasis", content: unescapeMarkdownText(marker.content) });
     }
 
-    cursor = match.index + markdown.length;
-  }
-
-  if (cursor < text.length) {
-    parts.push({ type: "text", content: text.slice(cursor) });
+    cursor = marker.end;
   }
 
   return parts.length > 0 ? parts : [{ type: "text", content: text }];
+}
+
+function findNextInlineMarker(text: string, from: number) {
+  for (let index = from; index < text.length; index++) {
+    const char = text[index];
+
+    if (char === "`" && !isEscaped(text, index)) {
+      const end = findUnescaped(text, "`", index + 1);
+      if (end > index + 1 && !text.slice(index + 1, end).includes("\n")) {
+        return {
+          type: "code" as const,
+          index,
+          end: end + 1,
+          content: text.slice(index + 1, end)
+        };
+      }
+      continue;
+    }
+
+    if (text.startsWith("**", index) && !isEscaped(text, index)) {
+      const end = findUnescaped(text, "**", index + 2);
+      if (end > index + 2 && !text.slice(index + 2, end).includes("\n")) {
+        return {
+          type: "strong" as const,
+          index,
+          end: end + 2,
+          content: text.slice(index + 2, end)
+        };
+      }
+      continue;
+    }
+
+    if (char === "*" && !isEscaped(text, index) && text[index - 1] !== "*" && text[index + 1] !== "*") {
+      const end = findUnescaped(text, "*", index + 1);
+      const content = end > index ? text.slice(index + 1, end) : "";
+      if (
+        end > index + 1 &&
+        !content.includes("\n") &&
+        content.trim().length > 0 &&
+        !/^\s|\s$/.test(content)
+      ) {
+        return {
+          type: "emphasis" as const,
+          index,
+          end: end + 1,
+          content
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+function unescapeMarkdownText(text: string) {
+  return text.replace(/\\([`*{}\[\]()#+\-.!_|>])/g, "$1");
+}
+
+function findUnescaped(text: string, marker: string, from: number) {
+  let index = text.indexOf(marker, from);
+
+  while (index !== -1) {
+    if (!isEscaped(text, index)) return index;
+    index = text.indexOf(marker, index + marker.length);
+  }
+
+  return -1;
+}
+
+function isEscaped(text: string, index: number) {
+  let slashCount = 0;
+
+  for (let cursor = index - 1; cursor >= 0 && text[cursor] === "\\"; cursor--) {
+    slashCount++;
+  }
+
+  return slashCount % 2 === 1;
+}
+
+function isTableBlock(lines: string[]) {
+  return lines.length >= 2 && lines.every(isTableRowLine);
+}
+
+function isTableRowLine(line: string) {
+  const cells = splitTableRow(line);
+  return cells.length > 1;
+}
+
+function splitTableRow(line: string) {
+  const cells: string[] = [];
+  let current = "";
+  const text = line.trim();
+
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+
+    if (char === "|" && !isEscaped(text, index)) {
+      cells.push(current);
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  cells.push(current);
+
+  if (cells[0]?.trim() === "") cells.shift();
+  if (cells[cells.length - 1]?.trim() === "") cells.pop();
+
+  return cells.map((cell) => unescapeMarkdownText(cell.trim()));
+}
+
+function isTableDividerRow(cells: string[]) {
+  return cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
 }
 
 function isEmojiHeadingLine(line: string) {
@@ -353,18 +535,30 @@ function isEmojiHeadingLine(line: string) {
 }
 
 function isLooseSectionLine(line: string) {
-  return BOLD_PREFIX_PATTERN.test(line) || isEmojiHeadingLine(line);
+  return BOLD_PREFIX_PATTERN.test(line) || HEADING_PATTERN.test(line.trim()) || isEmojiHeadingLine(line);
 }
 
-function isTightMarkdownContext(previousLine: string, currentLine: string) {
-  return (
-    LIST_ITEM_PATTERN.test(previousLine) ||
-    LIST_ITEM_PATTERN.test(currentLine) ||
-    TABLE_ROW_PATTERN.test(previousLine) ||
-    TABLE_ROW_PATTERN.test(currentLine) ||
-    BLOCKQUOTE_PATTERN.test(previousLine) ||
-    BLOCKQUOTE_PATTERN.test(currentLine)
-  );
+function startsNewMarkdownBlock(
+  previousLine: string,
+  currentLine: string,
+  previousWasLooseHeading: boolean
+) {
+  if (previousWasLooseHeading) return true;
+  if (isLooseSectionLine(currentLine)) return true;
+
+  if (LIST_ITEM_PATTERN.test(previousLine) || LIST_ITEM_PATTERN.test(currentLine)) {
+    return !LIST_ITEM_PATTERN.test(previousLine) || !LIST_ITEM_PATTERN.test(currentLine);
+  }
+
+  if (TABLE_ROW_PATTERN.test(previousLine) || TABLE_ROW_PATTERN.test(currentLine)) {
+    return !TABLE_ROW_PATTERN.test(previousLine) || !TABLE_ROW_PATTERN.test(currentLine);
+  }
+
+  if (BLOCKQUOTE_PATTERN.test(previousLine) || BLOCKQUOTE_PATTERN.test(currentLine)) {
+    return !BLOCKQUOTE_PATTERN.test(previousLine) || !BLOCKQUOTE_PATTERN.test(currentLine);
+  }
+
+  return false;
 }
 
 function highlightLine(line: string): ReactNode[] {

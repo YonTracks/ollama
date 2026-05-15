@@ -14,6 +14,7 @@ import { PromptComposer } from "@/components/chat/PromptComposer";
 import { cn } from "@/lib/utils";
 import type { useChatSession } from "@/hooks/useChats";
 import type { useOllamaConnection } from "@/hooks/useOllamaConnection";
+import type { ChatMessage } from "@/lib/ollama/types";
 import type { LocalSettings } from "@/types/app";
 
 interface ChatPanelProps {
@@ -48,7 +49,12 @@ export function ChatPanel({
         ? "Select a model"
         : null;
 
-  const lastMessage = chat.messages.at(-1);
+  const visibleMessages = useMemo(
+    () => withModelLoadingMessage(chat.messages, chat.modelLoadingName ?? selectedModel, chat.modelLoading),
+    [chat.messages, chat.modelLoading, chat.modelLoadingName, selectedModel]
+  );
+
+  const lastMessage = visibleMessages.at(-1);
   const lastMessageSignal = useMemo(() => {
     if (!lastMessage) return "empty";
     return [
@@ -82,8 +88,8 @@ export function ChatPanel({
 
     const nearBottom = isNearBottom(element);
     setIsPinnedToBottom(nearBottom);
-    setShowScrollButton(!nearBottom && chat.messages.length > 0);
-  }, [chat.messages.length, isNearBottom]);
+    setShowScrollButton(!nearBottom && visibleMessages.length > 0);
+  }, [isNearBottom, visibleMessages.length]);
 
   useEffect(() => {
     window.requestAnimationFrame(() => scrollToBottom("auto"));
@@ -91,10 +97,10 @@ export function ChatPanel({
 
   useEffect(() => {
     const previousMessageCount = previousMessageCountRef.current;
-    const messageAdded = chat.messages.length > previousMessageCount;
-    previousMessageCountRef.current = chat.messages.length;
+    const messageAdded = visibleMessages.length > previousMessageCount;
+    previousMessageCountRef.current = visibleMessages.length;
 
-    if (chat.messages.length === 0) {
+    if (visibleMessages.length === 0) {
       setShowScrollButton(false);
       setIsPinnedToBottom(true);
       return;
@@ -109,7 +115,7 @@ export function ChatPanel({
       setShowScrollButton(true);
     }
   }, [
-    chat.messages.length,
+    visibleMessages.length,
     isPinnedToBottom,
     lastMessage?.role,
     lastMessageSignal,
@@ -124,32 +130,32 @@ export function ChatPanel({
           onScroll={handleScroll}
           className="scrollbar-subtle h-full min-h-0 overflow-y-auto scroll-smooth"
         >
-          {connection.status === "offline" && chat.messages.length === 0 ? (
+          {connection.status === "offline" && visibleMessages.length === 0 ? (
             <StatePanel
               icon={<WifiOff className="h-6 w-6" />}
               title="Offline"
               body="The app shell is available. Ollama requests will resume when the connection returns."
             />
-          ) : connection.status === "disconnected" && chat.messages.length === 0 ? (
+          ) : connection.status === "disconnected" && visibleMessages.length === 0 ? (
             <StatePanel
               icon={<AlertTriangle className="h-6 w-6" />}
               title="Ollama is disconnected"
               body={connection.error ?? "The local server is not responding."}
             />
-          ) : chat.loading ? (
+          ) : chat.loading && visibleMessages.length === 0 ? (
             <StatePanel
               icon={<Loader2 className="h-6 w-6 animate-spin" />}
               title="Loading chat"
               body="Fetching local conversation state."
             />
-          ) : chat.messages.length === 0 ? (
+          ) : visibleMessages.length === 0 ? (
             <StatePanel
               icon={<MessageCircle className="h-6 w-6" />}
               title={activeChatId ? "Conversation is empty" : "New chat"}
               body="Pick a model and start locally."
             />
           ) : (
-            <MessageList messages={chat.messages} compact={settings.compactMessages} />
+            <MessageList messages={visibleMessages} compact={settings.compactMessages} />
           )}
         </div>
 
@@ -206,6 +212,35 @@ export function ChatPanel({
       />
     </section>
   );
+}
+
+function withModelLoadingMessage(
+  messages: ChatMessage[],
+  model: string,
+  modelLoading: boolean
+) {
+  if (!modelLoading) return messages;
+
+  const hasPendingAssistant = messages.some(
+    (message) =>
+      message.role === "assistant" &&
+      (message.status === "sending" || message.status === "streaming") &&
+      !message.content &&
+      !message.thinking &&
+      (message.attachments?.length ?? 0) === 0
+  );
+  if (hasPendingAssistant) return messages;
+
+  return [
+    ...messages,
+    {
+      id: "model-loading",
+      role: "assistant" as const,
+      content: "",
+      model,
+      status: "sending" as const
+    }
+  ];
 }
 
 function StatePanel({

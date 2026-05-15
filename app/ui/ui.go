@@ -655,15 +655,6 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 		return fmt.Errorf("empty message")
 	}
 
-	if createdChat {
-		// send message to the client that the chat has been created
-		json.NewEncoder(w).Encode(responses.ChatEvent{
-			EventName: "chat_created",
-			ChatID:    &cid,
-		})
-		flusher.Flush()
-	}
-
 	// Check if this is from a specific message index (e.g. for editing)
 	idx := -1
 	if req.Index != nil {
@@ -682,8 +673,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 	// Only add user message if not forceUpdate
 	if !req.ForceUpdate {
 		var messageOptions *store.MessageOptions
+		var storeAttachments []store.File
 		if len(req.Attachments) > 0 {
-			storeAttachments := make([]store.File, 0, len(req.Attachments))
+			storeAttachments = make([]store.File, 0, len(req.Attachments))
 
 			for _, att := range req.Attachments {
 				if att.Data == "" {
@@ -718,6 +710,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 			}
 		}
 		userMsg := store.NewMessage("user", req.Prompt, messageOptions)
+		if strings.TrimSpace(chat.Title) == "" {
+			chat.Title = titleFromUserMessage(userMsg)
+		}
 
 		if idx >= 0 && idx < len(chat.Messages) {
 			// Generate from specified message: truncate and replace
@@ -731,6 +726,15 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 		if err := s.Store.SetChat(*chat); err != nil {
 			return err
 		}
+	}
+
+	if createdChat {
+		// Send this after the first message is saved so the sidebar can refresh with an auto-title.
+		json.NewEncoder(w).Encode(responses.ChatEvent{
+			EventName: "chat_created",
+			ChatID:    &cid,
+		})
+		flusher.Flush()
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
@@ -828,8 +832,8 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 
 	if req.Think != nil {
 		thinkValue = req.Think
-	} else {
-		thinkValue = think
+	} else if think {
+		thinkValue = true
 	}
 
 	if isImageGenerationModelName(req.Model) {
@@ -1441,11 +1445,45 @@ func chatInfoFromChat(chat store.Chat) responses.ChatInfo {
 
 	return responses.ChatInfo{
 		ID:          chat.ID,
-		Title:       chat.Title,
+		Title:       chatTitle(chat),
 		UserExcerpt: userExcerpt,
 		CreatedAt:   chat.CreatedAt,
 		UpdatedAt:   updatedAt,
 	}
+}
+
+func chatTitle(chat store.Chat) string {
+	if strings.TrimSpace(chat.Title) != "" {
+		return chat.Title
+	}
+
+	for _, msg := range chat.Messages {
+		if msg.Role == "user" {
+			return titleFromUserMessage(msg)
+		}
+	}
+
+	return "New chat"
+}
+
+func titleFromUserMessage(msg store.Message) string {
+	title := strings.Join(strings.Fields(msg.Content), " ")
+	if title == "" && len(msg.Attachments) > 0 {
+		suffix := ""
+		if len(msg.Attachments) > 1 {
+			suffix = fmt.Sprintf(" +%d", len(msg.Attachments)-1)
+		}
+		title = msg.Attachments[0].Filename + suffix
+	}
+	if title == "" {
+		return "New chat"
+	}
+	if len([]rune(title)) <= 64 {
+		return title
+	}
+
+	runes := []rune(title)
+	return string(runes[:61]) + "..."
 }
 
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) error {
@@ -1729,13 +1767,13 @@ func apiThinkValue(think any) *api.ThinkValue {
 	}
 
 	if boolValue, ok := think.(bool); ok {
-		if boolValue {
-			return &api.ThinkValue{Value: boolValue}
-		}
-		return nil
+		return &api.ThinkValue{Value: boolValue}
 	}
 
 	if stringValue, ok := think.(string); ok {
+		if stringValue == "none" {
+			return &api.ThinkValue{Value: false}
+		}
 		if stringValue != "" && stringValue != "none" {
 			return &api.ThinkValue{Value: stringValue}
 		}

@@ -42,6 +42,10 @@ export function MessageList({ messages, compact }: MessageListProps) {
             (message.status === "sending" || message.status === "streaming") &&
             isImageGenerationModel(message.model) &&
             !hasGeneratedImage;
+          const modelLoading =
+            message.role === "assistant" &&
+            message.status === "sending" &&
+            !imageGenerating;
           const generatedImages =
             message.role === "assistant" &&
             message.attachments?.some((attachment) => attachment.kind === "image");
@@ -114,6 +118,7 @@ export function MessageList({ messages, compact }: MessageListProps) {
                   )}
                 >
                   {imageGenerating ? <ImageGenerationPlaceholder /> : null}
+                  {modelLoading ? <ModelLoadingIndicator model={message.model} /> : null}
                   {message.attachments?.length ? (
                     <MessageAttachments
                       attachments={message.attachments}
@@ -126,15 +131,6 @@ export function MessageList({ messages, compact }: MessageListProps) {
                       content={message.content}
                       className={message.attachments?.length ? "mt-3" : undefined}
                     />
-                  ) : null}
-                  {message.status === "sending" && !imageGenerating ? (
-                    <span
-                      role="status"
-                      aria-label="Loading response"
-                      className="inline-flex h-6 w-6 items-center justify-center text-accent"
-                    >
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    </span>
                   ) : null}
                   {message.status === "streaming" && !generatedImages && !imageGenerating ? (
                     <span className="ml-1 inline-block h-4 w-2 animate-pulse rounded-sm bg-accent align-text-bottom" />
@@ -150,6 +146,21 @@ export function MessageList({ messages, compact }: MessageListProps) {
         <ImageLightbox image={selectedImage} onClose={() => setSelectedImage(null)} />
       ) : null}
     </>
+  );
+}
+
+function ModelLoadingIndicator({ model }: { model?: string }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="inline-flex max-w-full items-center gap-2 rounded-md border border-border bg-panel-strong px-3 py-2 text-sm text-muted-foreground"
+    >
+      <Loader2 className="h-4 w-4 flex-none animate-spin text-accent" />
+      <span className="min-w-0 truncate">
+        Loading model{model ? ` ${model}` : ""}
+      </span>
+    </div>
   );
 }
 

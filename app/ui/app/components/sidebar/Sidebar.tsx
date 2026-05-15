@@ -36,6 +36,7 @@ export function Sidebar({
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const pointerSelectingChatRef = useRef(false);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -153,7 +154,16 @@ export function Sidebar({
                         <div className="flex items-start gap-1">
                           <button
                             type="button"
-                            onClick={() => onSelectChat(chat.id)}
+                            onPointerDown={() => {
+                              pointerSelectingChatRef.current = true;
+                            }}
+                            onClick={(event) => {
+                              onSelectChat(chat.id);
+                              if (pointerSelectingChatRef.current) {
+                                event.currentTarget.blur();
+                                pointerSelectingChatRef.current = false;
+                              }
+                            }}
                             className="min-w-0 flex-1 rounded-md px-2 py-2 text-left transition hover:bg-muted focus:focus-ring"
                           >
                             <div className="flex min-w-0 items-center gap-2">

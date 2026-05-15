@@ -220,6 +220,89 @@ func TestHandleGetApiCloudSetting(t *testing.T) {
 	}
 }
 
+func TestAPIThinkValuePreservesExplicitFalse(t *testing.T) {
+	got := apiThinkValue(false)
+	if got == nil {
+		t.Fatal("apiThinkValue(false) = nil, want explicit false")
+	}
+	if got.Value != false {
+		t.Fatalf("apiThinkValue(false).Value = %v, want false", got.Value)
+	}
+
+	got = apiThinkValue("none")
+	if got == nil {
+		t.Fatal(`apiThinkValue("none") = nil, want explicit false`)
+	}
+	if got.Value != false {
+		t.Fatalf(`apiThinkValue("none").Value = %v, want false`, got.Value)
+	}
+}
+
+func TestChatInfoAutoTitle(t *testing.T) {
+	longPrompt := strings.Repeat("word ", 30)
+	normalizedLongPrompt := strings.Join(strings.Fields(longPrompt), " ")
+	truncatedLongPrompt := string([]rune(normalizedLongPrompt)[:61]) + "..."
+
+	for _, tc := range []struct {
+		name string
+		chat store.Chat
+		want string
+	}{
+		{
+			name: "uses saved title",
+			chat: store.Chat{
+				ID:    "saved",
+				Title: "Renamed chat",
+				Messages: []store.Message{
+					store.NewMessage("user", "original prompt", nil),
+				},
+			},
+			want: "Renamed chat",
+		},
+		{
+			name: "uses first user prompt",
+			chat: store.Chat{
+				ID: "prompt",
+				Messages: []store.Message{
+					store.NewMessage("user", "  explain   local models  ", nil),
+				},
+			},
+			want: "explain local models",
+		},
+		{
+			name: "uses first attachment when prompt is empty",
+			chat: store.Chat{
+				ID: "attachment",
+				Messages: []store.Message{
+					store.NewMessage("user", "", &store.MessageOptions{
+						Attachments: []store.File{
+							{Filename: "image.png", Data: []byte("image")},
+							{Filename: "notes.txt", Data: []byte("notes")},
+						},
+					}),
+				},
+			},
+			want: "image.png +1",
+		},
+		{
+			name: "truncates long prompt",
+			chat: store.Chat{
+				ID: "long",
+				Messages: []store.Message{
+					store.NewMessage("user", longPrompt, nil),
+				},
+			},
+			want: truncatedLongPrompt,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := chatInfoFromChat(tc.chat).Title; got != tc.want {
+				t.Fatalf("chatInfoFromChat().Title = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestAuthenticationMiddleware(t *testing.T) {
 	tests := []struct {
 		name         string

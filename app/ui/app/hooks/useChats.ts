@@ -263,13 +263,20 @@ export function useChatSession({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
+  const [modelLoading, setModelLoading] = useState(false);
+  const [modelLoadingName, setModelLoadingName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [download, setDownload] = useState<DownloadEvent | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const chatRef = useRef<Chat | null>(null);
+  const optimisticChatIdRef = useRef<string | null>(null);
 
   const loadChat = useCallback(
     async (signal?: AbortSignal) => {
+      if (streaming && chatId && chatId === optimisticChatIdRef.current) {
+        return;
+      }
+
       if (!enabled || !chatId) {
         setMessages([]);
         chatRef.current = null;
@@ -293,7 +300,7 @@ export function useChatSession({
         setLoading(false);
       }
     },
-    [chatId, enabled, mode]
+    [chatId, enabled, mode, streaming]
   );
 
   useEffect(() => {
@@ -306,6 +313,8 @@ export function useChatSession({
     abortRef.current?.abort();
     abortRef.current = null;
     setStreaming(false);
+    setModelLoading(false);
+    setModelLoadingName(null);
     setMessages((current) => {
       const next = completeActiveMessages(current);
       if (mode === "standalone" && chatRef.current) {
@@ -354,6 +363,8 @@ export function useChatSession({
         abortRef.current = controller;
         setError(null);
         setDownload(null);
+        setModelLoading(true);
+        setModelLoadingName(selectedModel);
         setStreaming(true);
         setMessages(workingMessages);
         chatRef.current = currentChat;
@@ -372,6 +383,8 @@ export function useChatSession({
             controller.signal
           )) {
             if (event.eventName === "error") {
+              setModelLoading(false);
+              setModelLoadingName(null);
               setError(event.error);
               workingMessages = appendAssistantError(workingMessages, event.error);
               const nextChat = completeChat(currentChat, workingMessages);
@@ -386,6 +399,8 @@ export function useChatSession({
               event.eventName === "thinking" ||
               event.eventName === "assistant_with_tools"
             ) {
+              setModelLoading(false);
+              setModelLoadingName(null);
               workingMessages = appendAssistantDelta(workingMessages, event);
               const nextChat = completeChat(
                 currentChat,
@@ -398,6 +413,8 @@ export function useChatSession({
             }
 
             if (event.eventName === "done") {
+              setModelLoading(false);
+              setModelLoadingName(null);
               workingMessages = completeActiveMessages(workingMessages);
               const nextChat = completeChat(currentChat, workingMessages);
               chatRef.current = nextChat;
@@ -419,6 +436,8 @@ export function useChatSession({
           onRefreshNeeded();
         } finally {
           abortRef.current = null;
+          setModelLoading(false);
+          setModelLoadingName(null);
           setStreaming(false);
         }
         return;
@@ -426,9 +445,12 @@ export function useChatSession({
 
       const targetChatId = chatId ?? "new";
       const controller = new AbortController();
+      optimisticChatIdRef.current = null;
       abortRef.current = controller;
       setError(null);
       setDownload(null);
+      setModelLoading(true);
+      setModelLoadingName(selectedModel);
       setStreaming(true);
 
       setMessages((current) => [
@@ -456,7 +478,9 @@ export function useChatSession({
 
         for await (const event of sendChat(targetChatId, request, controller.signal)) {
           if (event.eventName === "chat_created" && event.chatId) {
+            optimisticChatIdRef.current = event.chatId;
             onChatCreated(event.chatId);
+            onRefreshNeeded();
           }
 
           if (event.eventName === "download") {
@@ -465,6 +489,8 @@ export function useChatSession({
           }
 
           if (event.eventName === "error") {
+            setModelLoading(false);
+            setModelLoadingName(null);
             setError(event.error);
             setMessages((current) => appendAssistantError(current, event.error));
             continue;
@@ -475,11 +501,15 @@ export function useChatSession({
             event.eventName === "thinking" ||
             event.eventName === "assistant_with_tools"
           ) {
+            setModelLoading(false);
+            setModelLoadingName(null);
             setMessages((current) => appendAssistantDelta(current, event));
             continue;
           }
 
           if (event.eventName === "tool" || event.eventName === "tool_result") {
+            setModelLoading(false);
+            setModelLoadingName(null);
             setMessages((current) => [
               ...current,
               {
@@ -494,6 +524,8 @@ export function useChatSession({
           }
 
           if (event.eventName === "done") {
+            setModelLoading(false);
+            setModelLoadingName(null);
             setMessages((current) => completeActiveMessages(current));
           }
         }
@@ -503,10 +535,15 @@ export function useChatSession({
         if (controller.signal.aborted) return;
         const message = sendError instanceof Error ? sendError.message : "Failed to send message";
         setError(message);
+        setModelLoading(false);
+        setModelLoadingName(null);
         setMessages((current) => appendAssistantError(current, message));
       } finally {
         abortRef.current = null;
+        setModelLoading(false);
+        setModelLoadingName(null);
         setStreaming(false);
+        optimisticChatIdRef.current = null;
       }
     },
     [
@@ -527,12 +564,25 @@ export function useChatSession({
       messages,
       loading,
       streaming,
+      modelLoading,
+      modelLoadingName,
       error,
       download,
       reload: loadChat,
       send,
       stop
     }),
-    [download, error, loadChat, loading, messages, send, stop, streaming]
+    [
+      download,
+      error,
+      loadChat,
+      loading,
+      messages,
+      modelLoading,
+      modelLoadingName,
+      send,
+      stop,
+      streaming
+    ]
   );
 }

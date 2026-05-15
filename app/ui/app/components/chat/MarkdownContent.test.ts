@@ -57,6 +57,27 @@ describe("parseMarkdownContent", () => {
       "| A | B |\n| --- | --- |\n| **One:** | two |"
     ]);
   });
+
+  it("splits markdown headings even when models omit blank lines", () => {
+    expect(splitMarkdownTextBlocks("Intro\n   ### Details\nUse `code` here")).toEqual([
+      "Intro",
+      "### Details",
+      "Use `code` here"
+    ]);
+  });
+
+  it("does not glue headings or paragraphs to following bullet lists", () => {
+    expect(splitMarkdownTextBlocks("### Details\n* First\n* Second")).toEqual([
+      "### Details",
+      "* First\n* Second"
+    ]);
+
+    expect(splitMarkdownTextBlocks("Intro\n* First\n* Second\nOutro")).toEqual([
+      "Intro",
+      "* First\n* Second",
+      "Outro"
+    ]);
+  });
 });
 
 describe("parseInlineMarkdown", () => {
@@ -66,6 +87,28 @@ describe("parseInlineMarkdown", () => {
       { type: "text", content: " use " },
       { type: "code", content: "const value = 1" },
       { type: "text", content: " now" }
+    ]);
+  });
+
+  it("parses italic text and backticks in the same line", () => {
+    expect(parseInlineMarkdown("Use `text` with *emphasis* here")).toEqual([
+      { type: "text", content: "Use " },
+      { type: "code", content: "text" },
+      { type: "text", content: " with " },
+      { type: "emphasis", content: "emphasis" },
+      { type: "text", content: " here" }
+    ]);
+  });
+
+  it("renders escaped markdown markers as literal text", () => {
+    expect(parseInlineMarkdown("\\*literal\\* and \\`tick\\` and \\| pipe")).toEqual([
+      { type: "text", content: "*literal* and `tick` and | pipe" }
+    ]);
+  });
+
+  it("preserves latex-style backslash commands", () => {
+    expect(parseInlineMarkdown("$\\mathbf{v} \\cdot \\mathbf{v}$")).toEqual([
+      { type: "text", content: "$\\mathbf{v} \\cdot \\mathbf{v}$" }
     ]);
   });
 });
