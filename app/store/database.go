@@ -14,7 +14,7 @@ import (
 
 // currentSchemaVersion defines the current database schema version.
 // Increment this when making schema changes that require migrations.
-const currentSchemaVersion = 16
+const currentSchemaVersion = 17
 
 // database wraps the SQLite connection.
 // SQLite handles its own locking for concurrent access:
@@ -116,6 +116,7 @@ func (db *database) init() error {
 		thinking_time_start TIMESTAMP,
 		thinking_time_end TIMESTAMP,
 		tool_result TEXT,
+		stats TEXT,
 		FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
 	);
 
@@ -271,6 +272,12 @@ func (db *database) migrate() error {
 				return fmt.Errorf("migrate v15 to v16: %w", err)
 			}
 			version = 16
+		case 16:
+			// add stats column to messages table
+			if err := db.migrateV16ToV17(); err != nil {
+				return fmt.Errorf("migrate v16 to v17: %w", err)
+			}
+			version = 17
 		default:
 			// If we have a version we don't recognize, just set it to current
 			// This might happen during development
@@ -540,6 +547,21 @@ func (db *database) migrateV15ToV16() error {
 	return nil
 }
 
+// migrateV16ToV17 adds the stats column to the messages table.
+func (db *database) migrateV16ToV17() error {
+	_, err := db.conn.Exec(`ALTER TABLE messages ADD COLUMN stats TEXT`)
+	if err != nil && !duplicateColumnError(err) {
+		return fmt.Errorf("add stats column: %w", err)
+	}
+
+	_, err = db.conn.Exec(`UPDATE settings SET schema_version = 17`)
+	if err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+
+	return nil
+}
+
 // cleanupOrphanedData removes orphaned records that may exist due to the foreign key bug
 func (db *database) cleanupOrphanedData() error {
 	_, err := db.conn.Exec(`
@@ -787,7 +809,7 @@ func (db *database) updateLastMessage(chatID string, msg Message) error {
 
 	query := `
 		UPDATE messages 
-		SET content = ?, thinking = ?, model_name = ?, updated_at = ?, thinking_time_start = ?, thinking_time_end = ?, tool_result = ?
+		SET content = ?, thinking = ?, model_name = ?, updated_at = ?, thinking_time_start = ?, thinking_time_end = ?, tool_result = ?, stats = ?
 		WHERE id = ?
 	`
 
@@ -813,6 +835,11 @@ func (db *database) updateLastMessage(chatID string, msg Message) error {
 		toolResultJSON = sql.NullString{String: string(resultBytes), Valid: true}
 	}
 
+	statsJSON, err := messageStatsSQL(msg.Stats)
+	if err != nil {
+		return err
+	}
+
 	result, err := tx.Exec(query,
 		msg.Content,
 		msg.Thinking,
@@ -821,6 +848,7 @@ func (db *database) updateLastMessage(chatID string, msg Message) error {
 		thinkingTimeStart,
 		thinkingTimeEnd,
 		toolResultJSON,
+		statsJSON,
 		messageID,
 	)
 	if err != nil {
@@ -885,7 +913,7 @@ func (db *database) appendMessage(chatID string, msg Message) error {
 
 func (db *database) getMessages(chatID string, loadAttachmentData bool) ([]Message, error) {
 	query := `
-		SELECT id, role, content, thinking, stream, model_name, created_at, updated_at, thinking_time_start, thinking_time_end, tool_result
+		SELECT id, role, content, thinking, stream, model_name, created_at, updated_at, thinking_time_start, thinking_time_end, tool_result, stats
 		FROM messages
 		WHERE chat_id = ?
 		ORDER BY id ASC
@@ -904,6 +932,7 @@ func (db *database) getMessages(chatID string, loadAttachmentData bool) ([]Messa
 		var thinkingTimeStart, thinkingTimeEnd sql.NullTime
 		var modelName sql.NullString
 		var toolResult sql.NullString
+		var stats sql.NullString
 
 		err := rows.Scan(
 			&messageID,
@@ -917,6 +946,7 @@ func (db *database) getMessages(chatID string, loadAttachmentData bool) ([]Messa
 			&thinkingTimeStart,
 			&thinkingTimeEnd,
 			&toolResult,
+			&stats,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
@@ -940,6 +970,13 @@ func (db *database) getMessages(chatID string, loadAttachmentData bool) ([]Messa
 			var result json.RawMessage
 			if err := json.Unmarshal([]byte(toolResult.String), &result); err == nil {
 				msg.ToolResult = &result
+			}
+		}
+
+		if stats.Valid && stats.String != "" {
+			var messageStats ResponseStats
+			if err := json.Unmarshal([]byte(stats.String), &messageStats); err == nil {
+				msg.Stats = &messageStats
 			}
 		}
 
@@ -967,8 +1004,8 @@ func (db *database) getMessages(chatID string, loadAttachmentData bool) ([]Messa
 
 func (db *database) insertMessage(tx *sql.Tx, chatID string, msg Message) (int64, error) {
 	query := `
-		INSERT INTO messages (chat_id, role, content, thinking, stream, model_name, created_at, updated_at, thinking_time_start, thinking_time_end, tool_result)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO messages (chat_id, role, content, thinking, stream, model_name, created_at, updated_at, thinking_time_start, thinking_time_end, tool_result, stats)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	var thinkingTimeStart, thinkingTimeEnd sql.NullTime
@@ -993,6 +1030,11 @@ func (db *database) insertMessage(tx *sql.Tx, chatID string, msg Message) (int64
 		toolResultJSON = sql.NullString{String: string(resultBytes), Valid: true}
 	}
 
+	statsJSON, err := messageStatsSQL(msg.Stats)
+	if err != nil {
+		return 0, err
+	}
+
 	result, err := tx.Exec(query,
 		chatID,
 		msg.Role,
@@ -1005,6 +1047,7 @@ func (db *database) insertMessage(tx *sql.Tx, chatID string, msg Message) (int64
 		thinkingTimeStart,
 		thinkingTimeEnd,
 		toolResultJSON,
+		statsJSON,
 	)
 	if err != nil {
 		return 0, err
@@ -1023,6 +1066,19 @@ func (db *database) insertMessage(tx *sql.Tx, chatID string, msg Message) (int64
 	}
 
 	return messageID, nil
+}
+
+func messageStatsSQL(stats *ResponseStats) (sql.NullString, error) {
+	if stats == nil {
+		return sql.NullString{}, nil
+	}
+
+	statsBytes, err := json.Marshal(stats)
+	if err != nil {
+		return sql.NullString{}, fmt.Errorf("marshal response stats: %w", err)
+	}
+
+	return sql.NullString{String: string(statsBytes), Valid: true}, nil
 }
 
 func (db *database) getAttachments(messageID int64, loadData bool) ([]File, error) {

@@ -95,6 +95,72 @@ describe("standalone Ollama client", () => {
     expect(events.at(-1)).toMatchObject({ eventName: "done" });
   });
 
+  it("captures final usage metrics from split streaming chunks", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('{"message":{"content":"hel'));
+        controller.enqueue(
+          encoder.encode(
+            'lo"},"done":false}\n{"done":true,"total_duration":2000000000,"load_duration":100000000,"prompt_eval_count":12,'
+          )
+        );
+        controller.enqueue(
+          encoder.encode(
+            '"prompt_eval_duration":1000000000,"eval_count":24,"eval_duration":2000000000,"done_reason":"stop"}\n'
+          )
+        );
+        controller.close();
+      }
+    });
+
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      void init;
+      if (url.endsWith("/api/ps")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              models: [{ model: "llama3.2:latest", context_length: 32768 }]
+            }),
+            { status: 200 }
+          )
+        );
+      }
+
+      return Promise.resolve(new Response(stream, { status: 200 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const events = [];
+    for await (const event of sendStandaloneChat(
+      undefined,
+      "llama3.2",
+      [{ id: "msg", role: "user", content: "hi", status: "complete" }],
+      false
+    )) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      expect.objectContaining({ eventName: "chat", content: "hello" }),
+      expect.objectContaining({
+        eventName: "done",
+        stats: expect.objectContaining({
+          outputTokens: 24,
+          promptTokens: 12,
+          contextUsed: 36,
+          contextLimit: 32768,
+          outputTokensPerSecond: 12,
+          promptTokensPerSecond: 12,
+          totalSeconds: 2,
+          loadSeconds: 0.1,
+          doneReason: "stop"
+        })
+      })
+    ]);
+    expect(events).not.toContainEqual(expect.objectContaining({ content: undefined }));
+  });
+
   it("serializes image and text attachments into Ollama chat messages", async () => {
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {

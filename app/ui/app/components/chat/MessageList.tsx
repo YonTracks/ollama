@@ -16,7 +16,7 @@ import { MarkdownContent } from "@/components/chat/MarkdownContent";
 import { imageAttachmentDataUrl } from "@/lib/ollama/attachments";
 import { isImageGenerationModel } from "@/lib/ollama/models";
 import { cn, formatBytes } from "@/lib/utils";
-import type { ChatAttachment, ChatMessage } from "@/lib/ollama/types";
+import type { ChatAttachment, ChatMessage, ResponseStats } from "@/lib/ollama/types";
 
 interface MessageListProps {
   messages: ChatMessage[];
@@ -136,6 +136,9 @@ export function MessageList({ messages, compact }: MessageListProps) {
                     <span className="ml-1 inline-block h-4 w-2 animate-pulse rounded-sm bg-accent align-text-bottom" />
                   ) : null}
                 </div>
+                {message.role === "assistant" && message.stats ? (
+                  <MessageStatsFooter stats={message.stats} />
+                ) : null}
               </div>
             </article>
           );
@@ -146,6 +149,27 @@ export function MessageList({ messages, compact }: MessageListProps) {
         <ImageLightbox image={selectedImage} onClose={() => setSelectedImage(null)} />
       ) : null}
     </>
+  );
+}
+
+function MessageStatsFooter({ stats }: { stats: ResponseStats }) {
+  const parts = responseStatsParts(stats);
+  if (parts.length === 0) return null;
+
+  const label = parts.join(" · ");
+
+  return (
+    <div
+      className="mt-2 flex flex-wrap gap-x-2 gap-y-1 text-xs leading-5 text-muted-foreground"
+      title={label}
+      aria-label={`Response stats: ${label}`}
+    >
+      {parts.map((part, index) => (
+        <span key={`${part}-${index}`} className="whitespace-nowrap">
+          {part}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -350,4 +374,58 @@ function formatThinkingDuration(start?: string, end?: string) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+function responseStatsParts(stats: ResponseStats) {
+  const parts: string[] = [];
+
+  if (typeof stats.outputTokensPerSecond === "number") {
+    parts.push(`${formatRate(stats.outputTokensPerSecond)} tok/s`);
+  }
+  if (typeof stats.outputTokens === "number") {
+    parts.push(`${formatCount(stats.outputTokens)} out`);
+  }
+  if (typeof stats.promptTokens === "number") {
+    parts.push(`${formatCount(stats.promptTokens)} prompt`);
+  }
+  if (typeof stats.contextUsed === "number") {
+    parts.push(formatContext(stats.contextUsed, stats.contextLimit));
+  }
+  if (typeof stats.totalSeconds === "number") {
+    parts.push(`total ${formatDuration(stats.totalSeconds)}`);
+  }
+  if (typeof stats.loadSeconds === "number" && stats.loadSeconds > 0.05) {
+    parts.push(`load ${formatDuration(stats.loadSeconds)}`);
+  }
+  if (typeof stats.promptTokensPerSecond === "number") {
+    parts.push(`prompt ${formatRate(stats.promptTokensPerSecond)} tok/s`);
+  }
+
+  return parts;
+}
+
+function formatRate(value: number) {
+  return value.toLocaleString(undefined, {
+    maximumFractionDigits: 1,
+    minimumFractionDigits: 1
+  });
+}
+
+function formatCount(value: number) {
+  return value.toLocaleString();
+}
+
+function formatContext(contextUsed: number, contextLimit: number | null | undefined) {
+  if (typeof contextLimit !== "number" || contextLimit <= 0) return `ctx ${formatCount(contextUsed)}`;
+
+  const percent = Math.max(0, Math.round((contextUsed / contextLimit) * 100));
+  return `ctx ${formatCount(contextUsed)} / ${formatCount(contextLimit)} (${percent}%)`;
+}
+
+function formatDuration(seconds: number) {
+  const fractionDigits = seconds < 10 ? 2 : 1;
+  return `${seconds.toLocaleString(undefined, {
+    maximumFractionDigits: fractionDigits,
+    minimumFractionDigits: fractionDigits
+  })}s`;
 }

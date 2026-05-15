@@ -25,7 +25,8 @@ import type {
   ChatMessage,
   ChatRequest,
   ChatTextEvent,
-  DownloadEvent
+  DownloadEvent,
+  ResponseStats
 } from "@/lib/ollama/types";
 import type { AppMode } from "@/lib/appMode";
 import type { LocalSettings } from "@/types/app";
@@ -105,14 +106,16 @@ function isEmptyPendingAssistantMessage(message: ChatMessage) {
   );
 }
 
-function completeActiveMessages(messages: ChatMessage[]) {
-  return messages
+function completeActiveMessages(messages: ChatMessage[], stats?: ResponseStats) {
+  const next = messages
     .filter((message) => !isEmptyPendingAssistantMessage(message))
     .map((message) =>
       message.status === "sending" || message.status === "streaming"
         ? { ...message, status: "complete" as const }
         : message
     );
+
+  return stats ? attachStatsToLastAssistant(next, stats) : next;
 }
 
 function persistableMessages(messages: ChatMessage[]) {
@@ -138,6 +141,16 @@ function appendAssistantError(messages: ChatMessage[], content: string) {
       status: "error" as const
     }
   ];
+}
+
+function attachStatsToLastAssistant(messages: ChatMessage[], stats: ResponseStats) {
+  const index = [...messages].reverse().findIndex((message) => message.role === "assistant");
+  if (index < 0) return messages;
+
+  const assistantIndex = messages.length - 1 - index;
+  return messages.map((message, messageIndex) =>
+    messageIndex === assistantIndex ? { ...message, stats } : message
+  );
 }
 
 function toThinkRequest(settings: LocalSettings, model?: string): ChatRequest["think"] {
@@ -380,6 +393,7 @@ export function useChatSession({
             workingMessages,
             toThinkRequest(settings, selectedModel),
             toImageGenerationOptions(settings),
+            settings.contextLength || null,
             controller.signal
           )) {
             if (event.eventName === "error") {
@@ -415,7 +429,7 @@ export function useChatSession({
             if (event.eventName === "done") {
               setModelLoading(false);
               setModelLoadingName(null);
-              workingMessages = completeActiveMessages(workingMessages);
+              workingMessages = completeActiveMessages(workingMessages, event.stats);
               const nextChat = completeChat(currentChat, workingMessages);
               chatRef.current = nextChat;
               setMessages(workingMessages);
@@ -526,7 +540,7 @@ export function useChatSession({
           if (event.eventName === "done") {
             setModelLoading(false);
             setModelLoadingName(null);
-            setMessages((current) => completeActiveMessages(current));
+            setMessages((current) => completeActiveMessages(current, event.stats));
           }
         }
 

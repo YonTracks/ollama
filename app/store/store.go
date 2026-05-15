@@ -42,10 +42,34 @@ type Message struct {
 	ToolCall          *ToolCall        `json:"tool_call,omitempty"`
 	ToolName          string           `json:"tool_name,omitempty"`
 	ToolResult        *json.RawMessage `json:"tool_result,omitempty"`
+	Stats             *ResponseStats   `json:"stats,omitempty"`
 	CreatedAt         time.Time        `json:"created_at"`
 	UpdatedAt         time.Time        `json:"updated_at"`
 	ThinkingTimeStart *time.Time       `json:"thinkingTimeStart,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
 	ThinkingTimeEnd   *time.Time       `json:"thinkingTimeEnd,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
+}
+
+type OllamaUsageMetrics struct {
+	TotalDuration      *int64 `json:"total_duration"`
+	LoadDuration       *int64 `json:"load_duration"`
+	PromptEvalCount    *int   `json:"prompt_eval_count"`
+	PromptEvalDuration *int64 `json:"prompt_eval_duration"`
+	EvalCount          *int   `json:"eval_count"`
+	EvalDuration       *int64 `json:"eval_duration"`
+	DoneReason         string `json:"done_reason,omitempty"`
+}
+
+type ResponseStats struct {
+	OutputTokens          *int                `json:"outputTokens"`
+	PromptTokens          *int                `json:"promptTokens"`
+	ContextUsed           *int                `json:"contextUsed"`
+	ContextLimit          *int                `json:"contextLimit"`
+	OutputTokensPerSecond *float64            `json:"outputTokensPerSecond"`
+	PromptTokensPerSecond *float64            `json:"promptTokensPerSecond"`
+	TotalSeconds          *float64            `json:"totalSeconds"`
+	LoadSeconds           *float64            `json:"loadSeconds"`
+	DoneReason            string              `json:"doneReason,omitempty"`
+	Raw                   *OllamaUsageMetrics `json:"raw,omitempty"`
 }
 
 // MessageOptions contains optional parameters for creating a Message
@@ -57,6 +81,7 @@ type MessageOptions struct {
 	ToolCalls         []ToolCall
 	ToolCall          *ToolCall
 	ToolResult        *json.RawMessage
+	Stats             *ResponseStats
 	ThinkingTimeStart *time.Time
 	ThinkingTimeEnd   *time.Time
 }
@@ -79,6 +104,7 @@ func NewMessage(role, content string, opts *MessageOptions) Message {
 		msg.ToolCalls = opts.ToolCalls
 		msg.ToolCall = opts.ToolCall
 		msg.ToolResult = opts.ToolResult
+		msg.Stats = opts.Stats
 		msg.ThinkingTimeStart = opts.ThinkingTimeStart
 		msg.ThinkingTimeEnd = opts.ThinkingTimeEnd
 	}

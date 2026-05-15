@@ -54,6 +54,29 @@ export interface ChatAttachment {
   truncated?: boolean;
 }
 
+export interface OllamaUsageMetrics {
+  total_duration?: number;
+  load_duration?: number;
+  prompt_eval_count?: number;
+  prompt_eval_duration?: number;
+  eval_count?: number;
+  eval_duration?: number;
+  done_reason?: string;
+}
+
+export interface ResponseStats {
+  outputTokens: number | null;
+  promptTokens: number | null;
+  contextUsed: number | null;
+  contextLimit: number | null;
+  outputTokensPerSecond: number | null;
+  promptTokensPerSecond: number | null;
+  totalSeconds: number | null;
+  loadSeconds: number | null;
+  doneReason?: string;
+  raw?: OllamaUsageMetrics;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system" | "tool";
@@ -68,6 +91,7 @@ export interface ChatMessage {
   createdAt?: string;
   updatedAt?: string;
   status?: "sending" | "streaming" | "complete" | "error";
+  stats?: ResponseStats;
 }
 
 export interface Chat {
@@ -115,6 +139,7 @@ export interface ChatTextEvent {
   thinkingTimeStart?: string;
   thinkingTimeEnd?: string;
   chatId?: string;
+  stats?: ResponseStats;
   toolName?: string;
   toolResult?: boolean;
   toolResultData?: unknown;

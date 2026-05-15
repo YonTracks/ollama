@@ -306,6 +306,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/show", ollamaProxy)
 	mux.Handle("GET /api/version", ollamaProxy)
 	mux.Handle("GET /api/status", ollamaProxy)
+	mux.Handle("GET /api/ps", ollamaProxy)
 	mux.Handle("HEAD /api/version", ollamaProxy)
 	mux.Handle("POST /api/me", ollamaProxy)
 	mux.Handle("POST /api/signout", ollamaProxy)
@@ -837,7 +838,8 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	if isImageGenerationModelName(req.Model) {
-		if err := s.generateChat(ctx, w, flusher, c, chat, req, thinkValue, &loading, cancelLoading); err != nil {
+		finalMetrics, err := s.generateChat(ctx, w, flusher, c, chat, req, thinkValue, &loading, cancelLoading)
+		if err != nil {
 			s.log().Error("generate stream error", "error", err)
 			errorEvent := s.getError(err)
 			json.NewEncoder(w).Encode(errorEvent)
@@ -845,7 +847,12 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 			return nil
 		}
 
-		json.NewEncoder(w).Encode(responses.ChatEvent{EventName: "done"})
+		stats := s.responseStatsFromMetrics(ctx, c, req.Model, finalMetrics)
+		if err := s.attachStatsToLastAssistant(chat, stats); err != nil {
+			return err
+		}
+
+		json.NewEncoder(w).Encode(responses.ChatEvent{EventName: "done", Stats: stats})
 		flusher.Flush()
 
 		if len(chat.Messages) > 0 {
@@ -892,6 +899,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 
 	var thinkingTimeStart *time.Time = nil
 	var thinkingTimeEnd *time.Time = nil
+	var finalMetrics *store.OllamaUsageMetrics
 	// Request-only assistant tool_calls buffer
 	// if tool_calls arrive before any assistant text, we keep them here,
 	// inject them into the next request, and attach on first assistant content/thinking.
@@ -934,11 +942,16 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 
+		finalMetrics = nil
 		err = c.Chat(ctx, chatReq, func(res api.ChatResponse) error {
 			if loading {
 				// Remove the loading indicator on first token
 				cancelLoading()
 				loading = false
+			}
+
+			if res.Done {
+				finalMetrics = usageMetricsFromChatResponse(res)
 			}
 
 			// Start thinking timer on first thinking content or after tool call when thinking again
@@ -1249,7 +1262,12 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
-	json.NewEncoder(w).Encode(responses.ChatEvent{EventName: "done"})
+	stats := s.responseStatsFromMetrics(ctx, c, req.Model, finalMetrics)
+	if err := s.attachStatsToLastAssistant(chat, stats); err != nil {
+		return err
+	}
+
+	json.NewEncoder(w).Encode(responses.ChatEvent{EventName: "done", Stats: stats})
 	flusher.Flush()
 
 	if len(chat.Messages) > 0 {
@@ -1426,6 +1444,179 @@ func chatEventFromApiChatResponse(res api.ChatResponse, thinkingTimeStart *time.
 		ThinkingTimeStart: thinkingTimeStart,
 		ThinkingTimeEnd:   thinkingTimeEnd,
 	}
+}
+
+func usageMetricsFromChatResponse(res api.ChatResponse) *store.OllamaUsageMetrics {
+	return usageMetricsFromValues(
+		res.TotalDuration,
+		res.LoadDuration,
+		res.PromptEvalCount,
+		res.PromptEvalDuration,
+		res.EvalCount,
+		res.EvalDuration,
+		res.DoneReason,
+	)
+}
+
+func usageMetricsFromGenerateResponse(res api.GenerateResponse) *store.OllamaUsageMetrics {
+	return usageMetricsFromValues(
+		res.TotalDuration,
+		res.LoadDuration,
+		res.PromptEvalCount,
+		res.PromptEvalDuration,
+		res.EvalCount,
+		res.EvalDuration,
+		res.DoneReason,
+	)
+}
+
+func usageMetricsFromValues(totalDuration, loadDuration time.Duration, promptEvalCount int, promptEvalDuration time.Duration, evalCount int, evalDuration time.Duration, doneReason string) *store.OllamaUsageMetrics {
+	metrics := &store.OllamaUsageMetrics{
+		TotalDuration:      durationNsPtr(totalDuration),
+		LoadDuration:       durationNsPtr(loadDuration),
+		PromptEvalCount:    countPtrIfPresent(promptEvalCount, promptEvalCount > 0 || promptEvalDuration > 0),
+		PromptEvalDuration: durationNsPtr(promptEvalDuration),
+		EvalCount:          countPtrIfPresent(evalCount, evalCount > 0 || evalDuration > 0),
+		EvalDuration:       durationNsPtr(evalDuration),
+		DoneReason:         doneReason,
+	}
+
+	if metrics.TotalDuration == nil &&
+		metrics.LoadDuration == nil &&
+		metrics.PromptEvalCount == nil &&
+		metrics.PromptEvalDuration == nil &&
+		metrics.EvalCount == nil &&
+		metrics.EvalDuration == nil &&
+		metrics.DoneReason == "" {
+		return nil
+	}
+
+	return metrics
+}
+
+func durationNsPtr(duration time.Duration) *int64 {
+	if duration <= 0 {
+		return nil
+	}
+
+	ns := int64(duration)
+	return &ns
+}
+
+func countPtrIfPresent(count int, present bool) *int {
+	if !present {
+		return nil
+	}
+
+	return &count
+}
+
+func (s *Server) responseStatsFromMetrics(ctx context.Context, c *api.Client, model string, metrics *store.OllamaUsageMetrics) *store.ResponseStats {
+	if metrics == nil {
+		return nil
+	}
+
+	stats := &store.ResponseStats{
+		OutputTokens:          metrics.EvalCount,
+		PromptTokens:          metrics.PromptEvalCount,
+		ContextLimit:          s.contextLimitForModel(ctx, c, model),
+		OutputTokensPerSecond: tokensPerSecondPtr(metrics.EvalCount, metrics.EvalDuration),
+		PromptTokensPerSecond: tokensPerSecondPtr(metrics.PromptEvalCount, metrics.PromptEvalDuration),
+		TotalSeconds:          secondsPtr(metrics.TotalDuration),
+		LoadSeconds:           secondsPtr(metrics.LoadDuration),
+		DoneReason:            metrics.DoneReason,
+		Raw:                   metrics,
+	}
+
+	if metrics.EvalCount != nil && metrics.PromptEvalCount != nil {
+		contextUsed := *metrics.EvalCount + *metrics.PromptEvalCount
+		stats.ContextUsed = &contextUsed
+	}
+
+	return stats
+}
+
+func (s *Server) contextLimitForModel(ctx context.Context, c *api.Client, requestedModel string) *int {
+	fallback := s.fallbackContextLength()
+	ps, err := c.ListRunning(ctx)
+	if err != nil || ps == nil {
+		return fallback
+	}
+
+	for _, runningModel := range ps.Models {
+		if matchesRunningModel(runningModel, requestedModel) && runningModel.ContextLength > 0 {
+			contextLength := runningModel.ContextLength
+			return &contextLength
+		}
+	}
+
+	return fallback
+}
+
+func (s *Server) fallbackContextLength() *int {
+	settings, err := s.Store.Settings()
+	if err != nil || settings.ContextLength <= 0 {
+		return nil
+	}
+
+	return &settings.ContextLength
+}
+
+func matchesRunningModel(runningModel api.ProcessModelResponse, requestedModel string) bool {
+	candidates := []string{runningModel.Model, runningModel.Name}
+	requested := strings.TrimSpace(requestedModel)
+	if requested == "" {
+		return false
+	}
+
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+
+		if candidate == requested ||
+			strings.HasPrefix(candidate, requested+":") ||
+			strings.HasPrefix(requested, candidate+":") ||
+			strings.TrimSuffix(candidate, ":latest") == strings.TrimSuffix(requested, ":latest") {
+			return true
+		}
+	}
+
+	return false
+}
+
+func tokensPerSecondPtr(tokens *int, durationNs *int64) *float64 {
+	if tokens == nil || durationNs == nil || *durationNs <= 0 {
+		return nil
+	}
+
+	rate := float64(*tokens) / (float64(*durationNs) / 1_000_000_000)
+	return &rate
+}
+
+func secondsPtr(durationNs *int64) *float64 {
+	if durationNs == nil {
+		return nil
+	}
+
+	seconds := float64(*durationNs) / 1_000_000_000
+	return &seconds
+}
+
+func (s *Server) attachStatsToLastAssistant(chat *store.Chat, stats *store.ResponseStats) error {
+	if stats == nil || chat == nil {
+		return nil
+	}
+
+	if len(chat.Messages) == 0 || chat.Messages[len(chat.Messages)-1].Role != "assistant" {
+		return nil
+	}
+
+	lastMsg := &chat.Messages[len(chat.Messages)-1]
+	lastMsg.Stats = stats
+	lastMsg.UpdatedAt = time.Now()
+	return s.Store.UpdateLastMessage(chat.ID, *lastMsg)
 }
 
 func chatInfoFromChat(chat store.Chat) responses.ChatInfo {
@@ -1860,14 +2051,15 @@ func (s *Server) buildGenerateRequest(chat *store.Chat, req responses.ChatReques
 	}, nil
 }
 
-func (s *Server) generateChat(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, c *api.Client, chat *store.Chat, req responses.ChatRequest, think any, loading *bool, cancelLoading context.CancelFunc) error {
+func (s *Server) generateChat(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, c *api.Client, chat *store.Chat, req responses.ChatRequest, think any, loading *bool, cancelLoading context.CancelFunc) (*store.OllamaUsageMetrics, error) {
 	generateReq, err := s.buildGenerateRequest(chat, req, think)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var thinkingTimeStart *time.Time
 	var thinkingTimeEnd *time.Time
+	var finalMetrics *store.OllamaUsageMetrics
 
 	ensureAssistantMessage := func(options *store.MessageOptions) (*store.Message, error) {
 		if len(chat.Messages) == 0 || chat.Messages[len(chat.Messages)-1].Role != "assistant" {
@@ -1881,10 +2073,14 @@ func (s *Server) generateChat(ctx context.Context, w http.ResponseWriter, flushe
 		return &chat.Messages[len(chat.Messages)-1], nil
 	}
 
-	return c.Generate(ctx, generateReq, func(res api.GenerateResponse) error {
+	err = c.Generate(ctx, generateReq, func(res api.GenerateResponse) error {
 		if *loading {
 			cancelLoading()
 			*loading = false
+		}
+
+		if res.Done {
+			finalMetrics = usageMetricsFromGenerateResponse(res)
 		}
 
 		if res.Thinking != "" && (thinkingTimeStart == nil || thinkingTimeEnd != nil) {
@@ -1995,6 +2191,8 @@ func (s *Server) generateChat(ctx context.Context, w http.ResponseWriter, flushe
 
 		return nil
 	})
+
+	return finalMetrics, err
 }
 
 // buildChatRequest converts store.Chat to api.ChatRequest

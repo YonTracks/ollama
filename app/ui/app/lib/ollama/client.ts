@@ -33,6 +33,7 @@ interface RawChatMessage {
   stream?: boolean;
   model?: string;
   tool_name?: string;
+  stats?: unknown;
   created_at?: string;
   updated_at?: string;
 }
@@ -317,10 +318,16 @@ function normalizeMessage(message: RawChatMessage, index: number): ChatMessage {
     model: message.model,
     stream: message.stream,
     toolName: message.tool_name,
+    stats: normalizeResponseStats(message.stats),
     createdAt: message.created_at,
     updatedAt: message.updated_at,
     status: message.stream ? "streaming" : "complete"
   };
+}
+
+function normalizeResponseStats(stats: unknown) {
+  if (!stats || typeof stats !== "object") return undefined;
+  return stats as ChatMessage["stats"];
 }
 
 function toDesktopAttachment(attachment: ChatAttachment) {

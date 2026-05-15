@@ -63,6 +63,7 @@ type ChatEvent struct {
 	Attachments       []ChatEventAttachment `json:"attachments,omitempty"`
 	ThinkingTimeStart *time.Time            `json:"thinkingTimeStart,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
 	ThinkingTimeEnd   *time.Time            `json:"thinkingTimeEnd,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
+	Stats             *store.ResponseStats  `json:"stats,omitempty"`
 
 	// Tool-related fields
 	ToolCalls      []store.ToolCall `json:"toolCalls,omitempty"`

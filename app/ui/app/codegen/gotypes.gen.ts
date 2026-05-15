@@ -51,6 +51,70 @@ export class Time {
 
     }
 }
+export class OllamaUsageMetrics {
+    total_duration?: number;
+    load_duration?: number;
+    prompt_eval_count?: number;
+    prompt_eval_duration?: number;
+    eval_count?: number;
+    eval_duration?: number;
+    done_reason?: string;
+
+    constructor(source: any = {}) {
+        if ('string' === typeof source) source = JSON.parse(source);
+        this.total_duration = source["total_duration"];
+        this.load_duration = source["load_duration"];
+        this.prompt_eval_count = source["prompt_eval_count"];
+        this.prompt_eval_duration = source["prompt_eval_duration"];
+        this.eval_count = source["eval_count"];
+        this.eval_duration = source["eval_duration"];
+        this.done_reason = source["done_reason"];
+    }
+}
+export class ResponseStats {
+    outputTokens?: number;
+    promptTokens?: number;
+    contextUsed?: number;
+    contextLimit?: number;
+    outputTokensPerSecond?: number;
+    promptTokensPerSecond?: number;
+    totalSeconds?: number;
+    loadSeconds?: number;
+    doneReason?: string;
+    raw?: OllamaUsageMetrics;
+
+    constructor(source: any = {}) {
+        if ('string' === typeof source) source = JSON.parse(source);
+        this.outputTokens = source["outputTokens"];
+        this.promptTokens = source["promptTokens"];
+        this.contextUsed = source["contextUsed"];
+        this.contextLimit = source["contextLimit"];
+        this.outputTokensPerSecond = source["outputTokensPerSecond"];
+        this.promptTokensPerSecond = source["promptTokensPerSecond"];
+        this.totalSeconds = source["totalSeconds"];
+        this.loadSeconds = source["loadSeconds"];
+        this.doneReason = source["doneReason"];
+        this.raw = this.convertValues(source["raw"], OllamaUsageMetrics);
+    }
+
+	convertValues(a: any, classs: any, asMap: boolean = false): any {
+	    if (!a) {
+	        return a;
+	    }
+	    if (Array.isArray(a)) {
+	        return (a as any[]).map(elem => this.convertValues(elem, classs));
+	    } else if ("object" === typeof a) {
+	        if (asMap) {
+	            for (const key of Object.keys(a)) {
+	                a[key] = new classs(a[key]);
+	            }
+	            return a;
+	        }
+	        return new classs(a);
+	    }
+	    return a;
+	}
+}
 export class ToolFunction {
     name: string;
     arguments: string;
@@ -112,6 +176,7 @@ export class Message {
     tool_call?: ToolCall;
     tool_name?: string;
     tool_result?: number[];
+    stats?: ResponseStats;
     created_at: Time;
     updated_at: Time;
     thinkingTimeStart?: Date | undefined;
@@ -129,6 +194,7 @@ export class Message {
         this.tool_call = this.convertValues(source["tool_call"], ToolCall);
         this.tool_name = source["tool_name"];
         this.tool_result = source["tool_result"];
+        this.stats = this.convertValues(source["stats"], ResponseStats);
         this.created_at = this.convertValues(source["created_at"], Time);
         this.updated_at = this.convertValues(source["updated_at"], Time);
         this.thinkingTimeStart = source["thinkingTimeStart"] && new Date(source["thinkingTimeStart"]);
@@ -348,6 +414,7 @@ export class ChatEvent {
     attachments?: ChatEventAttachment[];
     thinkingTimeStart?: Date | undefined;
     thinkingTimeEnd?: Date | undefined;
+    stats?: ResponseStats;
     toolCalls?: ToolCall[];
     toolCall?: ToolCall;
     toolName?: string;
@@ -364,6 +431,7 @@ export class ChatEvent {
         this.attachments = this.convertValues(source["attachments"], ChatEventAttachment);
         this.thinkingTimeStart = source["thinkingTimeStart"] && new Date(source["thinkingTimeStart"]);
         this.thinkingTimeEnd = source["thinkingTimeEnd"] && new Date(source["thinkingTimeEnd"]);
+        this.stats = this.convertValues(source["stats"], ResponseStats);
         this.toolCalls = this.convertValues(source["toolCalls"], ToolCall);
         this.toolCall = this.convertValues(source["toolCall"], ToolCall);
         this.toolName = source["toolName"];

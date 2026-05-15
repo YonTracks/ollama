@@ -2,21 +2,29 @@ import { parseJsonlResponse } from "./stream";
 import { OllamaClientError } from "./client";
 import { buildMessageContentWithAttachments, getImagePayloads } from "./attachments";
 import { isImageGenerationModel } from "./models";
+import {
+  buildResponseStats,
+  getOllamaContextLimit,
+  hasUsageMetrics,
+  usageMetricsFromChunk
+} from "./stats";
 import type {
   ChatMessage,
   ChatRequest,
   ChatStreamEvent,
   ChatTextEvent,
   ModelOperationEvent,
+  OllamaUsageMetrics,
   OllamaModel,
   OllamaTagsResponse,
+  ResponseStats,
   OllamaVersion
 } from "./types";
 
 export const DEFAULT_CORE_API_BASE = "http://127.0.0.1:11434";
 export const SAME_ORIGIN_CORE_API_BASE = "same-origin:";
 
-interface CoreChatChunk {
+interface CoreChatChunk extends OllamaUsageMetrics {
   model?: string;
   created_at?: string;
   message?: {
@@ -28,7 +36,7 @@ interface CoreChatChunk {
   error?: string;
 }
 
-interface CoreGenerateChunk {
+interface CoreGenerateChunk extends OllamaUsageMetrics {
   model?: string;
   created_at?: string;
   response?: string;
@@ -200,10 +208,11 @@ function toCoreMessages(messages: ChatMessage[]): CoreChatRequest["messages"] {
     }));
 }
 
-function doneEvent(end?: string): ChatTextEvent {
+function doneEvent(end?: string, stats?: ResponseStats): ChatTextEvent {
   return {
     eventName: "done",
-    thinkingTimeEnd: end
+    thinkingTimeEnd: end,
+    stats
   };
 }
 
@@ -245,6 +254,26 @@ async function postCore(
   } catch (error) {
     throw toStandaloneError(error);
   }
+}
+
+async function statsFromFinalChunk(
+  apiBase: string | undefined,
+  model: string,
+  chunk: OllamaUsageMetrics,
+  fallbackNumCtx: number | null | undefined,
+  signal?: AbortSignal
+) {
+  const metrics = usageMetricsFromChunk(chunk);
+  if (!hasUsageMetrics(metrics)) return undefined;
+
+  const contextLimit = await getOllamaContextLimit({
+    baseUrl: getCoreApiBase(apiBase),
+    model,
+    fallbackNumCtx,
+    signal
+  });
+
+  return buildResponseStats(metrics, contextLimit);
 }
 
 async function* streamCoreOperation(
@@ -376,6 +405,7 @@ async function* sendStandaloneGenerate(
   messages: ChatMessage[],
   think: ChatRequest["think"],
   imageOptions: ImageGenerationOptions = {},
+  fallbackNumCtx?: number | null,
   signal?: AbortSignal
 ): AsyncGenerator<ChatStreamEvent> {
   const userMessage = latestUserMessage(messages);
@@ -453,7 +483,10 @@ async function* sendStandaloneGenerate(
 
       if (chunk.done) {
         if (thinkingStart && !thinkingEnd) thinkingEnd = new Date().toISOString();
-        yield doneEvent(thinkingEnd);
+        yield doneEvent(
+          thinkingEnd,
+          await statsFromFinalChunk(apiBase, model, chunk, fallbackNumCtx, signal)
+        );
       }
     }
   } catch (error) {
@@ -467,10 +500,19 @@ export async function* sendStandaloneChat(
   messages: ChatMessage[],
   think: ChatRequest["think"],
   imageOptions: ImageGenerationOptions = {},
+  fallbackNumCtx?: number | null,
   signal?: AbortSignal
 ): AsyncGenerator<ChatStreamEvent> {
   if (isImageGenerationModel(model)) {
-    yield* sendStandaloneGenerate(apiBase, model, messages, think, imageOptions, signal);
+    yield* sendStandaloneGenerate(
+      apiBase,
+      model,
+      messages,
+      think,
+      imageOptions,
+      fallbackNumCtx,
+      signal
+    );
     return;
   }
 
@@ -486,7 +528,15 @@ export async function* sendStandaloneChat(
   if (!response.ok) {
     const errorMessage = await readError(response);
     if (isChatUnsupportedError(errorMessage)) {
-      yield* sendStandaloneGenerate(apiBase, model, messages, think, imageOptions, signal);
+      yield* sendStandaloneGenerate(
+        apiBase,
+        model,
+        messages,
+        think,
+        imageOptions,
+        fallbackNumCtx,
+        signal
+      );
       return;
     }
 
@@ -538,7 +588,10 @@ export async function* sendStandaloneChat(
 
       if (chunk.done) {
         if (thinkingStart && !thinkingEnd) thinkingEnd = new Date().toISOString();
-        yield doneEvent(thinkingEnd);
+        yield doneEvent(
+          thinkingEnd,
+          await statsFromFinalChunk(apiBase, model, chunk, fallbackNumCtx, signal)
+        );
       }
     }
   } catch (error) {
