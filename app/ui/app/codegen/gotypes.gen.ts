@@ -323,10 +323,29 @@ export class ModelCapabilitiesResponse {
         this.capabilities = source["capabilities"];
     }
 }
+export class ChatEventAttachment {
+    id: string;
+    name: string;
+    mimeType: string;
+    size: number;
+    kind: string;
+    data?: string;
+
+    constructor(source: any = {}) {
+        if ('string' === typeof source) source = JSON.parse(source);
+        this.id = source["id"];
+        this.name = source["name"];
+        this.mimeType = source["mimeType"];
+        this.size = source["size"];
+        this.kind = source["kind"];
+        this.data = source["data"];
+    }
+}
 export class ChatEvent {
     eventName: "chat" | "thinking" | "assistant_with_tools" | "tool_call" | "tool" | "tool_result" | "done" | "chat_created";
     content?: string;
     thinking?: string;
+    attachments?: ChatEventAttachment[];
     thinkingTimeStart?: Date | undefined;
     thinkingTimeEnd?: Date | undefined;
     toolCalls?: ToolCall[];
@@ -342,6 +361,7 @@ export class ChatEvent {
         this.eventName = source["eventName"];
         this.content = source["content"];
         this.thinking = source["thinking"];
+        this.attachments = this.convertValues(source["attachments"], ChatEventAttachment);
         this.thinkingTimeStart = source["thinkingTimeStart"] && new Date(source["thinkingTimeStart"]);
         this.thinkingTimeEnd = source["thinkingTimeEnd"] && new Date(source["thinkingTimeEnd"]);
         this.toolCalls = this.convertValues(source["toolCalls"], ToolCall);
@@ -371,6 +391,7 @@ export class ChatEvent {
 	    return a;
 	}
 }
+
 export class DownloadEvent {
     eventName: "download";
     total: number;
@@ -508,6 +529,9 @@ export class ChatRequest {
     prompt: string;
     index?: number;
     attachments?: Attachment[];
+    width?: number;
+    height?: number;
+    steps?: number;
     web_search?: boolean;
     file_tools?: boolean;
     forceUpdate?: boolean;
@@ -519,6 +543,9 @@ export class ChatRequest {
         this.prompt = source["prompt"];
         this.index = source["index"];
         this.attachments = this.convertValues(source["attachments"], Attachment);
+        this.width = source["width"];
+        this.height = source["height"];
+        this.steps = source["steps"];
         this.web_search = source["web_search"];
         this.file_tools = source["file_tools"];
         this.forceUpdate = source["forceUpdate"];

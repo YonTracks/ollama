@@ -83,13 +83,31 @@ function nowIso() {
 function titleFromMessages(messages: ChatMessage[]) {
   const firstUserMessage = messages.find((message) => message.role === "user");
   const title = firstUserMessage?.content.trim().replace(/\s+/g, " ");
+  if (!title && firstUserMessage?.attachments?.length) {
+    const firstAttachment = firstUserMessage.attachments[0];
+    const suffix =
+      firstUserMessage.attachments.length > 1
+        ? ` +${firstUserMessage.attachments.length - 1}`
+        : "";
+    const attachmentTitle = `${firstAttachment.name}${suffix}`;
+    return attachmentTitle.length > 64
+      ? `${attachmentTitle.slice(0, 61)}...`
+      : attachmentTitle;
+  }
   if (!title) return "New chat";
   return title.length > 64 ? `${title.slice(0, 61)}...` : title;
 }
 
 function excerptFromMessages(messages: ChatMessage[]) {
   const lastUserMessage = [...messages].reverse().find((message) => message.role === "user");
-  return lastUserMessage?.content.trim().replace(/\s+/g, " ").slice(0, 120) ?? "";
+  const excerpt = lastUserMessage?.content.trim().replace(/\s+/g, " ");
+  if (excerpt) return excerpt.slice(0, 120);
+
+  const attachmentCount = lastUserMessage?.attachments?.length ?? 0;
+  if (attachmentCount === 0) return "";
+  return attachmentCount === 1
+    ? `Attached ${lastUserMessage?.attachments?.[0]?.name ?? "file"}`
+    : `Attached ${attachmentCount} files`;
 }
 
 function toRecord(chat: Chat): StandaloneChatRecord {

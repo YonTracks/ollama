@@ -53,6 +53,55 @@ describe("Ollama client", () => {
     ]);
   });
 
+  it("sends attachments to the desktop chat API using the existing backend shape", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"eventName":"done"}\n'));
+        controller.close();
+      }
+    });
+
+    const fetchMock = vi.fn((_url: string, _init?: RequestInit) =>
+      {
+        void _url;
+        void _init;
+        return Promise.resolve(new Response(stream, { status: 200 }));
+      }
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    for await (const event of sendChat("new", {
+      model: "llava",
+      prompt: "describe this",
+      attachments: [
+        {
+          id: "image",
+          name: "image.png",
+          mimeType: "image/png",
+          size: 10,
+          kind: "image",
+          data: "abc123"
+        },
+        {
+          id: "notes",
+          name: "notes.md",
+          mimeType: "text/markdown",
+          size: 7,
+          kind: "text",
+          text: "# Notes"
+        }
+      ]
+    })) {
+      void event;
+    }
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.attachments).toEqual([
+      { filename: "image.png", data: "abc123" },
+      { filename: "notes.md", data: "IyBOb3Rlcw==" }
+    ]);
+  });
+
   it("keeps HTTP failures typed", async () => {
     vi.stubGlobal(
       "fetch",

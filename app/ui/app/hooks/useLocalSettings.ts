@@ -27,7 +27,10 @@ const DEFAULT_SETTINGS: LocalSettings = {
   thinkEnabled: true,
   thinkLevel: "none",
   autoUpdateEnabled: true,
-  compactMessages: false
+  compactMessages: false,
+  imageGenerationWidth: 1024,
+  imageGenerationHeight: 1024,
+  imageGenerationSteps: 20
 };
 
 function settingsKey(mode: AppMode) {

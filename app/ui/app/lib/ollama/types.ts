@@ -41,10 +41,24 @@ export interface ChatInfo {
   updatedAt: string;
 }
 
+export type ChatAttachmentKind = "image" | "text" | "file";
+
+export interface ChatAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  kind: ChatAttachmentKind;
+  data?: string;
+  text?: string;
+  truncated?: boolean;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system" | "tool";
   content: string;
+  attachments?: ChatAttachment[];
   thinking?: string;
   thinkingTimeStart?: string;
   thinkingTimeEnd?: string;
@@ -75,6 +89,10 @@ export interface ChatResponse {
 export interface ChatRequest {
   model: string;
   prompt: string;
+  attachments?: ChatAttachment[];
+  width?: number;
+  height?: number;
+  steps?: number;
   web_search?: boolean;
   file_tools?: boolean;
   forceUpdate?: boolean;
@@ -93,6 +111,7 @@ export interface ChatTextEvent {
     | "chat_created";
   content?: string;
   thinking?: string;
+  attachments?: ChatAttachment[];
   thinkingTimeStart?: string;
   thinkingTimeEnd?: string;
   chatId?: string;
@@ -106,6 +125,14 @@ export interface DownloadEvent {
   total: number;
   completed: number;
   done: boolean;
+}
+
+export interface ModelOperationEvent {
+  status: string;
+  digest?: string;
+  total?: number;
+  completed?: number;
+  error?: string;
 }
 
 export interface ErrorEvent {

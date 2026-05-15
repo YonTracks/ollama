@@ -193,7 +193,7 @@ func (s *Server) Handler() http.Handler {
 			// Add CORS headers for dev work
 			if CORS() {
 				w.Header().Set("Access-Control-Allow-Origin", "*")
-				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, HEAD, OPTIONS")
 				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, User-Agent, Accept, X-Requested-With")
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
 
@@ -296,6 +296,13 @@ func (s *Server) Handler() http.Handler {
 	// Ollama proxy endpoints
 	ollamaProxy := s.ollamaProxy()
 	mux.Handle("GET /api/tags", ollamaProxy)
+	mux.Handle("POST /api/chat", ollamaProxy)
+	mux.Handle("POST /api/generate", ollamaProxy)
+	mux.Handle("POST /api/pull", ollamaProxy)
+	mux.Handle("POST /api/create", ollamaProxy)
+	mux.Handle("DELETE /api/delete", ollamaProxy)
+	mux.Handle("HEAD /api/blobs/{digest}", ollamaProxy)
+	mux.Handle("POST /api/blobs/{digest}", ollamaProxy)
 	mux.Handle("POST /api/show", ollamaProxy)
 	mux.Handle("GET /api/version", ollamaProxy)
 	mux.Handle("GET /api/status", ollamaProxy)
@@ -319,7 +326,7 @@ func (s *Server) handleError(w http.ResponseWriter, e error) {
 	// Preserve CORS headers for API requests
 	if CORS() {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, HEAD, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, User-Agent, Accept, X-Requested-With")
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 	}
@@ -643,8 +650,8 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 		return fmt.Errorf("empty model")
 	}
 
-	// Don't allow empty messages unless forceUpdate is true
-	if req.Prompt == "" && !req.ForceUpdate {
+	// Don't allow empty messages unless forceUpdate is true or files are attached.
+	if req.Prompt == "" && len(req.Attachments) == 0 && !req.ForceUpdate {
 		return fmt.Errorf("empty message")
 	}
 
@@ -823,6 +830,24 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 		thinkValue = req.Think
 	} else {
 		thinkValue = think
+	}
+
+	if isImageGenerationModelName(req.Model) {
+		if err := s.generateChat(ctx, w, flusher, c, chat, req, thinkValue, &loading, cancelLoading); err != nil {
+			s.log().Error("generate stream error", "error", err)
+			errorEvent := s.getError(err)
+			json.NewEncoder(w).Encode(errorEvent)
+			flusher.Flush()
+			return nil
+		}
+
+		json.NewEncoder(w).Encode(responses.ChatEvent{EventName: "done"})
+		flusher.Flush()
+
+		if len(chat.Messages) > 0 {
+			chat.Messages[len(chat.Messages)-1].Stream = false
+		}
+		return s.Store.SetChat(*chat)
 	}
 
 	// Check if the last user message has attachments
@@ -1689,6 +1714,251 @@ func supportsBrowserTools(model string) bool {
 	return strings.HasPrefix(strings.ToLower(model), "gpt-oss")
 }
 
+func isImageGenerationModelName(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.HasPrefix(lower, "x/flux") ||
+		strings.HasPrefix(lower, "x/z-image") ||
+		strings.Contains(lower, "flux-klein") ||
+		strings.Contains(lower, "flux2-klein") ||
+		strings.Contains(lower, "z-image")
+}
+
+func apiThinkValue(think any) *api.ThinkValue {
+	if think == nil {
+		return nil
+	}
+
+	if boolValue, ok := think.(bool); ok {
+		if boolValue {
+			return &api.ThinkValue{Value: boolValue}
+		}
+		return nil
+	}
+
+	if stringValue, ok := think.(string); ok {
+		if stringValue != "" && stringValue != "none" {
+			return &api.ThinkValue{Value: stringValue}
+		}
+	}
+
+	return nil
+}
+
+func promptAndImagesFromMessage(m store.Message) (string, []api.ImageData) {
+	sb := strings.Builder{}
+	sb.WriteString(m.Content)
+
+	var images []api.ImageData
+	for _, a := range m.Attachments {
+		if isImageAttachment(a.Filename) {
+			images = append(images, api.ImageData(a.Data))
+			continue
+		}
+
+		content := convertBytesToText(a.Data, a.Filename)
+		sb.WriteString(fmt.Sprintf("\n--- File: %s ---\n%s\n--- End of %s ---",
+			a.Filename, content, a.Filename))
+	}
+
+	return sb.String(), images
+}
+
+func generatedImagePayload(image string) (string, string, error) {
+	mimeType := "image/png"
+	data := image
+
+	if strings.HasPrefix(image, "data:") {
+		parts := strings.SplitN(image, ",", 2)
+		if len(parts) == 2 {
+			data = parts[1]
+			if meta := strings.TrimPrefix(parts[0], "data:"); meta != "" {
+				mimeType = strings.TrimSuffix(meta, ";base64")
+			}
+		}
+	}
+
+	if _, err := base64.StdEncoding.DecodeString(data); err != nil {
+		return "", "", err
+	}
+
+	return data, mimeType, nil
+}
+
+func generatedImageFilename(mimeType string) string {
+	switch mimeType {
+	case "image/jpeg":
+		return "generated-image.jpg"
+	case "image/webp":
+		return "generated-image.webp"
+	default:
+		return "generated-image.png"
+	}
+}
+
+func (s *Server) buildGenerateRequest(chat *store.Chat, req responses.ChatRequest, think any) (*api.GenerateRequest, error) {
+	var userMessage *store.Message
+	for i := len(chat.Messages) - 1; i >= 0; i-- {
+		if chat.Messages[i].Role == "user" {
+			userMessage = &chat.Messages[i]
+			break
+		}
+	}
+
+	if userMessage == nil {
+		return nil, fmt.Errorf("missing user message")
+	}
+
+	prompt, images := promptAndImagesFromMessage(*userMessage)
+
+	return &api.GenerateRequest{
+		Model:  req.Model,
+		Prompt: prompt,
+		Images: images,
+		Stream: ptr(true),
+		Think:  apiThinkValue(think),
+		Width:  req.Width,
+		Height: req.Height,
+		Steps:  req.Steps,
+	}, nil
+}
+
+func (s *Server) generateChat(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, c *api.Client, chat *store.Chat, req responses.ChatRequest, think any, loading *bool, cancelLoading context.CancelFunc) error {
+	generateReq, err := s.buildGenerateRequest(chat, req, think)
+	if err != nil {
+		return err
+	}
+
+	var thinkingTimeStart *time.Time
+	var thinkingTimeEnd *time.Time
+
+	ensureAssistantMessage := func(options *store.MessageOptions) (*store.Message, error) {
+		if len(chat.Messages) == 0 || chat.Messages[len(chat.Messages)-1].Role != "assistant" {
+			newMsg := store.NewMessage("assistant", "", options)
+			chat.Messages = append(chat.Messages, newMsg)
+			if err := s.Store.AppendMessage(chat.ID, newMsg); err != nil {
+				return nil, err
+			}
+		}
+
+		return &chat.Messages[len(chat.Messages)-1], nil
+	}
+
+	return c.Generate(ctx, generateReq, func(res api.GenerateResponse) error {
+		if *loading {
+			cancelLoading()
+			*loading = false
+		}
+
+		if res.Thinking != "" && (thinkingTimeStart == nil || thinkingTimeEnd != nil) {
+			now := time.Now()
+			thinkingTimeStart = &now
+			thinkingTimeEnd = nil
+		}
+
+		if res.Response == "" && res.Thinking == "" && res.Image == "" {
+			return nil
+		}
+
+		if res.Thinking != "" {
+			json.NewEncoder(w).Encode(responses.ChatEvent{
+				EventName:         string(EventThinking),
+				Thinking:          &res.Thinking,
+				ThinkingTimeStart: thinkingTimeStart,
+			})
+			flusher.Flush()
+
+			lastMsg, err := ensureAssistantMessage(&store.MessageOptions{
+				Model:    req.Model,
+				Thinking: res.Thinking,
+			})
+			if err != nil {
+				return err
+			}
+
+			if lastMsg.Thinking != res.Thinking {
+				lastMsg.Thinking += res.Thinking
+			}
+			lastMsg.ThinkingTimeStart = thinkingTimeStart
+			lastMsg.UpdatedAt = time.Now()
+			return s.Store.UpdateLastMessage(chat.ID, *lastMsg)
+		}
+
+		if res.Response != "" {
+			if thinkingTimeStart != nil && thinkingTimeEnd == nil {
+				now := time.Now()
+				thinkingTimeEnd = &now
+			}
+
+			json.NewEncoder(w).Encode(responses.ChatEvent{
+				EventName:         string(EventChat),
+				Content:           &res.Response,
+				ThinkingTimeStart: thinkingTimeStart,
+				ThinkingTimeEnd:   thinkingTimeEnd,
+			})
+			flusher.Flush()
+
+			lastMsg, err := ensureAssistantMessage(&store.MessageOptions{Model: req.Model})
+			if err != nil {
+				return err
+			}
+
+			lastMsg.Content += res.Response
+			lastMsg.ThinkingTimeStart = thinkingTimeStart
+			lastMsg.ThinkingTimeEnd = thinkingTimeEnd
+			lastMsg.UpdatedAt = time.Now()
+			if err := s.Store.UpdateLastMessage(chat.ID, *lastMsg); err != nil {
+				return err
+			}
+		}
+
+		if res.Image != "" {
+			imageData, mimeType, err := generatedImagePayload(res.Image)
+			if err != nil {
+				return err
+			}
+			imageBytes, err := base64.StdEncoding.DecodeString(imageData)
+			if err != nil {
+				return err
+			}
+
+			filename := generatedImageFilename(mimeType)
+			attachment := store.File{
+				Filename: filename,
+				Data:     imageBytes,
+			}
+
+			lastMsg, err := ensureAssistantMessage(&store.MessageOptions{Model: req.Model})
+			if err != nil {
+				return err
+			}
+
+			lastMsg.Attachments = append(lastMsg.Attachments, attachment)
+			lastMsg.UpdatedAt = time.Now()
+			if err := s.Store.UpdateLastMessage(chat.ID, *lastMsg); err != nil {
+				return err
+			}
+
+			eventAttachment := responses.ChatEventAttachment{
+				ID:       fmt.Sprintf("generated-image-%d", time.Now().UnixNano()),
+				Name:     filename,
+				MimeType: mimeType,
+				Size:     len(imageBytes),
+				Kind:     "image",
+				Data:     imageData,
+			}
+			empty := ""
+			json.NewEncoder(w).Encode(responses.ChatEvent{
+				EventName:   string(EventChat),
+				Content:     &empty,
+				Attachments: []responses.ChatEventAttachment{eventAttachment},
+			})
+			flusher.Flush()
+		}
+
+		return nil
+	})
+}
+
 // buildChatRequest converts store.Chat to api.ChatRequest
 func (s *Server) buildChatRequest(chat *store.Chat, model string, think any, availableTools []map[string]any) (*api.ChatRequest, error) {
 	var msgs []api.Message
@@ -1700,23 +1970,15 @@ func (s *Server) buildChatRequest(chat *store.Chat, model string, think any, ava
 
 		apiMsg := api.Message{Role: m.Role, Thinking: m.Thinking}
 
-		sb := strings.Builder{}
-		sb.WriteString(m.Content)
-
+		var content string
 		var images []api.ImageData
 		if m.Role == "user" && len(m.Attachments) > 0 {
-			for _, a := range m.Attachments {
-				if isImageAttachment(a.Filename) {
-					images = append(images, api.ImageData(a.Data))
-				} else {
-					content := convertBytesToText(a.Data, a.Filename)
-					sb.WriteString(fmt.Sprintf("\n--- File: %s ---\n%s\n--- End of %s ---",
-						a.Filename, content, a.Filename))
-				}
-			}
+			content, images = promptAndImagesFromMessage(m)
+		} else {
+			content = m.Content
 		}
 
-		apiMsg.Content = sb.String()
+		apiMsg.Content = content
 		apiMsg.Images = images
 
 		switch m.Role {
@@ -1753,25 +2015,11 @@ func (s *Server) buildChatRequest(chat *store.Chat, model string, think any, ava
 		msgs = append(msgs, apiMsg)
 	}
 
-	var thinkValue *api.ThinkValue
-	if think != nil {
-		// Only set Think if it's actually requesting thinking
-		if boolValue, ok := think.(bool); ok {
-			if boolValue {
-				thinkValue = &api.ThinkValue{Value: boolValue}
-			}
-		} else if stringValue, ok := think.(string); ok {
-			if stringValue != "" && stringValue != "none" {
-				thinkValue = &api.ThinkValue{Value: stringValue}
-			}
-		}
-	}
-
 	req := &api.ChatRequest{
 		Model:    model,
 		Messages: msgs,
 		Stream:   ptr(true),
-		Think:    thinkValue,
+		Think:    apiThinkValue(think),
 	}
 
 	if len(availableTools) > 0 {

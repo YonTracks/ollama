@@ -17,8 +17,10 @@ import {
   saveStandaloneChat
 } from "@/lib/ollama/standalone-db";
 import { sendStandaloneChat } from "@/lib/ollama/standalone";
+import { isImageGenerationModel } from "@/lib/ollama/models";
 import type {
   Chat,
+  ChatAttachment,
   ChatInfo,
   ChatMessage,
   ChatRequest,
@@ -45,12 +47,15 @@ function appendAssistantDelta(
 ) {
   const next = [...messages];
   const last = next.at(-1);
-  const canUpdateLast = last?.role === "assistant" && last.status === "streaming";
+  const canUpdateLast =
+    last?.role === "assistant" &&
+    (last.status === "sending" || last.status === "streaming");
 
   if (canUpdateLast && last) {
     next[next.length - 1] = {
       ...last,
       content: `${last.content}${event.content ?? ""}`,
+      attachments: mergeAttachments(last.attachments, event.attachments),
       thinking: `${last.thinking ?? ""}${event.thinking ?? ""}`,
       thinkingTimeStart: event.thinkingTimeStart ?? last.thinkingTimeStart,
       thinkingTimeEnd: event.thinkingTimeEnd ?? last.thinkingTimeEnd,
@@ -63,6 +68,7 @@ function appendAssistantDelta(
     id: createClientId("assistant"),
     role: "assistant",
     content: event.content ?? "",
+    attachments: event.attachments,
     thinking: event.thinking,
     thinkingTimeStart: event.thinkingTimeStart,
     thinkingTimeEnd: event.thinkingTimeEnd,
@@ -71,19 +77,93 @@ function appendAssistantDelta(
   return next;
 }
 
-function completeStreamingMessages(messages: ChatMessage[]) {
-  return messages.map((message) =>
-    message.status === "streaming" ? { ...message, status: "complete" as const } : message
+function mergeAttachments(
+  current: ChatAttachment[] | undefined,
+  incoming: ChatAttachment[] | undefined
+) {
+  if (!incoming || incoming.length === 0) return current;
+  return [...(current ?? []), ...incoming];
+}
+
+function createPendingAssistantMessage(model: string): ChatMessage {
+  return {
+    id: createClientId("assistant"),
+    role: "assistant",
+    content: "",
+    model,
+    status: "sending"
+  };
+}
+
+function isEmptyPendingAssistantMessage(message: ChatMessage) {
+  return (
+    message.role === "assistant" &&
+    message.status === "sending" &&
+    message.content.trim().length === 0 &&
+    (message.attachments?.length ?? 0) === 0 &&
+    (message.thinking?.trim().length ?? 0) === 0
   );
 }
 
-function toThinkRequest(settings: LocalSettings): ChatRequest["think"] {
+function completeActiveMessages(messages: ChatMessage[]) {
+  return messages
+    .filter((message) => !isEmptyPendingAssistantMessage(message))
+    .map((message) =>
+      message.status === "sending" || message.status === "streaming"
+        ? { ...message, status: "complete" as const }
+        : message
+    );
+}
+
+function persistableMessages(messages: ChatMessage[]) {
+  return messages.filter((message) => !isEmptyPendingAssistantMessage(message));
+}
+
+function appendAssistantError(messages: ChatMessage[], content: string) {
+  const next = completeActiveMessages(messages);
+  const last = next.at(-1);
+
+  if (last?.role === "assistant" && last.status === "error") {
+    return next.map((message, index) =>
+      index === next.length - 1 ? { ...message, content } : message
+    );
+  }
+
+  return [
+    ...next,
+    {
+      id: createClientId("error"),
+      role: "assistant" as const,
+      content,
+      status: "error" as const
+    }
+  ];
+}
+
+function toThinkRequest(settings: LocalSettings, model?: string): ChatRequest["think"] {
+  if (isImageGenerationModel(model)) return false;
   if (!settings.thinkEnabled) return false;
   return settings.thinkLevel === "none" ? true : settings.thinkLevel;
 }
 
-function createChatTitle(prompt: string) {
+function toImageGenerationOptions(settings: LocalSettings) {
+  return {
+    width: settings.imageGenerationWidth,
+    height: settings.imageGenerationHeight,
+    steps: settings.imageGenerationSteps
+  };
+}
+
+function createChatTitle(prompt: string, attachments: ChatAttachment[] = []) {
   const title = prompt.trim().replace(/\s+/g, " ");
+  if (!title && attachments.length > 0) {
+    const firstAttachment = attachments[0];
+    const suffix = attachments.length > 1 ? ` +${attachments.length - 1}` : "";
+    const attachmentTitle = `${firstAttachment.name}${suffix}`;
+    return attachmentTitle.length > 64
+      ? `${attachmentTitle.slice(0, 61)}...`
+      : attachmentTitle;
+  }
   if (!title) return "New chat";
   return title.length > 64 ? `${title.slice(0, 61)}...` : title;
 }
@@ -93,7 +173,10 @@ function completeChat(chat: Chat, messages: ChatMessage[]): Chat {
     ...chat,
     title:
       chat.title ||
-      createChatTitle(messages.find((message) => message.role === "user")?.content ?? ""),
+      createChatTitle(
+        messages.find((message) => message.role === "user")?.content ?? "",
+        messages.find((message) => message.role === "user")?.attachments
+      ),
     messages,
     updatedAt: new Date().toISOString()
   };
@@ -224,7 +307,7 @@ export function useChatSession({
     abortRef.current = null;
     setStreaming(false);
     setMessages((current) => {
-      const next = completeStreamingMessages(current);
+      const next = completeActiveMessages(current);
       if (mode === "standalone" && chatRef.current) {
         const nextChat = completeChat(chatRef.current, next);
         chatRef.current = nextChat;
@@ -235,9 +318,9 @@ export function useChatSession({
   }, [mode]);
 
   const send = useCallback(
-    async (prompt: string) => {
+    async (prompt: string, attachments: ChatAttachment[] = []) => {
       const trimmed = prompt.trim();
-      if (!trimmed || !selectedModel || streaming) return;
+      if ((!trimmed && attachments.length === 0) || !selectedModel || streaming) return;
 
       if (mode === "standalone") {
         const now = new Date().toISOString();
@@ -247,20 +330,25 @@ export function useChatSession({
           id: createClientId("user"),
           role: "user",
           content: trimmed,
+          attachments: attachments.length > 0 ? attachments : undefined,
           createdAt: now,
           updatedAt: now,
           status: "complete"
         };
-        let workingMessages = [...messages, userMessage];
+        let workingMessages = [
+          ...messages,
+          userMessage,
+          createPendingAssistantMessage(selectedModel)
+        ];
         const currentChat: Chat = completeChat(
           chatRef.current ?? {
             id: targetChatId,
-            title: createChatTitle(trimmed),
+            title: createChatTitle(trimmed, attachments),
             createdAt: now,
             updatedAt: now,
             messages: []
           },
-          workingMessages
+          persistableMessages(workingMessages)
         );
 
         abortRef.current = controller;
@@ -279,11 +367,17 @@ export function useChatSession({
             coreApiBase,
             selectedModel,
             workingMessages,
-            toThinkRequest(settings),
+            toThinkRequest(settings, selectedModel),
+            toImageGenerationOptions(settings),
             controller.signal
           )) {
             if (event.eventName === "error") {
               setError(event.error);
+              workingMessages = appendAssistantError(workingMessages, event.error);
+              const nextChat = completeChat(currentChat, workingMessages);
+              chatRef.current = nextChat;
+              setMessages(workingMessages);
+              await saveStandaloneChat(nextChat);
               continue;
             }
 
@@ -293,7 +387,10 @@ export function useChatSession({
               event.eventName === "assistant_with_tools"
             ) {
               workingMessages = appendAssistantDelta(workingMessages, event);
-              const nextChat = completeChat(currentChat, workingMessages);
+              const nextChat = completeChat(
+                currentChat,
+                persistableMessages(workingMessages)
+              );
               chatRef.current = nextChat;
               setMessages(workingMessages);
               await saveStandaloneChat(nextChat);
@@ -301,7 +398,7 @@ export function useChatSession({
             }
 
             if (event.eventName === "done") {
-              workingMessages = completeStreamingMessages(workingMessages);
+              workingMessages = completeActiveMessages(workingMessages);
               const nextChat = completeChat(currentChat, workingMessages);
               chatRef.current = nextChat;
               setMessages(workingMessages);
@@ -313,15 +410,7 @@ export function useChatSession({
         } catch (sendError) {
           if (controller.signal.aborted) return;
           const message = sendError instanceof Error ? sendError.message : "Failed to send message";
-          workingMessages = [
-            ...completeStreamingMessages(workingMessages),
-            {
-              id: createClientId("error"),
-              role: "assistant",
-              content: message,
-              status: "error"
-            }
-          ];
+          workingMessages = appendAssistantError(workingMessages, message);
           setError(message);
           setMessages(workingMessages);
           const nextChat = completeChat(currentChat, workingMessages);
@@ -348,17 +437,21 @@ export function useChatSession({
           id: createClientId("user"),
           role: "user",
           content: trimmed,
+          attachments: attachments.length > 0 ? attachments : undefined,
           status: "complete"
-        }
+        },
+        createPendingAssistantMessage(selectedModel)
       ]);
 
       try {
         const request: ChatRequest = {
           model: selectedModel,
           prompt: trimmed,
+          attachments,
+          ...toImageGenerationOptions(settings),
           web_search: settings.webSearchEnabled,
           file_tools: false,
-          think: toThinkRequest(settings)
+          think: toThinkRequest(settings, selectedModel)
         };
 
         for await (const event of sendChat(targetChatId, request, controller.signal)) {
@@ -373,6 +466,7 @@ export function useChatSession({
 
           if (event.eventName === "error") {
             setError(event.error);
+            setMessages((current) => appendAssistantError(current, event.error));
             continue;
           }
 
@@ -400,7 +494,7 @@ export function useChatSession({
           }
 
           if (event.eventName === "done") {
-            setMessages((current) => completeStreamingMessages(current));
+            setMessages((current) => completeActiveMessages(current));
           }
         }
 
@@ -409,15 +503,7 @@ export function useChatSession({
         if (controller.signal.aborted) return;
         const message = sendError instanceof Error ? sendError.message : "Failed to send message";
         setError(message);
-        setMessages((current) => [
-          ...completeStreamingMessages(current),
-          {
-            id: createClientId("error"),
-            role: "assistant",
-            content: message,
-            status: "error"
-          }
-        ]);
+        setMessages((current) => appendAssistantError(current, message));
       } finally {
         abortRef.current = null;
         setStreaming(false);

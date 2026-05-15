@@ -2,6 +2,7 @@ import { createClientId } from "@/lib/utils";
 import { parseJsonlResponse } from "./stream";
 import type {
   Chat,
+  ChatAttachment,
   ChatInfo,
   ChatMessage,
   ChatRequest,
@@ -25,6 +26,7 @@ const OLLAMA_DOT_COM = "https://ollama.com";
 interface RawChatMessage {
   role?: string;
   content?: string;
+  attachments?: RawChatAttachment[];
   thinking?: string;
   thinkingTimeStart?: string;
   thinkingTimeEnd?: string;
@@ -33,6 +35,17 @@ interface RawChatMessage {
   tool_name?: string;
   created_at?: string;
   updated_at?: string;
+}
+
+interface RawChatAttachment {
+  filename?: string;
+  name?: string;
+  mimeType?: string;
+  mime_type?: string;
+  size?: number;
+  data?: string;
+  text?: string;
+  truncated?: boolean;
 }
 
 interface RawChat {
@@ -177,11 +190,127 @@ function normalizeRole(role?: string): ChatMessage["role"] {
   return "assistant";
 }
 
+const IMAGE_EXTENSIONS = new Set([".gif", ".jpeg", ".jpg", ".png", ".webp"]);
+const TEXT_EXTENSIONS = new Set([
+  ".c",
+  ".cpp",
+  ".cs",
+  ".css",
+  ".csv",
+  ".go",
+  ".h",
+  ".html",
+  ".java",
+  ".js",
+  ".json",
+  ".jsx",
+  ".log",
+  ".md",
+  ".mdx",
+  ".py",
+  ".rb",
+  ".rs",
+  ".sh",
+  ".sql",
+  ".toml",
+  ".ts",
+  ".tsx",
+  ".txt",
+  ".xml",
+  ".yaml",
+  ".yml"
+]);
+
+function extensionForName(name: string) {
+  const match = /\.[^.]+$/.exec(name.toLowerCase());
+  return match?.[0] ?? "";
+}
+
+function mimeTypeForName(name: string, fallback?: string) {
+  if (fallback) return fallback;
+  const extension = extensionForName(name);
+  if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";
+  if (extension === ".png") return "image/png";
+  if (extension === ".gif") return "image/gif";
+  if (extension === ".webp") return "image/webp";
+  if (extension === ".md" || extension === ".mdx") return "text/markdown";
+  if (TEXT_EXTENSIONS.has(extension)) return "text/plain";
+  return "application/octet-stream";
+}
+
+function attachmentKind(name: string, mimeType: string): ChatAttachment["kind"] {
+  if (mimeType.startsWith("image/") || IMAGE_EXTENSIONS.has(extensionForName(name))) {
+    return "image";
+  }
+  if (mimeType.startsWith("text/") || TEXT_EXTENSIONS.has(extensionForName(name))) {
+    return "text";
+  }
+  return "file";
+}
+
+function estimatedBase64Size(data?: string) {
+  if (!data) return 0;
+  return Math.max(0, Math.floor((data.replace(/=+$/, "").length * 3) / 4));
+}
+
+function decodeBase64Text(data?: string) {
+  if (!data || typeof atob === "undefined") return undefined;
+
+  try {
+    const binary = atob(data);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return undefined;
+  }
+}
+
+function encodeBase64Text(text: string) {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary);
+}
+
+function normalizeAttachments(
+  attachments: RawChatAttachment[] | undefined,
+  messageId: string
+): ChatAttachment[] | undefined {
+  if (!attachments?.length) return undefined;
+
+  return attachments
+    .map((attachment, index) => {
+      const name = attachment.filename || attachment.name || `attachment-${index + 1}`;
+      const mimeType = mimeTypeForName(name, attachment.mimeType || attachment.mime_type);
+      const kind = attachmentKind(name, mimeType);
+      const data = attachment.data;
+      const text =
+        attachment.text ?? (kind === "text" ? decodeBase64Text(attachment.data) : undefined);
+
+      return {
+        id: `${messageId}-attachment-${index}`,
+        name,
+        mimeType,
+        size: attachment.size ?? estimatedBase64Size(data),
+        kind,
+        data,
+        text,
+        truncated: attachment.truncated
+      };
+    })
+    .filter((attachment) => attachment.name.trim().length > 0);
+}
+
 function normalizeMessage(message: RawChatMessage, index: number): ChatMessage {
+  const id = `${message.role ?? "message"}-${index}-${message.created_at ?? createClientId("msg")}`;
+
   return {
-    id: `${message.role ?? "message"}-${index}-${message.created_at ?? createClientId("msg")}`,
+    id,
     role: normalizeRole(message.role),
     content: message.content ?? "",
+    attachments: normalizeAttachments(message.attachments, id),
     thinking: message.thinking,
     thinkingTimeStart: message.thinkingTimeStart,
     thinkingTimeEnd: message.thinkingTimeEnd,
@@ -191,6 +320,22 @@ function normalizeMessage(message: RawChatMessage, index: number): ChatMessage {
     createdAt: message.created_at,
     updatedAt: message.updated_at,
     status: message.stream ? "streaming" : "complete"
+  };
+}
+
+function toDesktopAttachment(attachment: ChatAttachment) {
+  return {
+    filename: attachment.name,
+    data:
+      attachment.data ??
+      (attachment.kind === "text" && attachment.text ? encodeBase64Text(attachment.text) : "")
+  };
+}
+
+function toDesktopChatRequest(request: ChatRequest) {
+  return {
+    ...request,
+    attachments: request.attachments?.map(toDesktopAttachment)
   };
 }
 
@@ -402,7 +547,7 @@ export async function* sendChat(
         Accept: "text/jsonl",
         "Content-Type": "application/json"
       },
-      body: JSON.stringify(request),
+      body: JSON.stringify(toDesktopChatRequest(request)),
       signal
     });
   } catch (error) {

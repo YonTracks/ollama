@@ -54,6 +54,7 @@ export function ChatPanel({
     return [
       lastMessage.id,
       lastMessage.content.length,
+      lastMessage.attachments?.length ?? 0,
       lastMessage.thinking?.length ?? 0,
       lastMessage.status
     ].join(":");

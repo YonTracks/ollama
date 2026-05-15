@@ -21,6 +21,7 @@ import {
   X
 } from "lucide-react";
 import { ConnectionIndicator } from "@/components/status/ConnectionIndicator";
+import { ModelManager } from "@/components/settings/ModelManager";
 import { IconButton } from "@/components/ui/IconButton";
 import {
   disconnectUser,
@@ -31,7 +32,11 @@ import {
   getInferenceCompute,
   updateCloudSetting
 } from "@/lib/ollama/client";
-import { DEFAULT_CORE_API_BASE, getCoreApiBase } from "@/lib/ollama/standalone";
+import {
+  DEFAULT_CORE_API_BASE,
+  SAME_ORIGIN_CORE_API_BASE,
+  getCoreApiBase
+} from "@/lib/ollama/standalone";
 import { cn, formatBytes } from "@/lib/utils";
 import type { useOllamaConnection } from "@/hooks/useOllamaConnection";
 import type { AppMode } from "@/lib/appMode";
@@ -105,6 +110,9 @@ export function SettingsDrawer({
   const effectiveApiBase = standalone
     ? getCoreApiBase(settings.coreApiBase)
     : getApiBase() || "same origin";
+  const modelManagerApiBase = standalone
+    ? settings.coreApiBase || undefined
+    : getApiBase() || SAME_ORIGIN_CORE_API_BASE;
 
   const visibleModels = useMemo(() => models.slice(0, 7), [models]);
 
@@ -254,7 +262,10 @@ export function SettingsDrawer({
         webSearchEnabled: false,
         thinkEnabled: true,
         thinkLevel: "none",
-        compactMessages: false
+        compactMessages: false,
+        imageGenerationWidth: 1024,
+        imageGenerationHeight: 1024,
+        imageGenerationSteps: 20
       });
       return;
     }
@@ -268,7 +279,10 @@ export function SettingsDrawer({
         tools: false,
         workingDir: "",
         contextLength: 0,
-        autoUpdateEnabled: true
+        autoUpdateEnabled: true,
+        imageGenerationWidth: 1024,
+        imageGenerationHeight: 1024,
+        imageGenerationSteps: 20
       },
       true
     );
@@ -537,6 +551,14 @@ export function SettingsDrawer({
                 onClear={() => handleUpdate({ models: "" }, true)}
               />
             ) : null}
+
+            <ModelManager
+              apiBase={modelManagerApiBase}
+              models={models}
+              selectedModel={selectedModel}
+              onSelectModel={onSelectModel}
+              onRefreshModels={onRefreshModels}
+            />
           </SettingsSection>
 
           {!standalone ? (

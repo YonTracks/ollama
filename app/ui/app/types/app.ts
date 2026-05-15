@@ -16,6 +16,9 @@ export interface LocalSettings {
   thinkLevel: "none" | "low" | "medium" | "high";
   autoUpdateEnabled: boolean;
   compactMessages: boolean;
+  imageGenerationWidth: number;
+  imageGenerationHeight: number;
+  imageGenerationSteps: number;
 }
 
 export interface InstallPromptEvent extends Event {

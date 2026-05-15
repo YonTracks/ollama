@@ -2,6 +2,7 @@
 
 import { Box, ChevronDown, RefreshCcw } from "lucide-react";
 import { IconButton } from "@/components/ui/IconButton";
+import { isImageGenerationModel } from "@/lib/ollama/models";
 import { cn, formatBytes } from "@/lib/utils";
 import type { OllamaModel } from "@/lib/ollama/types";
 
@@ -23,6 +24,7 @@ export function ModelSelector({
   onRefreshModels
 }: ModelSelectorProps) {
   const selected = models.find((model) => model.name === selectedModel);
+  const selectedIsImageGeneration = isImageGenerationModel(selected ?? selectedModel);
 
   return (
     <div className="flex min-w-0 items-center gap-2">
@@ -56,6 +58,8 @@ export function ModelSelector({
       <div className="hidden min-w-0 text-xs text-muted-foreground sm:block">
         {error ? (
           <span className="text-danger">Models unavailable</span>
+        ) : selectedIsImageGeneration ? (
+          <span>Image generation</span>
         ) : selected ? (
           <span>{selected.local ? formatBytes(selected.size) : "Remote registry model"}</span>
         ) : loading ? (

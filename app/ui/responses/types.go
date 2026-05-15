@@ -58,10 +58,11 @@ type ChatEvent struct {
 	EventName string `json:"eventName" ts_type:"\"chat\" | \"thinking\" | \"assistant_with_tools\" | \"tool_call\" | \"tool\" | \"tool_result\" | \"done\" | \"chat_created\""`
 
 	// Chat/Assistant message fields
-	Content           *string    `json:"content,omitempty"`
-	Thinking          *string    `json:"thinking,omitempty"`
-	ThinkingTimeStart *time.Time `json:"thinkingTimeStart,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
-	ThinkingTimeEnd   *time.Time `json:"thinkingTimeEnd,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
+	Content           *string               `json:"content,omitempty"`
+	Thinking          *string               `json:"thinking,omitempty"`
+	Attachments       []ChatEventAttachment `json:"attachments,omitempty"`
+	ThinkingTimeStart *time.Time            `json:"thinkingTimeStart,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
+	ThinkingTimeEnd   *time.Time            `json:"thinkingTimeEnd,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
 
 	// Tool-related fields
 	ToolCalls      []store.ToolCall `json:"toolCalls,omitempty"`
@@ -75,6 +76,15 @@ type ChatEvent struct {
 
 	// Tool state field from the new code
 	ToolState any `json:"toolState,omitempty"`
+}
+
+type ChatEventAttachment struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	MimeType string `json:"mimeType"`
+	Size     int    `json:"size"`
+	Kind     string `json:"kind"`
+	Data     string `json:"data,omitempty"`
 }
 
 // DownloadEvent is for model download progress
@@ -122,6 +132,9 @@ type ChatRequest struct {
 	Prompt      string       `json:"prompt"`
 	Index       *int         `json:"index,omitempty"`
 	Attachments []Attachment `json:"attachments,omitempty"`
+	Width       int32        `json:"width,omitempty"`
+	Height      int32        `json:"height,omitempty"`
+	Steps       int32        `json:"steps,omitempty"`
 	WebSearch   *bool        `json:"web_search,omitempty"`
 	FileTools   *bool        `json:"file_tools,omitempty"`
 	ForceUpdate bool         `json:"forceUpdate,omitempty"`
