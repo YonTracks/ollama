@@ -20,6 +20,7 @@ export interface LocalSettings {
   enableAutoTrim: boolean;
   enableAutoSummarize: boolean;
   enableRetrieval: boolean;
+  contextDefaultsVersion?: number;
   retrievalLimit: number;
   expertMode: boolean;
   expertInstructions: string;

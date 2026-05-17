@@ -11,6 +11,7 @@ import type { LocalSettings } from "@/types/app";
 
 const SETTINGS_KEY = "ollama.app.settings.v1";
 const STANDALONE_SETTINGS_KEY = "ollama.app.standalone.settings.v1";
+const CONTEXT_DEFAULTS_VERSION = 2;
 
 const DEFAULT_SETTINGS: LocalSettings = {
   selectedModel: "",
@@ -28,8 +29,9 @@ const DEFAULT_SETTINGS: LocalSettings = {
   reserveOutputTokens: 1024,
   nearFullThresholdPercent: 85,
   enableAutoTrim: true,
-  enableAutoSummarize: false,
-  enableRetrieval: false,
+  enableAutoSummarize: true,
+  enableRetrieval: true,
+  contextDefaultsVersion: CONTEXT_DEFAULTS_VERSION,
   retrievalLimit: 4,
   expertMode: false,
   expertInstructions: "",
@@ -65,19 +67,34 @@ function readLocalSettings(mode: AppMode) {
     const defaults = getDefaultSettings();
     if (!raw) return defaults;
 
-    return {
-      ...defaults,
-      ...(JSON.parse(raw) as Partial<LocalSettings>)
-    };
+    return normalizeToolMode(
+      migrateLocalSettings({
+        ...defaults,
+        ...(JSON.parse(raw) as Partial<LocalSettings>)
+      })
+    );
   } catch {
     return getDefaultSettings();
   }
 }
 
+function migrateLocalSettings(settings: LocalSettings): LocalSettings {
+  if ((settings.contextDefaultsVersion ?? 0) >= CONTEXT_DEFAULTS_VERSION) {
+    return settings;
+  }
+
+  return {
+    ...settings,
+    enableAutoSummarize: true,
+    enableRetrieval: true,
+    contextDefaultsVersion: CONTEXT_DEFAULTS_VERSION
+  };
+}
+
 function toLocalSettings(serverSettings?: Settings, current = getDefaultSettings()): LocalSettings {
   if (!serverSettings) return current;
 
-  return {
+  return normalizeToolMode({
     ...current,
     selectedModel: serverSettings.SelectedModel ?? current.selectedModel,
     sidebarOpen: serverSettings.SidebarOpen ?? current.sidebarOpen,
@@ -97,25 +114,37 @@ function toLocalSettings(serverSettings?: Settings, current = getDefaultSettings
         ? serverSettings.ThinkLevel
         : current.thinkLevel,
     autoUpdateEnabled: serverSettings.AutoUpdateEnabled ?? current.autoUpdateEnabled
-  };
+  });
 }
 
 function toServerSettings(settings: LocalSettings, serverSettings?: Settings): Settings {
+  const normalized = normalizeToolMode(settings);
   return {
     ...serverSettings,
-    Expose: settings.expose,
-    Browser: settings.browser,
-    Models: settings.models,
-    Agent: settings.agent,
-    Tools: settings.tools,
-    WorkingDir: settings.workingDir,
-    ContextLength: settings.contextLength,
-    AutoUpdateEnabled: settings.autoUpdateEnabled,
-    SelectedModel: settings.selectedModel,
-    SidebarOpen: settings.sidebarOpen,
-    WebSearchEnabled: settings.webSearchEnabled,
-    ThinkEnabled: settings.thinkEnabled,
-    ThinkLevel: settings.thinkLevel
+    Expose: normalized.expose,
+    Browser: normalized.browser,
+    Models: normalized.models,
+    Agent: normalized.agent,
+    Tools: normalized.tools,
+    WorkingDir: normalized.workingDir,
+    ContextLength: normalized.contextLength,
+    AutoUpdateEnabled: normalized.autoUpdateEnabled,
+    SelectedModel: normalized.selectedModel,
+    SidebarOpen: normalized.sidebarOpen,
+    WebSearchEnabled: normalized.webSearchEnabled,
+    ThinkEnabled: normalized.thinkEnabled,
+    ThinkLevel: normalized.thinkLevel
+  };
+}
+
+function normalizeToolMode(settings: LocalSettings): LocalSettings {
+  if (!settings.agent || !settings.tools) {
+    return settings;
+  }
+
+  return {
+    ...settings,
+    tools: false
   };
 }
 
@@ -189,7 +218,7 @@ export function useLocalSettings(mode: AppMode, enabled = true) {
 
   const updateSettings = useCallback(
     async (updates: Partial<LocalSettings>) => {
-      const next = { ...settings, ...updates };
+      const next = normalizeToolMode({ ...settings, ...updates });
       setError(null);
       persistLocal(next);
 

@@ -25,10 +25,11 @@ import (
 )
 
 type Webview struct {
-	port    int
-	token   string
-	webview webview.WebView
-	mutex   sync.Mutex
+	port           int
+	token          string
+	toolsAvailable bool
+	webview        webview.WebView
+	mutex          sync.Mutex
 
 	Store *store.Store
 }
@@ -187,10 +188,12 @@ func (w *Webview) Run(path string) unsafe.Pointer {
 			`
 		}
 
-		init += `
+		toolsAvailableJSON, _ := json.Marshal(w.toolsAvailable)
+		init += fmt.Sprintf(`
 			window.OLLAMA_DESKTOP = true;
 			window.OLLAMA_WEBSEARCH = true;
-		`
+			window.OLLAMA_TOOLS = %s;
+		`, toolsAvailableJSON)
 
 		wv.Init(init)
 

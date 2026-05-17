@@ -54,6 +54,7 @@ import type { LocalSettings } from "@/types/app";
 const CONTEXT_LENGTH_OPTIONS = [4096, 8192, 16384, 32768, 65536, 131072, 262144];
 
 type SettingsTabId = "general" | "models" | "chat" | "advanced" | "data";
+type DesktopToolMode = "off" | "tools" | "agent";
 
 interface ToastOptions {
   silent?: boolean;
@@ -137,6 +138,11 @@ export function SettingsDrawer({
   const modelManagerApiBase = standalone
     ? settings.coreApiBase || undefined
     : getApiBase() || SAME_ORIGIN_CORE_API_BASE;
+  const desktopToolMode: DesktopToolMode = settings.agent
+    ? "agent"
+    : settings.tools
+      ? "tools"
+      : "off";
 
   const visibleModels = useMemo(() => models.slice(0, 7), [models]);
   const tabs = useMemo(
@@ -361,6 +367,17 @@ export function SettingsDrawer({
     }
   };
 
+  const handleDesktopToolMode = async (mode: DesktopToolMode) => {
+    await handleUpdate(
+      {
+        agent: mode === "agent",
+        tools: mode === "tools"
+      },
+      false,
+      desktopToolModeToastDescription(mode)
+    );
+  };
+
   const handleResetToDefaults = async () => {
     if (standalone) {
       await handleUpdate({
@@ -376,8 +393,8 @@ export function SettingsDrawer({
         reserveOutputTokens: 1024,
         nearFullThresholdPercent: 85,
         enableAutoTrim: true,
-        enableAutoSummarize: false,
-        enableRetrieval: false,
+        enableAutoSummarize: true,
+        enableRetrieval: true,
         retrievalLimit: 4,
         expertMode: false,
         expertInstructions: "",
@@ -402,8 +419,8 @@ export function SettingsDrawer({
         reserveOutputTokens: 1024,
         nearFullThresholdPercent: 85,
         enableAutoTrim: true,
-        enableAutoSummarize: false,
-        enableRetrieval: false,
+        enableAutoSummarize: true,
+        enableRetrieval: true,
         retrievalLimit: 4,
         expertMode: false,
         expertInstructions: "",
@@ -982,19 +999,12 @@ export function SettingsDrawer({
 
           {activeTab === "advanced" && toolsAvailable && !standalone ? (
             <SettingsSection title="Agent Tools">
-              <ToggleRow
-                icon={<Bolt className="h-4 w-4" />}
-                label="Agent mode"
-                description="Use multi-turn tools for supported models."
-                checked={settings.agent}
-                onChange={(agent) => handleUpdate({ agent })}
-              />
-              <ToggleRow
-                icon={<Wrench className="h-4 w-4" />}
-                label="Tools mode"
-                description="Use single-turn tools for supported models."
-                checked={settings.tools}
-                onChange={(tools) => handleUpdate({ tools })}
+              <Notice tone="warning">
+                Desktop tools stay hidden unless OLLAMA_DESKTOP_TOOLS=1 is set. Select a working directory before enabling them, and keep tool access off unless you trust the active chat.
+              </Notice>
+              <DesktopToolModeRow
+                value={desktopToolMode}
+                onChange={handleDesktopToolMode}
               />
               <PathRow
                 icon={<Folder className="h-4 w-4" />}
@@ -1165,6 +1175,66 @@ function ToggleRow({
         className="mt-0.5 h-5 w-5 flex-none accent-(--accent) focus:focus-ring"
       />
     </label>
+  );
+}
+
+function DesktopToolModeRow({
+  value,
+  onChange
+}: {
+  value: DesktopToolMode;
+  onChange(value: DesktopToolMode): void;
+}) {
+  const options: Array<{
+    value: DesktopToolMode;
+    label: string;
+    Icon: LucideIcon;
+  }> = [
+    { value: "off", label: "Off", Icon: Shield },
+    { value: "tools", label: "Tools", Icon: Wrench },
+    { value: "agent", label: "Agent", Icon: Bolt }
+  ];
+  const description =
+    value === "agent"
+      ? "Multi-step tool workflows for supported models."
+      : value === "tools"
+        ? "One tool-use pass, then the model answers from the result."
+        : "Desktop tools are not sent with chat requests.";
+
+  return (
+    <div className="rounded-md border border-border bg-panel-strong px-3 py-3">
+      <div className="mb-3 flex items-start gap-3">
+        <span className="mt-0.5 flex h-6 w-6 flex-none items-center justify-center text-accent">
+          <Wrench className="h-4 w-4" />
+        </span>
+        <span className="min-w-0">
+          <span className="block text-sm font-medium">Tool access</span>
+          <span className="mt-0.5 block text-xs text-muted-foreground">{description}</span>
+        </span>
+      </div>
+      <div className="grid grid-cols-3 gap-1 rounded-md border border-border bg-background p-1">
+        {options.map(({ value: optionValue, label, Icon }) => {
+          const active = optionValue === value;
+          return (
+            <button
+              key={optionValue}
+              type="button"
+              aria-pressed={active}
+              onClick={() => onChange(optionValue)}
+              className={cn(
+                "flex h-9 items-center justify-center gap-2 rounded-sm px-2 text-sm transition focus:focus-ring",
+                active
+                  ? "bg-accent text-accent-foreground"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
+              )}
+            >
+              <Icon className="h-4 w-4 flex-none" />
+              <span className="truncate">{label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -1343,6 +1413,11 @@ function settingsToastDescription(updates: Partial<LocalSettings>) {
   if ("browser" in updates) {
     return updates.browser ? "Browser access enabled." : "Browser access disabled.";
   }
+  if ("agent" in updates || "tools" in updates) {
+    if (updates.agent) return "Agent mode enabled.";
+    if (updates.tools) return "Tools mode enabled.";
+    return "Desktop tools disabled.";
+  }
   if ("autoUpdateEnabled" in updates) {
     return updates.autoUpdateEnabled
       ? "Automatic update downloads enabled."
@@ -1394,6 +1469,12 @@ function settingsToastDescription(updates: Partial<LocalSettings>) {
   }
 
   return "Your preferences are up to date.";
+}
+
+function desktopToolModeToastDescription(mode: DesktopToolMode) {
+  if (mode === "agent") return "Agent mode enabled.";
+  if (mode === "tools") return "Tools mode enabled.";
+  return "Desktop tools disabled.";
 }
 
 async function selectNativeDirectory(kind: "models" | "working") {

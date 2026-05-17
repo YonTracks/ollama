@@ -17,6 +17,8 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/app/store"
+	apptools "github.com/ollama/ollama/app/tools"
+	"github.com/ollama/ollama/app/ui/responses"
 	"github.com/ollama/ollama/app/updater"
 )
 
@@ -100,11 +102,16 @@ func TestHandlePostApiSettings(t *testing.T) {
 					if savedSettings.Browser != tt.requested.Browser {
 						t.Errorf("Browser: got %v, want %v", savedSettings.Browser, tt.requested.Browser)
 					}
-					if savedSettings.Agent != tt.requested.Agent {
-						t.Errorf("Agent: got %v, want %v", savedSettings.Agent, tt.requested.Agent)
+					wantAgent := tt.requested.Agent
+					wantTools := tt.requested.Tools
+					if wantAgent && wantTools {
+						wantTools = false
 					}
-					if savedSettings.Tools != tt.requested.Tools {
-						t.Errorf("Tools: got %v, want %v", savedSettings.Tools, tt.requested.Tools)
+					if savedSettings.Agent != wantAgent {
+						t.Errorf("Agent: got %v, want %v", savedSettings.Agent, wantAgent)
+					}
+					if savedSettings.Tools != wantTools {
+						t.Errorf("Tools: got %v, want %v", savedSettings.Tools, wantTools)
 					}
 					if savedSettings.WorkingDir != tt.requested.WorkingDir {
 						t.Errorf("WorkingDir: got %q, want %q", savedSettings.WorkingDir, tt.requested.WorkingDir)
@@ -113,9 +120,38 @@ func TestHandlePostApiSettings(t *testing.T) {
 					if tt.requested.Models != "" && savedSettings.Models != tt.requested.Models {
 						t.Errorf("Models: got %q, want %q", savedSettings.Models, tt.requested.Models)
 					}
+					if server.Agent != wantAgent {
+						t.Errorf("runtime Agent: got %v, want %v", server.Agent, wantAgent)
+					}
+					if server.Tools != wantTools {
+						t.Errorf("runtime Tools: got %v, want %v", server.Tools, wantTools)
+					}
+					if server.WorkingDir != tt.requested.WorkingDir {
+						t.Errorf("runtime WorkingDir: got %q, want %q", server.WorkingDir, tt.requested.WorkingDir)
+					}
 				}
 			}
 		})
+	}
+}
+
+func TestDesktopToolsAvailabilityRequiresEnvAndRegistry(t *testing.T) {
+	server := &Server{ToolRegistry: apptools.NewRegistry()}
+	server.ToolRegistry.Register(testAppTool{})
+
+	t.Setenv("OLLAMA_DESKTOP_TOOLS", "")
+	if server.ToolsAvailable() {
+		t.Fatal("tools should be unavailable without OLLAMA_DESKTOP_TOOLS")
+	}
+
+	t.Setenv("OLLAMA_DESKTOP_TOOLS", "1")
+	if !server.ToolsAvailable() {
+		t.Fatal("tools should be available with env gate and registered tools")
+	}
+
+	server.Agent = true
+	if !server.desktopToolsRequested(responses.ChatRequest{}) {
+		t.Fatal("agent mode should request desktop tools when available")
 	}
 }
 
@@ -635,6 +671,31 @@ func TestInferenceClientUsesUserAgent(t *testing.T) {
 	if receivedUA != expectedUA {
 		t.Errorf("User-Agent mismatch\nExpected: %s\nReceived: %s", expectedUA, receivedUA)
 	}
+}
+
+type testAppTool struct{}
+
+func (testAppTool) Name() string {
+	return "test_tool"
+}
+
+func (testAppTool) Description() string {
+	return "Test tool"
+}
+
+func (testAppTool) Schema() map[string]any {
+	return map[string]any{
+		"type":       "object",
+		"properties": map[string]any{},
+	}
+}
+
+func (testAppTool) Execute(context.Context, map[string]any) (any, string, error) {
+	return map[string]any{"ok": true}, "ok", nil
+}
+
+func (testAppTool) Prompt() string {
+	return ""
 }
 
 func TestSupportsBrowserTools(t *testing.T) {

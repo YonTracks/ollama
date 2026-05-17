@@ -48,6 +48,16 @@ The `-dev` flag enables:
 - CORS headers for cross-origin requests
 - Hot-reload support for UI development
 
+#### Desktop tool development
+
+Desktop Agent / Tools settings are hidden by default. To expose read-only local tools during development, launch the desktop app with:
+
+```bash
+OLLAMA_DESKTOP_TOOLS=1 go run ./cmd/app -dev
+```
+
+The registered desktop tools are `desktop.list_files`, `desktop.read_text_file`, and `desktop.search_files`. They are scoped to the working directory selected in settings, reject path escapes, and skip hidden files plus common generated/dependency folders by default.
+
 ## Build
 
 

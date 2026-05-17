@@ -232,7 +232,20 @@ func main() {
 
 	// Initialize tools registry
 	toolRegistry := tools.NewRegistry()
+	tools.RegisterDesktopTools(toolRegistry)
 	slog.Info("initialized tools registry", "tool_count", len(toolRegistry.List()))
+
+	initialSettings, err := st.Settings()
+	if err != nil {
+		slog.Warn("failed to load app settings", "error", err)
+	}
+	if initialSettings.Agent && initialSettings.Tools {
+		initialSettings.Tools = false
+		if err := st.SetSettings(initialSettings); err != nil {
+			slog.Warn("failed to normalize desktop tool settings", "error", err)
+		}
+	}
+	toolRegistry.SetWorkingDir(initialSettings.WorkingDir)
 
 	// ctx is the app-level context that will be used to stop the app
 	ctx, cancel := context.WithCancel(context.Background())
@@ -265,6 +278,9 @@ func main() {
 		},
 		Store:        st,
 		ToolRegistry: toolRegistry,
+		Agent:        initialSettings.Agent,
+		Tools:        initialSettings.Tools,
+		WorkingDir:   initialSettings.WorkingDir,
 		Dev:          devMode,
 		Logger:       slog.Default(),
 		Updater:      upd,
@@ -272,6 +288,7 @@ func main() {
 			UpdateAvailable("")
 		},
 	}
+	wv.toolsAvailable = uiServer.ToolsAvailable()
 
 	srv := &http.Server{
 		Handler: uiServer.Handler(),

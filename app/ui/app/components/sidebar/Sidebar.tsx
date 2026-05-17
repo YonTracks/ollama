@@ -1,6 +1,16 @@
 "use client";
 
-import { Check, Edit3, MessageSquare, PanelLeftClose, Plus, Settings, Trash2, X } from "lucide-react";
+import {
+  Check,
+  Edit3,
+  MessageSquare,
+  PanelLeftClose,
+  Plus,
+  Search,
+  Settings,
+  Trash2,
+  X
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { IconButton } from "@/components/ui/IconButton";
 import { cn, formatRelativeTime } from "@/lib/utils";
@@ -37,8 +47,20 @@ export function Sidebar({
 }: SidebarProps) {
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const pointerSelectingChatRef = useRef(false);
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+
+  const filteredChats = useMemo(() => {
+    if (!normalizedSearchQuery) return chats;
+
+    return chats.filter((chat) =>
+      [chat.title, chat.userExcerpt, chat.id]
+        .filter(Boolean)
+        .some((value) => value.toLowerCase().includes(normalizedSearchQuery))
+    );
+  }, [chats, normalizedSearchQuery]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -53,7 +75,7 @@ export function Sidebar({
     const todayKey = now.toDateString();
     const weekAgo = now.getTime() - 7 * 24 * 60 * 60 * 1000;
 
-    for (const chat of chats) {
+    for (const chat of filteredChats) {
       const updated = new Date(chat.updatedAt);
       if (updated.toDateString() === todayKey) today.push(chat);
       else if (updated.getTime() > weekAgo) recent.push(chat);
@@ -65,7 +87,7 @@ export function Sidebar({
       { label: "This week", chats: recent },
       { label: "Earlier", chats: older }
     ].filter((group) => group.chats.length > 0);
-  }, [chats]);
+  }, [filteredChats]);
 
   const saveRename = async () => {
     if (!editingChatId) return;
@@ -108,18 +130,45 @@ export function Sidebar({
           open ? visibleOpenClass : "-translate-x-full md:w-0 md:overflow-hidden md:border-r-0"
         )}
       >
-      <div className="flex h-16 flex-none items-center gap-2 border-b border-border px-3">
-        <button
-          type="button"
-          onClick={handleNewChat}
-          className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-md bg-accent px-3 text-sm font-medium text-accent-foreground transition hover:bg-accent/90 focus:focus-ring"
-        >
-          <Plus className="h-4 w-4 flex-none" />
-          <span className="truncate">New chat</span>
-        </button>
-        <IconButton label="Hide sidebar" onClick={() => onToggle(false)}>
-          <PanelLeftClose className="h-5 w-5" />
-        </IconButton>
+      <div className="flex flex-none flex-col gap-2 border-b border-border px-3 py-3">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleNewChat}
+            className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-md bg-accent px-3 text-sm font-medium text-accent-foreground transition hover:bg-accent/90 focus:focus-ring"
+          >
+            <Plus className="h-4 w-4 flex-none" />
+            <span className="truncate">New chat</span>
+          </button>
+          <IconButton label="Hide sidebar" onClick={() => onToggle(false)}>
+            <PanelLeftClose className="h-5 w-5" />
+          </IconButton>
+        </div>
+        {chats.length > 0 ? (
+          <label className="relative block" htmlFor="chat-search">
+            <span className="sr-only">Search previous chats</span>
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <input
+              id="chat-search"
+              type="search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search previous chats"
+              className="h-9 w-full rounded-md border border-border bg-background pl-8 pr-9 text-sm outline-none placeholder:text-muted-foreground focus:focus-ring"
+            />
+            {searchQuery ? (
+              <button
+                type="button"
+                aria-label="Clear chat search"
+                title="Clear chat search"
+                onClick={() => setSearchQuery("")}
+                className="absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
+          </label>
+        ) : null}
       </div>
 
       <div className="scrollbar-subtle min-h-0 flex-1 overflow-y-auto px-2 py-3">
@@ -129,6 +178,8 @@ export function Sidebar({
           <SidebarNotice tone="danger">{error}</SidebarNotice>
         ) : chats.length === 0 ? (
           <SidebarNotice>No conversations yet</SidebarNotice>
+        ) : filteredChats.length === 0 ? (
+          <SidebarNotice>No matching conversations</SidebarNotice>
         ) : (
           groupedChats.map((group) => (
             <div key={group.label} className="mb-5">

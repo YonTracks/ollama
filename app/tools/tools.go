@@ -26,6 +26,10 @@ type Tool interface {
 	Prompt() string
 }
 
+type workingDirTool interface {
+	SetWorkingDir(dir string)
+}
+
 // Registry manages the available tools and their execution
 type Registry struct {
 	tools      map[string]Tool
@@ -41,6 +45,9 @@ func NewRegistry() *Registry {
 
 // Register adds a tool to the registry
 func (r *Registry) Register(tool Tool) {
+	if scoped, ok := tool.(workingDirTool); ok {
+		scoped.SetWorkingDir(r.workingDir)
+	}
 	r.tools[tool.Name()] = tool
 }
 
@@ -62,6 +69,11 @@ func (r *Registry) List() []Tool {
 // SetWorkingDir sets the working directory for all tool operations
 func (r *Registry) SetWorkingDir(dir string) {
 	r.workingDir = dir
+	for _, tool := range r.tools {
+		if scoped, ok := tool.(workingDirTool); ok {
+			scoped.SetWorkingDir(dir)
+		}
+	}
 }
 
 // Execute runs a tool with the given name and arguments

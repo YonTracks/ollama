@@ -114,6 +114,51 @@ type Server struct {
 	UpdateAvailableFunc func()
 }
 
+func (s *Server) ToolsAvailable() bool {
+	return desktopToolsAllowed() && s.ToolRegistry != nil && len(s.ToolRegistry.List()) > 0
+}
+
+func desktopToolsAllowed() bool {
+	value := strings.TrimSpace(os.Getenv("OLLAMA_DESKTOP_TOOLS"))
+	return value == "1" || strings.EqualFold(value, "true")
+}
+
+func (s *Server) desktopToolsRequested(req responses.ChatRequest) bool {
+	if !s.ToolsAvailable() {
+		return false
+	}
+	if s.Agent || s.Tools {
+		return true
+	}
+
+	return req.FileTools != nil && *req.FileTools
+}
+
+func (s *Server) registerDesktopTools(registry *tools.Registry) bool {
+	if !s.ToolsAvailable() {
+		return false
+	}
+
+	if s.WorkingDir != "" {
+		registry.SetWorkingDir(s.WorkingDir)
+		s.ToolRegistry.SetWorkingDir(s.WorkingDir)
+	}
+
+	count := 0
+	for _, tool := range s.ToolRegistry.List() {
+		registry.Register(tool)
+		count++
+	}
+
+	return count > 0
+}
+
+func normalizeDesktopToolSettings(settings *store.Settings) {
+	if settings.Agent && settings.Tools {
+		settings.Tools = false
+	}
+}
+
 func (s *Server) log() *slog.Logger {
 	if s.Logger == nil {
 		return slog.Default()
@@ -873,16 +918,17 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
-	// Check if agent or tools mode is enabled
-	// Note: Skip agent/tools mode if user has attachments, as the agent doesn't handle file attachments properly
+	// Check if agent or tools mode is enabled.
+	// Note: Skip tools when the user message has attachments because tools do not handle file attachments.
 	registry := tools.NewRegistry()
 	var browser *tools.Browser
+	maxToolPasses := 0
 
 	if !hasAttachments {
-		WebSearchEnabled := req.WebSearch != nil && *req.WebSearch
+		webSearchEnabled := req.WebSearch != nil && *req.WebSearch
 		hasToolsCapability := slices.Contains(details.Capabilities, model.CapabilityTools)
 
-		if WebSearchEnabled && hasToolsCapability {
+		if webSearchEnabled && hasToolsCapability {
 			if supportsBrowserTools(req.Model) {
 				browserState, ok := s.browserState(chat)
 				if !ok {
@@ -895,6 +941,15 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 			} else {
 				registry.Register(&tools.WebSearch{})
 				registry.Register(&tools.WebFetch{})
+			}
+			maxToolPasses = max(maxToolPasses, 8)
+		}
+
+		if hasToolsCapability && s.desktopToolsRequested(req) && s.registerDesktopTools(registry) {
+			if s.Agent {
+				maxToolPasses = max(maxToolPasses, 8)
+			} else {
+				maxToolPasses = max(maxToolPasses, 1)
 			}
 		}
 	}
@@ -913,7 +968,10 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 	for {
 		var toolsExecuted bool
 
-		availableTools := registry.AvailableTools()
+		var availableTools []map[string]any
+		if passNum <= maxToolPasses {
+			availableTools = registry.AvailableTools()
+		}
 
 		// If we have pending assistant tool_calls and no assistant yet,
 		// build the request against a temporary chat that includes a
@@ -2564,9 +2622,13 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	// Include current runtime settings
+	if s.Agent && s.Tools {
+		s.Tools = false
+	}
 	settings.Agent = s.Agent
 	settings.Tools = s.Tools
 	settings.WorkingDir = s.WorkingDir
+	normalizeDesktopToolSettings(&settings)
 
 	w.Header().Set("Content-Type", "application/json")
 	return json.NewEncoder(w).Encode(responses.SettingsResponse{
@@ -2584,9 +2646,16 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) error {
 	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
 		return fmt.Errorf("invalid request body: %w", err)
 	}
+	normalizeDesktopToolSettings(&settings)
 
 	if err := s.Store.SetSettings(settings); err != nil {
 		return fmt.Errorf("failed to save settings: %w", err)
+	}
+	s.Agent = settings.Agent
+	s.Tools = settings.Tools
+	s.WorkingDir = settings.WorkingDir
+	if s.ToolRegistry != nil {
+		s.ToolRegistry.SetWorkingDir(settings.WorkingDir)
 	}
 
 	// Handle auto-update toggle changes

@@ -82,6 +82,47 @@ function appendAssistantDelta(
   return next;
 }
 
+function applyToolEvent(messages: ChatMessage[], event: ChatTextEvent) {
+  const toolName = event.toolName ?? "Tool";
+  const content = event.content || `${toolName} finished`;
+
+  if (event.eventName === "tool_result") {
+    const pendingIndex = [...messages]
+      .reverse()
+      .findIndex(
+        (message) =>
+          message.role === "tool" &&
+          message.status === "streaming" &&
+          (message.toolName ?? "Tool") === toolName
+      );
+
+    if (pendingIndex >= 0) {
+      const messageIndex = messages.length - 1 - pendingIndex;
+      return messages.map((message, index) =>
+        index === messageIndex
+          ? {
+              ...message,
+              content,
+              toolName,
+              status: "complete" as const
+            }
+          : message
+      );
+    }
+  }
+
+  return [
+    ...messages,
+    {
+      id: createClientId("tool"),
+      role: "tool" as const,
+      content,
+      toolName,
+      status: event.eventName === "tool" ? "streaming" as const : "complete" as const
+    }
+  ];
+}
+
 function mergeAttachments(
   current: ChatAttachment[] | undefined,
   incoming: ChatAttachment[] | undefined
@@ -630,16 +671,7 @@ export function useChatSession({
           if (event.eventName === "tool" || event.eventName === "tool_result") {
             setModelLoading(false);
             setModelLoadingName(null);
-            setMessages((current) => [
-              ...current,
-              {
-                id: createClientId("tool"),
-                role: "tool",
-                content: event.content || `${event.toolName ?? "Tool"} finished`,
-                toolName: event.toolName,
-                status: "complete"
-              }
-            ]);
+            setMessages((current) => applyToolEvent(current, event));
             continue;
           }
 

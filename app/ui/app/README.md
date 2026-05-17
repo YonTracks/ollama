@@ -25,9 +25,21 @@ Desktop-app-only settings are hidden in this mode.
 
 ## Context features
 
-- Friendly context mode can trim, summarize, and retrieve relevant older turns before requests are sent.
+- Friendly context mode trims, summarizes, and retrieves relevant older turns before requests are sent.
+- Auto-summarize old messages and Retrieval memory are enabled by default for new and reset local settings.
 - Retrieval memory is local to the active conversation and is injected as request-only system context.
 - Expert chat mode adds request-only expert instructions; the Models panel can apply an expert template when creating a derived Ollama model.
+
+## Desktop tools
+
+- Desktop agent/tool controls are hidden unless the desktop shell injects `window.OLLAMA_TOOLS = true`.
+- The shell only injects that flag when `OLLAMA_DESKTOP_TOOLS=1` or `OLLAMA_DESKTOP_TOOLS=true` is set and the app backend has registered local tools.
+- The environment gate enables the UI surface; users then choose exactly one desktop tool access mode: Off, Tools, or Agent.
+- Registered desktop tools are read-only: `desktop.list_files`, `desktop.read_text_file`, and `desktop.search_files`.
+- Desktop tools are scoped to the configured working directory. Paths outside that directory, including symlink escapes, are rejected.
+- File reads and searches are bounded; hidden files and common generated/dependency folders are skipped by default.
+- Tools mode exposes registered tools for one tool-use pass, then asks the model to answer from the result. Agent mode keeps tools available for multiple passes, capped by the backend.
+- Standalone mode never exposes desktop tools because it talks directly to the core Ollama API.
 
 ## Build
 
