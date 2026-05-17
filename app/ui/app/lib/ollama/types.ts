@@ -79,6 +79,7 @@ export interface ResponseStats {
 }
 
 export type ContextManagementMode = "strict" | "friendly";
+export type RetrievalMemoryScope = "current" | "all";
 
 export interface OllamaContextSettings {
   mode: ContextManagementMode;
@@ -89,6 +90,7 @@ export interface OllamaContextSettings {
   enableAutoSummarize: boolean;
   enableAutoTrim: boolean;
   enableRetrieval: boolean;
+  retrievalScope: RetrievalMemoryScope;
   retrievalLimit: number;
   expertMode: boolean;
   expertInstructions: string;
@@ -173,6 +175,7 @@ export interface ChatRequest {
   enableAutoTrim?: boolean;
   enableAutoSummarize?: boolean;
   enableRetrieval?: boolean;
+  retrievalScope?: RetrievalMemoryScope;
   retrievalLimit?: number;
   expertMode?: boolean;
   expertInstructions?: string;

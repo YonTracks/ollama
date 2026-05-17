@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ollama/ollama/app/store"
+	"github.com/ollama/ollama/app/ui/responses"
 )
 
 func TestPrepareContextChatSummarizesOldMessages(t *testing.T) {
@@ -146,6 +147,62 @@ func TestPrepareContextChatUsesInjectedRetriever(t *testing.T) {
 	}
 	if !strings.Contains(memory, "vector-only policy") {
 		t.Fatalf("expected injected retrieval memory, got %q", memory)
+	}
+}
+
+func TestContextSettingsNormalizeRetrievalScope(t *testing.T) {
+	allChats := "all"
+	settings := contextSettingsFromRequest(responses.ChatRequest{
+		RetrievalScope: allChats,
+	})
+	if settings.RetrievalScope != retrievalScopeAllChats {
+		t.Fatalf("expected all-chat retrieval scope, got %q", settings.RetrievalScope)
+	}
+
+	settings = contextSettingsFromRequest(responses.ChatRequest{
+		RetrievalScope: "unexpected",
+	})
+	if settings.RetrievalScope != retrievalScopeCurrentChat {
+		t.Fatalf("expected current-chat retrieval scope fallback, got %q", settings.RetrievalScope)
+	}
+}
+
+func TestCrossChatVectorMemoryLabelsSources(t *testing.T) {
+	item := store.VectorMemoryItem{
+		ChatID:    "source-chat",
+		ChatTitle: "Physics Notes",
+		Message:   store.NewMessage("user", "Plasma is the medium.", nil),
+	}
+
+	message := vectorRetrievedMessage(item, "current-chat", retrievalScopeAllChats)
+	if !strings.Contains(message.Content, `[From "Physics Notes"]`) {
+		t.Fatalf("expected cross-chat source label, got %q", message.Content)
+	}
+
+	currentMessage := vectorRetrievedMessage(item, "source-chat", retrievalScopeAllChats)
+	if strings.Contains(currentMessage.Content, "[From") {
+		t.Fatalf("did not expect current chat source label, got %q", currentMessage.Content)
+	}
+}
+
+func TestCrossChatVectorCandidatesAllowFirstMessageQueries(t *testing.T) {
+	query := store.VectorMemoryItem{
+		ChatID:    "current-chat",
+		MessageID: 1,
+		Message:   store.NewMessage("user", "What do we know about plasma?", nil),
+	}
+	items := []store.VectorMemoryItem{
+		query,
+		{
+			ChatID:    "source-chat",
+			MessageID: 1,
+			Message:   store.NewMessage("user", "Plasma notes", nil),
+		},
+	}
+
+	candidates := vectorMemoryCandidateItems(items, query, retrievalScopeAllChats)
+	if len(candidates) != 1 || candidates[0].ChatID != "source-chat" {
+		t.Fatalf("expected cross-chat candidate for first message query, got %#v", candidates)
 	}
 }
 

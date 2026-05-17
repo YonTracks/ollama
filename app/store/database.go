@@ -1110,8 +1110,9 @@ func (db *database) getMessages(chatID string, loadAttachmentData bool) ([]Messa
 
 func (db *database) getVectorMemoryItems(chatID string) ([]VectorMemoryItem, error) {
 	query := `
-		SELECT m.id, m.role, m.content, m.thinking, m.model_name, m.created_at, m.updated_at, m.tool_result
+		SELECT c.id, c.title, m.id, m.role, m.content, m.thinking, m.model_name, m.created_at, m.updated_at, m.tool_result
 		FROM messages m
+		JOIN chats c ON c.id = m.chat_id
 		WHERE m.chat_id = ?
 		ORDER BY m.id ASC
 	`
@@ -1122,6 +1123,37 @@ func (db *database) getVectorMemoryItems(chatID string) ([]VectorMemoryItem, err
 	}
 	defer rows.Close()
 
+	items, err := scanVectorMemoryItems(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	return items, nil
+}
+
+func (db *database) getVectorMemoryItemsAllChats() ([]VectorMemoryItem, error) {
+	query := `
+		SELECT c.id, c.title, m.id, m.role, m.content, m.thinking, m.model_name, m.created_at, m.updated_at, m.tool_result
+		FROM messages m
+		JOIN chats c ON c.id = m.chat_id
+		ORDER BY m.updated_at ASC, m.id ASC
+	`
+
+	rows, err := db.conn.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("query all vector memory items: %w", err)
+	}
+	defer rows.Close()
+
+	items, err := scanVectorMemoryItems(rows)
+	if err != nil {
+		return nil, fmt.Errorf("scan all vector memory items: %w", err)
+	}
+
+	return items, nil
+}
+
+func scanVectorMemoryItems(rows *sql.Rows) ([]VectorMemoryItem, error) {
 	var items []VectorMemoryItem
 	for rows.Next() {
 		var item VectorMemoryItem
@@ -1129,6 +1161,8 @@ func (db *database) getVectorMemoryItems(chatID string) ([]VectorMemoryItem, err
 		var toolResult sql.NullString
 
 		err := rows.Scan(
+			&item.ChatID,
+			&item.ChatTitle,
 			&item.MessageID,
 			&item.Message.Role,
 			&item.Message.Content,
@@ -1162,7 +1196,7 @@ func (db *database) getVectorMemoryItems(chatID string) ([]VectorMemoryItem, err
 
 func (db *database) getVectorMemoryEmbeddings(chatID, model string) ([]VectorMemoryEmbedding, error) {
 	rows, err := db.conn.Query(`
-		SELECT content_hash, embedding
+		SELECT chat_id, content_hash, embedding
 		FROM message_embeddings
 		WHERE chat_id = ? AND model = ?
 	`, chatID, model)
@@ -1175,7 +1209,7 @@ func (db *database) getVectorMemoryEmbeddings(chatID, model string) ([]VectorMem
 	for rows.Next() {
 		var item VectorMemoryEmbedding
 		var embeddingBytes []byte
-		if err := rows.Scan(&item.ContentHash, &embeddingBytes); err != nil {
+		if err := rows.Scan(&item.ChatID, &item.ContentHash, &embeddingBytes); err != nil {
 			return nil, fmt.Errorf("scan vector memory embedding: %w", err)
 		}
 		embedding, err := decodeFloat32Vector(embeddingBytes)
@@ -1187,6 +1221,38 @@ func (db *database) getVectorMemoryEmbeddings(chatID, model string) ([]VectorMem
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate vector memory embeddings: %w", err)
+	}
+
+	return embeddings, nil
+}
+
+func (db *database) getVectorMemoryEmbeddingsAllChats(model string) ([]VectorMemoryEmbedding, error) {
+	rows, err := db.conn.Query(`
+		SELECT chat_id, content_hash, embedding
+		FROM message_embeddings
+		WHERE model = ?
+	`, model)
+	if err != nil {
+		return nil, fmt.Errorf("query all vector memory embeddings: %w", err)
+	}
+	defer rows.Close()
+
+	var embeddings []VectorMemoryEmbedding
+	for rows.Next() {
+		var item VectorMemoryEmbedding
+		var embeddingBytes []byte
+		if err := rows.Scan(&item.ChatID, &item.ContentHash, &embeddingBytes); err != nil {
+			return nil, fmt.Errorf("scan vector memory embedding: %w", err)
+		}
+		embedding, err := decodeFloat32Vector(embeddingBytes)
+		if err != nil {
+			continue
+		}
+		item.Embedding = embedding
+		embeddings = append(embeddings, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate all vector memory embeddings: %w", err)
 	}
 
 	return embeddings, nil

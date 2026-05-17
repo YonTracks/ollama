@@ -150,6 +150,7 @@ type ChatRequest struct {
 	EnableAutoTrim           *bool        `json:"enableAutoTrim,omitempty"`
 	EnableAutoSummarize      *bool        `json:"enableAutoSummarize,omitempty"`
 	EnableRetrieval          *bool        `json:"enableRetrieval,omitempty"`
+	RetrievalScope           string       `json:"retrievalScope,omitempty"`
 	RetrievalLimit           int          `json:"retrievalLimit,omitempty"`
 	ExpertMode               *bool        `json:"expertMode,omitempty"`
 	ExpertInstructions       string       `json:"expertInstructions,omitempty"`

@@ -3,6 +3,7 @@ import {
   buildContextWarnings,
   calculateContextBudget,
   estimateMessagesTokens,
+  normalizeContextSettings,
   prepareContextMessages
 } from "./context";
 import type { ChatMessage, OllamaContextSettings } from "./types";
@@ -16,6 +17,7 @@ const baseSettings: OllamaContextSettings = {
   enableAutoSummarize: false,
   enableAutoTrim: true,
   enableRetrieval: false,
+  retrievalScope: "current",
   retrievalLimit: 4,
   expertMode: false,
   expertInstructions: ""
@@ -146,6 +148,14 @@ describe("context budget utilities", () => {
         (warning) => warning.kind
       )
     ).toContain("retrieved");
+  });
+
+  it("normalizes retrieval memory scope", () => {
+    expect(normalizeContextSettings({ retrievalScope: "all" }).retrievalScope).toBe("all");
+    expect(normalizeContextSettings({ retrievalScope: "current" }).retrievalScope).toBe("current");
+    expect(
+      normalizeContextSettings({ retrievalScope: "unknown" as "current" }).retrievalScope
+    ).toBe("current");
   });
 
   it("adds expert instructions as request-only system context", () => {

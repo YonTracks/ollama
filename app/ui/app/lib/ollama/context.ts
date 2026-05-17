@@ -91,6 +91,7 @@ export function normalizeContextSettings(
     enableAutoSummarize: Boolean(settings.enableAutoSummarize),
     enableAutoTrim: settings.enableAutoTrim ?? true,
     enableRetrieval: Boolean(settings.enableRetrieval),
+    retrievalScope: settings.retrievalScope === "all" ? "all" : "current",
     retrievalLimit: boundedInteger(
       settings.retrievalLimit,
       DEFAULT_RETRIEVAL_LIMIT,

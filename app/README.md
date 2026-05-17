@@ -68,6 +68,12 @@ ollama pull nomic-embed-text
 
 Set `OLLAMA_RAG_EMBED_MODEL` to use another local embedding model, or set it to `off` to force lexical retrieval. If embedding is unavailable, the app falls back to lexical retrieval automatically.
 
+Retrieval scope defaults to `Current chat`. Desktop settings can opt into `All chats`,
+which searches locally saved chats in the same SQLite store and prefixes cross-chat
+snippets with their source chat title. Standalone browser mode remains current-chat
+only. Selected-chat/project memory and per-chat sensitivity exclusions are not
+implemented yet.
+
 ## Build
 
 

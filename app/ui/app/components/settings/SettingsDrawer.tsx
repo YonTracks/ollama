@@ -395,6 +395,7 @@ export function SettingsDrawer({
         enableAutoTrim: true,
         enableAutoSummarize: true,
         enableRetrieval: true,
+        retrievalScope: "current",
         retrievalLimit: 4,
         expertMode: false,
         expertInstructions: "",
@@ -421,6 +422,7 @@ export function SettingsDrawer({
         enableAutoTrim: true,
         enableAutoSummarize: true,
         enableRetrieval: true,
+        retrievalScope: "current",
         retrievalLimit: 4,
         expertMode: false,
         expertInstructions: "",
@@ -970,14 +972,45 @@ export function SettingsDrawer({
               onChange={(enableRetrieval) => handleUpdate({ enableRetrieval })}
             />
             {settings.enableRetrieval ? (
-              <NumericRow
-                label="Memory snippets"
-                value={settings.retrievalLimit}
-                min={1}
-                max={8}
-                step={1}
-                onChange={(retrievalLimit) => handleUpdate({ retrievalLimit })}
-              />
+              <>
+                <div className="rounded-md border border-border bg-panel-strong px-3 py-3">
+                  <div className="mb-3">
+                    <div className="text-sm font-medium">Memory scope</div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">
+                      Current chat is private by default. All chats searches local saved chats and labels cross-chat sources.
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {([
+                      ["current", "Current chat"],
+                      ["all", "All chats"]
+                    ] as const).map(([scope, label]) => (
+                      <button
+                        key={scope}
+                        type="button"
+                        onClick={() => handleUpdate({ retrievalScope: scope })}
+                        disabled={standalone && scope === "all"}
+                        className={cn(
+                          "h-10 rounded-md border px-3 text-sm transition focus:focus-ring disabled:cursor-not-allowed disabled:opacity-50",
+                          settings.retrievalScope === scope
+                            ? "border-accent/45 bg-accent text-accent-foreground"
+                            : "border-border text-muted-foreground hover:bg-muted hover:text-foreground"
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <NumericRow
+                  label="Memory snippets"
+                  value={settings.retrievalLimit}
+                  min={1}
+                  max={8}
+                  step={1}
+                  onChange={(retrievalLimit) => handleUpdate({ retrievalLimit })}
+                />
+              </>
             ) : null}
             <ToggleRow
               icon={<BrainCircuit className="h-4 w-4" />}
@@ -1454,6 +1487,11 @@ function settingsToastDescription(updates: Partial<LocalSettings>) {
     return updates.enableRetrieval
       ? "Retrieval memory enabled."
       : "Retrieval memory disabled.";
+  }
+  if ("retrievalScope" in updates) {
+    return updates.retrievalScope === "all"
+      ? "Retrieval memory can search all chats."
+      : "Retrieval memory limited to the current chat.";
   }
   if ("retrievalLimit" in updates) return "Retrieval memory updated.";
   if ("expertMode" in updates) {

@@ -31,6 +31,7 @@ const DEFAULT_SETTINGS: LocalSettings = {
   enableAutoTrim: true,
   enableAutoSummarize: true,
   enableRetrieval: true,
+  retrievalScope: "current",
   contextDefaultsVersion: CONTEXT_DEFAULTS_VERSION,
   retrievalLimit: 4,
   expertMode: false,

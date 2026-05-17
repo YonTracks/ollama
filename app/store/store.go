@@ -52,11 +52,14 @@ type Message struct {
 }
 
 type VectorMemoryItem struct {
+	ChatID    string
+	ChatTitle string
 	MessageID int64
 	Message   Message
 }
 
 type VectorMemoryEmbedding struct {
+	ChatID      string
 	ContentHash string
 	Embedding   []float32
 }
@@ -569,12 +572,28 @@ func (s *Store) VectorMemoryItems(chatID string) ([]VectorMemoryItem, error) {
 	return s.db.getVectorMemoryItems(chatID)
 }
 
+func (s *Store) VectorMemoryItemsAllChats() ([]VectorMemoryItem, error) {
+	if err := s.ensureDB(); err != nil {
+		return nil, err
+	}
+
+	return s.db.getVectorMemoryItemsAllChats()
+}
+
 func (s *Store) VectorMemoryEmbeddings(chatID, model string) ([]VectorMemoryEmbedding, error) {
 	if err := s.ensureDB(); err != nil {
 		return nil, err
 	}
 
 	return s.db.getVectorMemoryEmbeddings(chatID, model)
+}
+
+func (s *Store) VectorMemoryEmbeddingsAllChats(model string) ([]VectorMemoryEmbedding, error) {
+	if err := s.ensureDB(); err != nil {
+		return nil, err
+	}
+
+	return s.db.getVectorMemoryEmbeddingsAllChats(model)
 }
 
 func (s *Store) UpsertMessageEmbedding(chatID, model, contentHash string, embedding []float32) error {

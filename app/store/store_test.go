@@ -211,6 +211,12 @@ func TestStore(t *testing.T) {
 		if err := s.SetChat(*chat); err != nil {
 			t.Fatalf("failed to save vector chat: %v", err)
 		}
+		otherChat := NewChat("vector-other-chat")
+		otherChat.Title = "Physics Notes"
+		otherChat.Messages = append(otherChat.Messages, NewMessage("user", "plasma is the medium for magnetohydrodynamics", nil))
+		if err := s.SetChat(*otherChat); err != nil {
+			t.Fatalf("failed to save other vector chat: %v", err)
+		}
 
 		items, err := s.VectorMemoryItems("vector-chat")
 		if err != nil {
@@ -219,9 +225,15 @@ func TestStore(t *testing.T) {
 		if len(items) != 1 {
 			t.Fatalf("expected one vector memory item, got %d", len(items))
 		}
+		if items[0].ChatID != "vector-chat" {
+			t.Fatalf("expected vector item chat ID, got %q", items[0].ChatID)
+		}
 
 		if err := s.UpsertMessageEmbedding("vector-chat", "nomic-embed-text", "hash-1", []float32{0.25, 0.5, 0.75}); err != nil {
 			t.Fatalf("failed to save vector embedding: %v", err)
+		}
+		if err := s.UpsertMessageEmbedding("vector-other-chat", "nomic-embed-text", "hash-2", []float32{0.1, 0.2, 0.3}); err != nil {
+			t.Fatalf("failed to save other vector embedding: %v", err)
 		}
 
 		chat.Title = "Vector Chat"
@@ -240,8 +252,26 @@ func TestStore(t *testing.T) {
 		if got := embeddings[0].Embedding; len(got) != 3 || got[0] != 0.25 || got[2] != 0.75 {
 			t.Fatalf("unexpected embedding vector: %#v", got)
 		}
+		allItems, err := s.VectorMemoryItemsAllChats()
+		if err != nil {
+			t.Fatalf("failed to load all vector memory items: %v", err)
+		}
+		if !containsVectorMemoryItem(allItems, "vector-other-chat", "Physics Notes") {
+			t.Fatalf("expected all vector memory items to include source chat metadata: %#v", allItems)
+		}
+		allEmbeddings, err := s.VectorMemoryEmbeddingsAllChats("nomic-embed-text")
+		if err != nil {
+			t.Fatalf("failed to load all vector memory embeddings: %v", err)
+		}
+		if !containsVectorMemoryEmbedding(allEmbeddings, "vector-chat", "hash-1") ||
+			!containsVectorMemoryEmbedding(allEmbeddings, "vector-other-chat", "hash-2") {
+			t.Fatalf("expected all vector memory embeddings to include chat IDs: %#v", allEmbeddings)
+		}
 		if err := s.DeleteChat("vector-chat"); err != nil {
 			t.Fatalf("failed to delete vector chat: %v", err)
+		}
+		if err := s.DeleteChat("vector-other-chat"); err != nil {
+			t.Fatalf("failed to delete other vector chat: %v", err)
 		}
 	})
 
@@ -285,4 +315,22 @@ func setupTestStore(t *testing.T) (*Store, func()) {
 	}
 
 	return s, cleanup
+}
+
+func containsVectorMemoryItem(items []VectorMemoryItem, chatID, chatTitle string) bool {
+	for _, item := range items {
+		if item.ChatID == chatID && item.ChatTitle == chatTitle {
+			return true
+		}
+	}
+	return false
+}
+
+func containsVectorMemoryEmbedding(embeddings []VectorMemoryEmbedding, chatID, contentHash string) bool {
+	for _, embedding := range embeddings {
+		if embedding.ChatID == chatID && embedding.ContentHash == contentHash {
+			return true
+		}
+	}
+	return false
 }
