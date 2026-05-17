@@ -17,7 +17,7 @@ import (
 
 // currentSchemaVersion defines the current database schema version.
 // Increment this when making schema changes that require migrations.
-const currentSchemaVersion = 19
+const currentSchemaVersion = 20
 
 // database wraps the SQLite connection.
 // SQLite handles its own locking for concurrent access:
@@ -126,6 +126,7 @@ func (db *database) init() error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);
+	CREATE INDEX IF NOT EXISTS idx_messages_updated_at ON messages(updated_at);
 
 	CREATE TABLE IF NOT EXISTS tool_calls (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,6 +152,7 @@ func (db *database) init() error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_message_embeddings_chat_model ON message_embeddings(chat_id, model);
+	CREATE INDEX IF NOT EXISTS idx_message_embeddings_model ON message_embeddings(model);
 
 	CREATE TABLE IF NOT EXISTS attachments (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -307,6 +309,11 @@ func (db *database) migrate() error {
 				return fmt.Errorf("migrate v18 to v19: %w", err)
 			}
 			version = 19
+		case 19:
+			if err := db.migrateV19ToV20(); err != nil {
+				return fmt.Errorf("migrate v19 to v20: %w", err)
+			}
+			version = 20
 		default:
 			// If we have a version we don't recognize, just set it to current
 			// This might happen during development
@@ -629,6 +636,20 @@ func (db *database) migrateV18ToV19() error {
 	`)
 	if err != nil {
 		return fmt.Errorf("create message_embeddings table: %w", err)
+	}
+
+	return nil
+}
+
+// migrateV19ToV20 adds vector-memory indexes used by cross-chat retrieval.
+func (db *database) migrateV19ToV20() error {
+	_, err := db.conn.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_messages_updated_at ON messages(updated_at);
+		CREATE INDEX IF NOT EXISTS idx_message_embeddings_model ON message_embeddings(model);
+		UPDATE settings SET schema_version = 20;
+	`)
+	if err != nil {
+		return fmt.Errorf("create vector retrieval indexes: %w", err)
 	}
 
 	return nil

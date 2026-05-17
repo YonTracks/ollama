@@ -19,6 +19,7 @@ const baseSettings: OllamaContextSettings = {
   enableRetrieval: false,
   retrievalScope: "current",
   retrievalChatIds: [],
+  retrievalExcludedChatIds: [],
   retrievalLimit: 4,
   expertMode: false,
   expertInstructions: ""
@@ -191,6 +192,11 @@ describe("context budget utilities", () => {
       normalizeContextSettings({ retrievalChatIds: [" chat-a ", "chat-a", "chat-b"] })
         .retrievalChatIds
     ).toEqual(["chat-a", "chat-b"]);
+    expect(
+      normalizeContextSettings({
+        retrievalExcludedChatIds: [" sensitive-a ", "sensitive-a", "sensitive-b"]
+      }).retrievalExcludedChatIds
+    ).toEqual(["sensitive-a", "sensitive-b"]);
   });
 
   it("adds expert instructions as request-only system context", () => {

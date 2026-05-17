@@ -1697,6 +1697,7 @@ type contextRequestSettings struct {
 	EnableRetrieval          bool
 	RetrievalScope           string
 	RetrievalChatIDs         []string
+	RetrievalExcludedChatIDs []string
 	RetrievalLimit           int
 	ExpertMode               bool
 	ExpertInstructions       string
@@ -1746,6 +1747,7 @@ func contextSettingsFromRequest(req responses.ChatRequest) contextRequestSetting
 		EnableRetrieval:          req.EnableRetrieval != nil && *req.EnableRetrieval,
 		RetrievalScope:           retrievalScope,
 		RetrievalChatIDs:         cleanRetrievalChatIDs(req.RetrievalChatIDs),
+		RetrievalExcludedChatIDs: cleanRetrievalChatIDs(req.RetrievalExcludedChatIDs),
 		RetrievalLimit:           clampContextInt(req.RetrievalLimit, 1, contextMaxRetrievalLimit, contextDefaultRetrievalLimit),
 		ExpertMode:               req.ExpertMode != nil && *req.ExpertMode,
 		ExpertInstructions:       strings.TrimSpace(req.ExpertInstructions),
@@ -1979,22 +1981,26 @@ func retrieveRelevantStoreMessages(messages []store.Message, limit int) []store.
 
 	type candidate struct {
 		index int
-		score int
+		score float64
 	}
 	var candidates []candidate
 	for _, index := range outboundIndexes {
 		if index >= latestUserIndex {
 			break
 		}
-		score := storeRetrievalScore(queryTerms, messages[index]) + storeRetrievalIntentScore(queryIntent, messages[index])
-		if score > 0 {
+		baseScore := storeRetrievalScore(queryTerms, messages[index]) + storeRetrievalIntentScore(queryIntent, messages[index])
+		if baseScore > 0 {
+			score := float64(baseScore) + storeRetrievalRecencyBoost(index, latestUserIndex)
 			candidates = append(candidates, candidate{index: index, score: score})
 		}
 	}
 
 	slices.SortFunc(candidates, func(a, b candidate) int {
 		if a.score != b.score {
-			return b.score - a.score
+			if a.score > b.score {
+				return -1
+			}
+			return 1
 		}
 		return b.index - a.index
 	})
@@ -2069,8 +2075,10 @@ func (s *Server) retrieveVectorStoreMessages(ctx context.Context, c *api.Client,
 			s.log().Debug("cross-chat vector memory cache unavailable", "error", err)
 			return nil, false
 		}
+		items = filterVectorMemoryItems(items, chat.ID, settings.RetrievalExcludedChatIDs)
+		embeddings = filterVectorMemoryEmbeddings(embeddings, chat.ID, settings.RetrievalExcludedChatIDs)
 	case retrievalScopeSelected:
-		chatIDs := selectedRetrievalChatIDs(chat.ID, settings.RetrievalChatIDs)
+		chatIDs := selectedRetrievalChatIDs(chat.ID, settings.RetrievalChatIDs, settings.RetrievalExcludedChatIDs)
 		items, err = s.Store.VectorMemoryItemsForChats(chatIDs)
 		if err != nil {
 			s.log().Debug("selected vector memory unavailable", "error", err)
@@ -2123,7 +2131,9 @@ func (s *Server) retrieveVectorStoreMessages(ctx context.Context, c *api.Client,
 		if len(candidate.embedding) == 0 {
 			continue
 		}
-		score := cosineSimilarity(queryEmbedding[0], candidate.embedding) + vectorMemoryIntentBoost(queryIntent, candidate.item.Message)
+		score := cosineSimilarity(queryEmbedding[0], candidate.embedding) +
+			vectorMemoryIntentBoost(queryIntent, candidate.item.Message) +
+			vectorMemoryRecencyBoost(candidate.index, len(candidates))
 		if score > 0 {
 			scored = append(scored, scoredMessage{index: candidate.index, score: score})
 		}
@@ -2203,12 +2213,69 @@ func retrievalScopeAllowsCrossChat(scope string) bool {
 	return scope == retrievalScopeSelected || scope == retrievalScopeAllChats
 }
 
-func selectedRetrievalChatIDs(currentChatID string, selectedChatIDs []string) []string {
-	cleaned := cleanRetrievalChatIDs(append([]string{currentChatID}, selectedChatIDs...))
+func selectedRetrievalChatIDs(currentChatID string, selectedChatIDs, excludedChatIDs []string) []string {
+	excluded := retrievalExcludedChatIDSet(currentChatID, excludedChatIDs)
+	cleaned := make([]string, 0, len(selectedChatIDs)+1)
+	seen := map[string]bool{}
+	for _, chatID := range append([]string{currentChatID}, selectedChatIDs...) {
+		chatID = strings.TrimSpace(chatID)
+		if chatID == "" || seen[chatID] || excluded[chatID] {
+			continue
+		}
+		seen[chatID] = true
+		cleaned = append(cleaned, chatID)
+		if len(cleaned) >= contextMaxRetrievalChats {
+			break
+		}
+	}
 	if len(cleaned) == 0 && currentChatID != "" {
 		return []string{currentChatID}
 	}
 	return cleaned
+}
+
+func retrievalExcludedChatIDSet(currentChatID string, excludedChatIDs []string) map[string]bool {
+	excluded := make(map[string]bool, len(excludedChatIDs))
+	for _, chatID := range excludedChatIDs {
+		chatID = strings.TrimSpace(chatID)
+		if chatID == "" || chatID == currentChatID {
+			continue
+		}
+		excluded[chatID] = true
+	}
+	return excluded
+}
+
+func filterVectorMemoryItems(items []store.VectorMemoryItem, currentChatID string, excludedChatIDs []string) []store.VectorMemoryItem {
+	excluded := retrievalExcludedChatIDSet(currentChatID, excludedChatIDs)
+	if len(excluded) == 0 {
+		return items
+	}
+
+	filtered := make([]store.VectorMemoryItem, 0, len(items))
+	for _, item := range items {
+		if excluded[item.ChatID] {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
+}
+
+func filterVectorMemoryEmbeddings(embeddings []store.VectorMemoryEmbedding, currentChatID string, excludedChatIDs []string) []store.VectorMemoryEmbedding {
+	excluded := retrievalExcludedChatIDSet(currentChatID, excludedChatIDs)
+	if len(excluded) == 0 {
+		return embeddings
+	}
+
+	filtered := make([]store.VectorMemoryEmbedding, 0, len(embeddings))
+	for _, embedding := range embeddings {
+		if excluded[embedding.ChatID] {
+			continue
+		}
+		filtered = append(filtered, embedding)
+	}
+	return filtered
 }
 
 type vectorMemoryCandidate struct {
@@ -2267,7 +2334,7 @@ func ensureVectorCandidateEmbeddings(ctx context.Context, st *store.Store, c *ap
 func vectorEmbeddingWorkset(queryTerms map[string]int, queryIntent contextRetrievalIntent, candidates []vectorMemoryCandidate) []int {
 	type workItem struct {
 		index   int
-		score   int
+		score   float64
 		recency int
 	}
 	var work []workItem
@@ -2275,13 +2342,17 @@ func vectorEmbeddingWorkset(queryTerms map[string]int, queryIntent contextRetrie
 		if len(candidate.embedding) > 0 {
 			continue
 		}
-		score := storeRetrievalScore(queryTerms, candidate.item.Message) + storeRetrievalIntentScore(queryIntent, candidate.item.Message)
+		baseScore := storeRetrievalScore(queryTerms, candidate.item.Message) + storeRetrievalIntentScore(queryIntent, candidate.item.Message)
+		score := float64(baseScore) + vectorMemoryRecencyBoost(candidate.index, len(candidates))
 		work = append(work, workItem{index: index, score: score, recency: candidate.index})
 	}
 
 	slices.SortFunc(work, func(a, b workItem) int {
 		if a.score != b.score {
-			return b.score - a.score
+			if a.score > b.score {
+				return -1
+			}
+			return 1
 		}
 		return b.recency - a.recency
 	})
@@ -2513,6 +2584,25 @@ func vectorMemoryIntentBoost(intent contextRetrievalIntent, message store.Messag
 		return 0
 	}
 	return min(float64(score)/20, 0.9)
+}
+
+func storeRetrievalRecencyBoost(index, latestUserIndex int) float64 {
+	if latestUserIndex <= 0 || index < 0 || index >= latestUserIndex {
+		return 0
+	}
+
+	return 0.25 * float64(index+1) / float64(latestUserIndex)
+}
+
+func vectorMemoryRecencyBoost(index, total int) float64 {
+	if total <= 1 || index < 0 {
+		return 0
+	}
+
+	if index >= total {
+		index = total - 1
+	}
+	return 0.05 * float64(index+1) / float64(total)
 }
 
 func storeRetrievalText(message store.Message) string {

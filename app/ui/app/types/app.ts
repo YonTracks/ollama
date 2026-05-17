@@ -23,6 +23,7 @@ export interface LocalSettings {
   enableRetrieval: boolean;
   retrievalScope: RetrievalMemoryScope;
   retrievalChatIds: string[];
+  retrievalExcludedChatIds: string[];
   contextDefaultsVersion?: number;
   retrievalLimit: number;
   expertMode: boolean;

@@ -92,6 +92,7 @@ export interface OllamaContextSettings {
   enableRetrieval: boolean;
   retrievalScope: RetrievalMemoryScope;
   retrievalChatIds: string[];
+  retrievalExcludedChatIds: string[];
   retrievalLimit: number;
   expertMode: boolean;
   expertInstructions: string;
@@ -178,6 +179,7 @@ export interface ChatRequest {
   enableRetrieval?: boolean;
   retrievalScope?: RetrievalMemoryScope;
   retrievalChatIds?: string[];
+  retrievalExcludedChatIds?: string[];
   retrievalLimit?: number;
   expertMode?: boolean;
   expertInstructions?: string;

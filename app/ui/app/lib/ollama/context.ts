@@ -96,6 +96,7 @@ export function normalizeContextSettings(
         ? settings.retrievalScope
         : "current",
     retrievalChatIds: uniqueStrings(settings.retrievalChatIds),
+    retrievalExcludedChatIds: uniqueStrings(settings.retrievalExcludedChatIds),
     retrievalLimit: boundedInteger(
       settings.retrievalLimit,
       DEFAULT_RETRIEVAL_LIMIT,
@@ -364,7 +365,7 @@ function retrieveRelevantMessages(messages: ChatMessage[], limit: number) {
     .map((message, index) => ({
       message,
       index,
-      score: retrievalScore(queryTerms, message) + retrievalIntentScore(queryIntent, message)
+      score: retrievalCandidateScore(queryTerms, queryIntent, message, index, latestUserIndex)
     }))
     .filter((candidate) => candidate.score > 0)
     .sort((a, b) => b.score - a.score || b.index - a.index)
@@ -446,6 +447,18 @@ function retrievalScore(queryTerms: Map<string, number>, message: ChatMessage) {
   return score;
 }
 
+function retrievalCandidateScore(
+  queryTerms: Map<string, number>,
+  queryIntent: RetrievalIntent,
+  message: ChatMessage,
+  index: number,
+  latestUserIndex: number
+) {
+  const baseScore = retrievalScore(queryTerms, message) + retrievalIntentScore(queryIntent, message);
+  if (baseScore <= 0) return 0;
+  return baseScore + retrievalRecencyBoost(index, latestUserIndex);
+}
+
 interface RetrievalIntent {
   asksUserName: boolean;
 }
@@ -477,6 +490,11 @@ function retrievalIntentScore(intent: RetrievalIntent, message: ChatMessage) {
   if (text.includes("i'm ") || text.includes("i am ")) score += 4;
   if (score > 0 && message.role === "user") score += 2;
   return score;
+}
+
+function retrievalRecencyBoost(index: number, latestUserIndex: number) {
+  if (latestUserIndex <= 0 || index < 0 || index >= latestUserIndex) return 0;
+  return 0.25 * ((index + 1) / latestUserIndex);
 }
 
 function messageRetrievalText(message: ChatMessage) {

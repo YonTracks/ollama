@@ -152,6 +152,7 @@ type ChatRequest struct {
 	EnableRetrieval          *bool        `json:"enableRetrieval,omitempty"`
 	RetrievalScope           string       `json:"retrievalScope,omitempty"`
 	RetrievalChatIDs         []string     `json:"retrievalChatIds,omitempty"`
+	RetrievalExcludedChatIDs []string     `json:"retrievalExcludedChatIds,omitempty"`
 	RetrievalLimit           int          `json:"retrievalLimit,omitempty"`
 	ExpertMode               *bool        `json:"expertMode,omitempty"`
 	ExpertInstructions       string       `json:"expertInstructions,omitempty"`

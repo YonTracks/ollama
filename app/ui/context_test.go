@@ -199,14 +199,18 @@ func TestContextSettingsNormalizeRetrievalScope(t *testing.T) {
 	}
 
 	settings = contextSettingsFromRequest(responses.ChatRequest{
-		RetrievalScope:   retrievalScopeSelected,
-		RetrievalChatIDs: []string{" chat-a ", "chat-a", "", "chat-b"},
+		RetrievalScope:           retrievalScopeSelected,
+		RetrievalChatIDs:         []string{" chat-a ", "chat-a", "", "chat-b"},
+		RetrievalExcludedChatIDs: []string{" sensitive-a ", "sensitive-a", "sensitive-b"},
 	})
 	if settings.RetrievalScope != retrievalScopeSelected {
 		t.Fatalf("expected selected-chat retrieval scope, got %q", settings.RetrievalScope)
 	}
 	if got := strings.Join(settings.RetrievalChatIDs, ","); got != "chat-a,chat-b" {
 		t.Fatalf("expected cleaned retrieval chat IDs, got %q", got)
+	}
+	if got := strings.Join(settings.RetrievalExcludedChatIDs, ","); got != "sensitive-a,sensitive-b" {
+		t.Fatalf("expected cleaned excluded chat IDs, got %q", got)
 	}
 
 	settings = contextSettingsFromRequest(responses.ChatRequest{
@@ -265,9 +269,55 @@ func TestCrossChatVectorCandidatesAllowFirstMessageQueries(t *testing.T) {
 		t.Fatalf("expected selected cross-chat candidate for first message query, got %#v", candidates)
 	}
 
-	selectedIDs := selectedRetrievalChatIDs("current-chat", []string{"source-chat", "current-chat"})
+	selectedIDs := selectedRetrievalChatIDs("current-chat", []string{"source-chat", "current-chat"}, nil)
 	if got := strings.Join(selectedIDs, ","); got != "current-chat,source-chat" {
 		t.Fatalf("expected current chat plus selected IDs, got %q", got)
+	}
+
+	selectedIDs = selectedRetrievalChatIDs("current-chat", []string{"source-chat", "sensitive-chat"}, []string{"source-chat"})
+	if got := strings.Join(selectedIDs, ","); got != "current-chat,sensitive-chat" {
+		t.Fatalf("expected excluded selected chat to be omitted, got %q", got)
+	}
+}
+
+func TestCrossChatVectorMemoryExclusions(t *testing.T) {
+	items := []store.VectorMemoryItem{
+		{ChatID: "current-chat", MessageID: 1, Message: store.NewMessage("user", "current memory", nil)},
+		{ChatID: "sensitive-chat", MessageID: 1, Message: store.NewMessage("user", "sensitive memory", nil)},
+		{ChatID: "source-chat", MessageID: 1, Message: store.NewMessage("user", "source memory", nil)},
+	}
+	filteredItems := filterVectorMemoryItems(items, "current-chat", []string{"sensitive-chat", "current-chat"})
+	if len(filteredItems) != 2 {
+		t.Fatalf("expected two vector memory items after exclusion, got %#v", filteredItems)
+	}
+	for _, item := range filteredItems {
+		if item.ChatID == "sensitive-chat" {
+			t.Fatalf("expected sensitive chat to be excluded: %#v", filteredItems)
+		}
+	}
+
+	embeddings := []store.VectorMemoryEmbedding{
+		{ChatID: "current-chat", ContentHash: "current"},
+		{ChatID: "sensitive-chat", ContentHash: "sensitive"},
+		{ChatID: "source-chat", ContentHash: "source"},
+	}
+	filteredEmbeddings := filterVectorMemoryEmbeddings(embeddings, "current-chat", []string{"sensitive-chat", "current-chat"})
+	if len(filteredEmbeddings) != 2 {
+		t.Fatalf("expected two vector memory embeddings after exclusion, got %#v", filteredEmbeddings)
+	}
+	for _, embedding := range filteredEmbeddings {
+		if embedding.ChatID == "sensitive-chat" {
+			t.Fatalf("expected sensitive embedding to be excluded: %#v", filteredEmbeddings)
+		}
+	}
+}
+
+func TestVectorMemoryRecencyBoost(t *testing.T) {
+	if vectorMemoryRecencyBoost(8, 10) <= vectorMemoryRecencyBoost(1, 10) {
+		t.Fatalf("expected newer vector candidate to receive a larger recency boost")
+	}
+	if storeRetrievalRecencyBoost(8, 10) <= storeRetrievalRecencyBoost(1, 10) {
+		t.Fatalf("expected newer lexical candidate to receive a larger recency boost")
 	}
 }
 

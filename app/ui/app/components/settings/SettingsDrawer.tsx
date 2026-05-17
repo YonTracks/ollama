@@ -129,6 +129,7 @@ export function SettingsDrawer({
   const [deleteChatsError, setDeleteChatsError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTabId>("general");
   const [memoryChatSearch, setMemoryChatSearch] = useState("");
+  const [excludedMemorySearch, setExcludedMemorySearch] = useState("");
 
   const standalone = appMode === "standalone";
   const cloudOverriddenByEnv = cloudStatus?.source === "env" || cloudStatus?.source === "both";
@@ -150,6 +151,14 @@ export function SettingsDrawer({
     () => new Set(selectedMemoryChatIds),
     [selectedMemoryChatIds]
   );
+  const excludedMemoryChatIds = useMemo(
+    () => settings.retrievalExcludedChatIds ?? [],
+    [settings.retrievalExcludedChatIds]
+  );
+  const excludedMemoryChatIdSet = useMemo(
+    () => new Set(excludedMemoryChatIds),
+    [excludedMemoryChatIds]
+  );
   const filteredMemoryChats = useMemo(() => {
     const query = memoryChatSearch.trim().toLowerCase();
     if (!query) return chats;
@@ -160,6 +169,16 @@ export function SettingsDrawer({
         .some((value) => value.toLowerCase().includes(query))
     );
   }, [chats, memoryChatSearch]);
+  const filteredExcludedMemoryChats = useMemo(() => {
+    const query = excludedMemorySearch.trim().toLowerCase();
+    if (!query) return chats;
+
+    return chats.filter((chat) =>
+      [chat.title, chat.userExcerpt, chat.id]
+        .filter(Boolean)
+        .some((value) => value.toLowerCase().includes(query))
+    );
+  }, [chats, excludedMemorySearch]);
   const desktopToolMode: DesktopToolMode = settings.agent
     ? "agent"
     : settings.tools
@@ -282,6 +301,8 @@ export function SettingsDrawer({
   };
 
   const handleToggleMemoryChat = (chatId: string, checked: boolean) => {
+    if (excludedMemoryChatIdSet.has(chatId)) return;
+
     const next = checked
       ? [...selectedMemoryChatIds.filter((id) => id !== chatId), chatId]
       : selectedMemoryChatIds.filter((id) => id !== chatId);
@@ -290,6 +311,23 @@ export function SettingsDrawer({
 
   const handleClearMemoryChats = () => {
     handleUpdate({ retrievalChatIds: [] });
+  };
+
+  const handleToggleExcludedMemoryChat = (chatId: string, checked: boolean) => {
+    const retrievalExcludedChatIds = checked
+      ? [...excludedMemoryChatIds.filter((id) => id !== chatId), chatId]
+      : excludedMemoryChatIds.filter((id) => id !== chatId);
+    const updates: Partial<LocalSettings> = { retrievalExcludedChatIds };
+
+    if (checked && selectedMemoryChatIdSet.has(chatId)) {
+      updates.retrievalChatIds = selectedMemoryChatIds.filter((id) => id !== chatId);
+    }
+
+    handleUpdate(updates);
+  };
+
+  const handleClearExcludedMemoryChats = () => {
+    handleUpdate({ retrievalExcludedChatIds: [] });
   };
 
   const handleCloudToggle = async (enabled: boolean) => {
@@ -434,6 +472,7 @@ export function SettingsDrawer({
         enableRetrieval: true,
         retrievalScope: "current",
         retrievalChatIds: [],
+        retrievalExcludedChatIds: [],
         retrievalLimit: 4,
         expertMode: false,
         expertInstructions: "",
@@ -462,6 +501,7 @@ export function SettingsDrawer({
         enableRetrieval: true,
         retrievalScope: "current",
         retrievalChatIds: [],
+        retrievalExcludedChatIds: [],
         retrievalLimit: 4,
         expertMode: false,
         expertInstructions: "",
@@ -1095,11 +1135,98 @@ export function SettingsDrawer({
                             >
                               <input
                                 type="checkbox"
-                                checked={selectedMemoryChatIdSet.has(chat.id)}
+                                checked={
+                                  selectedMemoryChatIdSet.has(chat.id) &&
+                                  !excludedMemoryChatIdSet.has(chat.id)
+                                }
+                                disabled={excludedMemoryChatIdSet.has(chat.id)}
                                 onChange={(event) =>
                                   handleToggleMemoryChat(chat.id, event.target.checked)
                                 }
-                                className="mt-1 h-4 w-4 flex-none accent-[var(--accent)]"
+                                className="mt-1 h-4 w-4 flex-none accent-[var(--accent)] disabled:opacity-45"
+                              />
+                              <span className="min-w-0">
+                                <span className="flex min-w-0 items-center gap-2">
+                                  <span className="block truncate text-sm font-medium">
+                                    {chat.title}
+                                  </span>
+                                  {excludedMemoryChatIdSet.has(chat.id) ? (
+                                    <span className="rounded-sm border border-danger/30 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-danger">
+                                      Excluded
+                                    </span>
+                                  ) : null}
+                                </span>
+                                {chat.userExcerpt ? (
+                                  <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                                    {chat.userExcerpt}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </label>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
+                  {standalone ? null : (
+                    <div className="mt-3 rounded-md border border-border/70 bg-background/60">
+                      <div className="flex items-center justify-between gap-2 border-b border-border/70 px-3 py-2">
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium">Excluded from memory</div>
+                          <div className="mt-0.5 text-xs text-muted-foreground">
+                            {excludedMemoryChatIds.length} excluded. Exclusions block cross-chat retrieval.
+                          </div>
+                        </div>
+                        {excludedMemoryChatIds.length > 0 ? (
+                          <button
+                            type="button"
+                            onClick={handleClearExcludedMemoryChats}
+                            className="h-8 rounded-md border border-border px-2 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring"
+                          >
+                            Clear
+                          </button>
+                        ) : null}
+                      </div>
+
+                      {chats.length > 0 ? (
+                        <div className="border-b border-border/70 px-3 py-2">
+                          <label className="relative block" htmlFor="excluded-memory-chat-search">
+                            <span className="sr-only">Search excluded memory chats</span>
+                            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                            <input
+                              id="excluded-memory-chat-search"
+                              type="search"
+                              value={excludedMemorySearch}
+                              onChange={(event) => setExcludedMemorySearch(event.target.value)}
+                              placeholder="Search chats to exclude"
+                              className="h-9 w-full rounded-md border border-border bg-background pl-8 pr-3 text-sm outline-none placeholder:text-muted-foreground focus:focus-ring"
+                            />
+                          </label>
+                        </div>
+                      ) : null}
+
+                      <div className="scrollbar-subtle max-h-48 overflow-y-auto p-2">
+                        {chats.length === 0 ? (
+                          <div className="px-2 py-3 text-xs text-muted-foreground">
+                            No saved chats yet.
+                          </div>
+                        ) : filteredExcludedMemoryChats.length === 0 ? (
+                          <div className="px-2 py-3 text-xs text-muted-foreground">
+                            No matching chats.
+                          </div>
+                        ) : (
+                          filteredExcludedMemoryChats.slice(0, 50).map((chat) => (
+                            <label
+                              key={chat.id}
+                              className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-2 transition hover:bg-muted/70"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={excludedMemoryChatIdSet.has(chat.id)}
+                                onChange={(event) =>
+                                  handleToggleExcludedMemoryChat(chat.id, event.target.checked)
+                                }
+                                className="mt-1 h-4 w-4 flex-none accent-[var(--danger)]"
                               />
                               <span className="min-w-0">
                                 <span className="block truncate text-sm font-medium">
@@ -1116,7 +1243,7 @@ export function SettingsDrawer({
                         )}
                       </div>
                     </div>
-                  ) : null}
+                  )}
                 </div>
                 <NumericRow
                   label="Memory snippets"
@@ -1611,6 +1738,7 @@ function settingsToastDescription(updates: Partial<LocalSettings>) {
       : "Retrieval memory limited to the current chat.";
   }
   if ("retrievalChatIds" in updates) return "Selected memory chats updated.";
+  if ("retrievalExcludedChatIds" in updates) return "Memory privacy updated.";
   if ("retrievalLimit" in updates) return "Retrieval memory updated.";
   if ("expertMode" in updates) {
     return updates.expertMode ? "Expert chat mode enabled." : "Expert chat mode disabled.";

@@ -33,6 +33,7 @@ const DEFAULT_SETTINGS: LocalSettings = {
   enableRetrieval: true,
   retrievalScope: "current",
   retrievalChatIds: [],
+  retrievalExcludedChatIds: [],
   contextDefaultsVersion: CONTEXT_DEFAULTS_VERSION,
   retrievalLimit: 4,
   expertMode: false,
@@ -146,7 +147,8 @@ function normalizeLocalSettings(settings: LocalSettings): LocalSettings {
       settings.retrievalScope === "selected" || settings.retrievalScope === "all"
         ? settings.retrievalScope
         : "current",
-    retrievalChatIds: uniqueStrings(settings.retrievalChatIds)
+    retrievalChatIds: uniqueStrings(settings.retrievalChatIds),
+    retrievalExcludedChatIds: uniqueStrings(settings.retrievalExcludedChatIds)
   });
 }
 

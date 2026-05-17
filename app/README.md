@@ -72,7 +72,10 @@ Retrieval scope defaults to `Current chat`. Desktop settings can opt into `Selec
 which searches chosen saved chats plus the current chat, or `All chats`, which
 searches locally saved chats in the same SQLite store. Cross-chat snippets are
 prefixed with their source chat title. Standalone browser mode remains current-chat
-only. Per-chat sensitivity exclusions are not implemented yet.
+only. Chats marked `Excluded from memory` are blocked from cross-chat retrieval,
+even in `All chats` scope; the active chat is still included when you are using
+that chat directly. Retrieval ranking combines semantic similarity, explicit
+memory-intent boosts, and a small recency boost.
 
 ## Build
 
