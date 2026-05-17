@@ -4,6 +4,7 @@ const APP_SHELL = [
   "/",
   "/offline/",
   "/manifest.webmanifest",
+  "/favicon.svg",
   "/icons/ollama-icon-192.png",
   "/icons/ollama-icon-512.png",
   "/apple-touch-icon.png"
@@ -19,6 +20,7 @@ function isStaticAsset(url) {
     (url.pathname.startsWith("/_next/static/") ||
       url.pathname.startsWith("/icons/") ||
       url.pathname === "/manifest.webmanifest" ||
+      url.pathname === "/favicon.svg" ||
       url.pathname === "/favicon.ico")
   );
 }
@@ -71,7 +73,7 @@ self.addEventListener("fetch", (event) => {
       fetch(request)
         .then((response) => {
           const copy = response.clone();
-          caches.open(STATIC_CACHE).then((cache) => cache.put("/", copy));
+          caches.open(STATIC_CACHE).then((cache) => cache.put(request, copy));
           return response;
         })
         .catch(async () => {

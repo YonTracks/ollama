@@ -344,7 +344,7 @@ export function SettingsDrawer({
   return (
     <div
       className={cn(
-        "fixed inset-0 z-40 flex items-center justify-center p-3 transition sm:p-6",
+        "modal-safe-padding fixed inset-0 z-40 flex items-center justify-center transition",
         open ? "pointer-events-auto" : "pointer-events-none"
       )}
       aria-hidden={!open}
@@ -362,7 +362,7 @@ export function SettingsDrawer({
         aria-modal="true"
         aria-labelledby="settings-title"
         className={cn(
-          "relative z-10 flex h-[min(760px,calc(100dvh-1.5rem))] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-border bg-panel shadow-panel transition duration-200 sm:h-[min(780px,calc(100dvh-3rem))]",
+          "relative z-10 flex h-[min(760px,calc(100dvh-1.5rem))] w-full max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-lg border border-border bg-panel shadow-panel transition duration-200 sm:h-[min(780px,calc(100dvh-3rem))] sm:max-w-3xl",
           open ? "translate-y-0 scale-100 opacity-100" : "translate-y-2 scale-[0.98] opacity-0"
         )}
       >
@@ -450,7 +450,7 @@ export function SettingsDrawer({
                 }
               >
                 <ConnectionIndicator connection={connection} />
-                <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-panel-strong px-3 py-3">
+                <div className="flex flex-col items-stretch gap-2 rounded-md border border-border bg-panel-strong px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
                   <label htmlFor="app-mode" className="text-sm font-medium">
                     Mode
                   </label>
@@ -458,7 +458,7 @@ export function SettingsDrawer({
                     id="app-mode"
                     value={appMode}
                     onChange={(event) => onChangeMode(event.target.value as AppMode)}
-                    className="h-9 rounded-md border border-border bg-background px-2 text-sm focus:focus-ring"
+                    className="h-9 min-w-0 rounded-md border border-border bg-background px-2 text-sm focus:focus-ring sm:w-auto"
                   >
                     <option value="desktop">Desktop app</option>
                     <option value="standalone">Standalone</option>
@@ -502,7 +502,7 @@ export function SettingsDrawer({
                       Checking account...
                     </div>
                   ) : user?.name || user?.email ? (
-                    <div className="flex items-center gap-3 rounded-md border border-border bg-panel-strong px-3 py-3">
+                    <div className="flex flex-col gap-3 rounded-md border border-border bg-panel-strong px-3 py-3 sm:flex-row sm:items-center">
                       {user.avatarurl ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
@@ -521,23 +521,25 @@ export function SettingsDrawer({
                         </div>
                         <div className="truncate text-xs text-muted-foreground">{user.email}</div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => window.open("https://ollama.com/settings", "_blank", "noopener,noreferrer")}
-                        className="h-9 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring"
-                      >
-                        Manage
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleSignOut}
-                        className="h-9 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring"
-                      >
-                        Sign out
-                      </button>
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        <button
+                          type="button"
+                          onClick={() => window.open("https://ollama.com/settings", "_blank", "noopener,noreferrer")}
+                          className="h-9 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring"
+                        >
+                          Manage
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleSignOut}
+                          className="h-9 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring"
+                        >
+                          Sign out
+                        </button>
+                      </div>
                     </div>
                   ) : (
-                    <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-panel-strong px-3 py-3">
+                    <div className="flex flex-col items-stretch gap-3 rounded-md border border-border bg-panel-strong px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
                       <div className="min-w-0">
                         <div className="text-sm font-medium">Not connected</div>
                         <div className="text-xs text-muted-foreground">
@@ -548,7 +550,7 @@ export function SettingsDrawer({
                         type="button"
                         onClick={handleSignIn}
                         disabled={awaitingSignIn}
-                        className="h-9 rounded-md border border-accent/45 bg-accent px-3 text-sm font-medium text-accent-foreground transition hover:bg-accent/90 focus:focus-ring disabled:opacity-55"
+                        className="h-9 rounded-md border border-accent/45 bg-accent px-3 text-sm font-medium text-accent-foreground transition hover:bg-accent/90 focus:focus-ring disabled:opacity-55 sm:flex-none"
                       >
                         {awaitingSignIn ? "Opening..." : "Sign in"}
                       </button>
@@ -743,7 +745,7 @@ export function SettingsDrawer({
               checked={settings.compactMessages}
               onChange={(compactMessages) => handleUpdate({ compactMessages })}
             />
-            <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-panel-strong px-3 py-3">
+            <div className="flex flex-col items-stretch gap-2 rounded-md border border-border bg-panel-strong px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
               <label htmlFor="thinking-level" className="text-sm">
                 Thinking level
               </label>
@@ -756,7 +758,7 @@ export function SettingsDrawer({
                     thinkLevel: event.target.value as LocalSettings["thinkLevel"]
                   })
                 }
-                className="h-9 rounded-md border border-border bg-background px-2 text-sm focus:focus-ring disabled:opacity-50"
+                className="h-9 min-w-0 rounded-md border border-border bg-background px-2 text-sm focus:focus-ring disabled:opacity-50 sm:w-auto"
               >
                 <option value="none">Auto</option>
                 <option value="low">Low</option>
@@ -1049,11 +1051,11 @@ function NumericRow({
   onChange(value: number): void;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-panel-strong px-3 py-3">
+    <div className="flex flex-col items-stretch gap-2 rounded-md border border-border bg-panel-strong px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
       <label htmlFor={`settings-${label.toLowerCase().replace(/\s+/g, "-")}`} className="text-sm">
         {label}
       </label>
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         <input
           id={`settings-${label.toLowerCase().replace(/\s+/g, "-")}`}
           type="number"
@@ -1063,7 +1065,7 @@ function NumericRow({
           step={step}
           placeholder={placeholder}
           onChange={(event) => onChange(Number(event.target.value) || 0)}
-          className="h-9 w-32 rounded-md border border-border bg-background px-2 text-sm focus:focus-ring"
+          className="h-9 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-sm focus:focus-ring sm:w-32 sm:flex-none"
         />
         {suffix ? <span className="text-xs text-muted-foreground">{suffix}</span> : null}
       </div>
@@ -1135,7 +1137,7 @@ function Notice({
   return (
     <div
       className={cn(
-        "mb-4 rounded-md border px-3 py-2 text-sm",
+        "mb-4 rounded-md border px-3 py-2 text-sm break-all",
         tone === "danger" && "border-danger/30 bg-danger/10 text-danger",
         tone === "success" && "border-success/30 bg-success/10 text-success",
         tone === "warning" && "border-warning/30 bg-warning/10 text-warning"

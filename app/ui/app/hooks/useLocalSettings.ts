@@ -39,6 +39,18 @@ const DEFAULT_SETTINGS: LocalSettings = {
   imageGenerationSteps: 20
 };
 
+function defaultSidebarOpen() {
+  if (typeof window === "undefined") return DEFAULT_SETTINGS.sidebarOpen;
+  return window.matchMedia("(min-width: 768px)").matches;
+}
+
+function getDefaultSettings(): LocalSettings {
+  return {
+    ...DEFAULT_SETTINGS,
+    sidebarOpen: defaultSidebarOpen()
+  };
+}
+
 function settingsKey(mode: AppMode) {
   return mode === "standalone" ? STANDALONE_SETTINGS_KEY : SETTINGS_KEY;
 }
@@ -46,18 +58,19 @@ function settingsKey(mode: AppMode) {
 function readLocalSettings(mode: AppMode) {
   try {
     const raw = localStorage.getItem(settingsKey(mode));
-    if (!raw) return DEFAULT_SETTINGS;
+    const defaults = getDefaultSettings();
+    if (!raw) return defaults;
 
     return {
-      ...DEFAULT_SETTINGS,
+      ...defaults,
       ...(JSON.parse(raw) as Partial<LocalSettings>)
     };
   } catch {
-    return DEFAULT_SETTINGS;
+    return getDefaultSettings();
   }
 }
 
-function toLocalSettings(serverSettings?: Settings, current = DEFAULT_SETTINGS): LocalSettings {
+function toLocalSettings(serverSettings?: Settings, current = getDefaultSettings()): LocalSettings {
   if (!serverSettings) return current;
 
   return {

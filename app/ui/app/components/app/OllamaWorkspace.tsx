@@ -21,22 +21,24 @@ interface OllamaWorkspaceProps {
 export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspaceProps) {
   const appMode = useAppMode();
   const settingsState = useLocalSettings(appMode.mode, appMode.ready);
+  const { settings, updateSettings } = settingsState;
   const connection = useOllamaConnection(
     appMode.mode,
-    settingsState.settings.coreApiBase,
+    settings.coreApiBase,
     appMode.ready
   );
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(initialSettingsOpen);
+  const [allowMobileSidebarOpen, setAllowMobileSidebarOpen] = useState(false);
 
   const connected = appMode.ready && connection.status === "connected";
   const localDataEnabled = appMode.ready && (appMode.standalone || connected);
-  const modelState = useModels(connected, appMode.mode, settingsState.settings.coreApiBase);
+  const modelState = useModels(connected, appMode.mode, settings.coreApiBase);
   const chatList = useChatList(localDataEnabled, appMode.mode);
 
   const selectedModel = useMemo(() => {
     return (
-      settingsState.settings.selectedModel ||
+      settings.selectedModel ||
       modelState.localModels[0]?.name ||
       modelState.models[0]?.name ||
       ""
@@ -44,14 +46,14 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
   }, [
     modelState.localModels,
     modelState.models,
-    settingsState.settings.selectedModel
+    settings.selectedModel
   ]);
 
   useEffect(() => {
-    if (!settingsState.settings.selectedModel && selectedModel) {
-      settingsState.updateSettings({ selectedModel });
+    if (!settings.selectedModel && selectedModel) {
+      updateSettings({ selectedModel });
     }
-  }, [selectedModel, settingsState]);
+  }, [selectedModel, settings.selectedModel, updateSettings]);
 
   useEffect(() => {
     const syncSettingsRoute = () => {
@@ -63,12 +65,26 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
     return () => window.removeEventListener("popstate", syncSettingsRoute);
   }, []);
 
+  useEffect(() => {
+    if (
+      !appMode.ready ||
+      allowMobileSidebarOpen ||
+      !settings.sidebarOpen
+    ) {
+      return;
+    }
+
+    if (window.matchMedia("(max-width: 767px)").matches) {
+      updateSettings({ sidebarOpen: false });
+    }
+  }, [allowMobileSidebarOpen, appMode.ready, settings.sidebarOpen, updateSettings]);
+
   const chatSession = useChatSession({
     chatId: activeChatId,
     mode: appMode.mode,
-    coreApiBase: settingsState.settings.coreApiBase,
+    coreApiBase: settings.coreApiBase,
     selectedModel,
-    settings: settingsState.settings,
+    settings,
     enabled: localDataEnabled,
     onChatCreated: setActiveChatId,
     onRefreshNeeded: () => {
@@ -97,6 +113,11 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
     appMode.setMode(mode);
   };
 
+  const handleToggleSidebar = (sidebarOpen: boolean) => {
+    setAllowMobileSidebarOpen(true);
+    updateSettings({ sidebarOpen });
+  };
+
   const openSettings = () => {
     setSettingsOpen(true);
     if (!window.location.pathname.startsWith("/settings")) {
@@ -112,15 +133,16 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
   };
 
   return (
-    <div className="h-dvh overflow-hidden bg-background text-foreground">
-      <div className="flex h-full min-h-0">
+    <div className="app-viewport-safe h-dvh overflow-hidden bg-background text-foreground">
+      <div className="relative flex h-full min-h-0">
         <Sidebar
           chats={chatList.chats}
           activeChatId={activeChatId}
           loading={chatList.loading}
           error={chatList.error}
-          open={settingsState.settings.sidebarOpen}
-          onToggle={(sidebarOpen) => settingsState.updateSettings({ sidebarOpen })}
+          open={settings.sidebarOpen}
+          allowMobileOpen={allowMobileSidebarOpen}
+          onToggle={handleToggleSidebar}
           onNewChat={() => setActiveChatId(null)}
           onSelectChat={setActiveChatId}
           onRenameChat={chatList.rename}
@@ -140,14 +162,9 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
             modelsLoading={modelState.loading}
             modelError={modelState.error}
             selectedModel={selectedModel}
-            settings={settingsState.settings}
-            onSelectModel={(selected) =>
-              settingsState.updateSettings({ selectedModel: selected })
-            }
+            onSelectModel={(selected) => updateSettings({ selectedModel: selected })}
             onToggleSidebar={() =>
-              settingsState.updateSettings({
-                sidebarOpen: !settingsState.settings.sidebarOpen
-              })
+              handleToggleSidebar(!settings.sidebarOpen)
             }
             onOpenSettings={openSettings}
             onRefreshModels={modelState.refresh}
@@ -158,9 +175,9 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
             connection={connection}
             standalone={appMode.standalone}
             selectedModel={selectedModel}
-            settings={settingsState.settings}
+            settings={settings}
             chat={chatSession}
-            onUpdateSettings={settingsState.updateSettings}
+            onUpdateSettings={updateSettings}
           />
         </main>
       </div>
@@ -168,7 +185,7 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
       <SettingsDrawer
         open={settingsOpen}
         appMode={appMode.mode}
-        settings={settingsState.settings}
+        settings={settings}
         settingsError={settingsState.error}
         settingsLoading={settingsState.loading}
         connection={connection}
@@ -177,8 +194,8 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
         selectedModel={selectedModel}
         onClose={closeSettings}
         onChangeMode={handleChangeMode}
-        onSelectModel={(selectedModel) => settingsState.updateSettings({ selectedModel })}
-        onUpdateSettings={settingsState.updateSettings}
+        onSelectModel={(selectedModel) => updateSettings({ selectedModel })}
+        onUpdateSettings={updateSettings}
         onRefreshConnection={() => connection.refresh()}
         onRefreshModels={modelState.refresh}
         onDeleteAllChats={handleDeleteAllChats}

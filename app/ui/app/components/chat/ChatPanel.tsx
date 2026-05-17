@@ -256,14 +256,14 @@ function StatePanel({
     <div className="flex min-h-full items-center justify-center px-4 py-10">
       <div
         className={cn(
-          "w-full max-w-md rounded-md border border-border bg-panel/80 p-6 text-center shadow-panel"
+        "w-full max-w-[calc(100vw-2rem)] rounded-md border border-border bg-panel/80 p-6 text-center shadow-panel sm:max-w-md"
         )}
       >
         <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-md border border-border bg-panel-strong text-accent">
           {icon}
         </div>
         <h1 className="text-lg font-semibold">{title}</h1>
-        <p className="mt-2 text-sm leading-6 text-muted-foreground">{body}</p>
+        <p className="mt-2 break-all text-sm leading-6 text-muted-foreground">{body}</p>
       </div>
     </div>
   );

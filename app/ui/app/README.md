@@ -35,6 +35,9 @@ Desktop-app-only settings are hidden in this mode.
 ## PWA
 
 - `public/manifest.webmanifest` defines the installable app metadata.
-- `public/sw.js` caches only the static app shell and same-origin static assets.
+- `public/sw.js` pre-caches the static app shell routes and same-origin static assets.
+- Navigation responses are cached by request URL so exported routes such as `/`, `/settings/`, and `/offline/` keep distinct offline shells.
 - Ollama API routes under `/api/` are intentionally excluded from service-worker caching.
 - Chat prompts, chat responses, API responses, and model metadata are not cached by the service worker.
+- The shell uses safe-area and titlebar overlay padding for installed PWA surfaces.
+- The sidebar is open by default on desktop-sized viewports and starts off-canvas on mobile until the user opens it.

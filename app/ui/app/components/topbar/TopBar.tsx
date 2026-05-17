@@ -13,7 +13,6 @@ import { IconButton } from "@/components/ui/IconButton";
 import { ModelSelector } from "@/components/topbar/ModelSelector";
 import type { useOllamaConnection } from "@/hooks/useOllamaConnection";
 import type { OllamaModel } from "@/lib/ollama/types";
-import type { LocalSettings } from "@/types/app";
 
 interface TopBarProps {
   connection: ReturnType<typeof useOllamaConnection>;
@@ -21,7 +20,6 @@ interface TopBarProps {
   modelsLoading: boolean;
   modelError: string | null;
   selectedModel: string;
-  settings: LocalSettings;
   onSelectModel(model: string): void;
   onToggleSidebar(): void;
   onOpenSettings(): void;
@@ -34,7 +32,6 @@ export function TopBar({
   modelsLoading,
   modelError,
   selectedModel,
-  settings,
   onSelectModel,
   onToggleSidebar,
   onOpenSettings,
@@ -68,16 +65,22 @@ export function TopBar({
         </div>
       ) : null}
 
-      <InstallButton />
+      <div className="hidden sm:block">
+        <InstallButton />
+      </div>
 
       <IconButton
-        label={settings.compactMessages ? "Comfortable messages" : "Compact messages"}
+        label="Open chat display settings"
         onClick={() => onOpenSettings()}
       >
         <SlidersHorizontal className="h-5 w-5" />
       </IconButton>
 
-      <IconButton label="Refresh connection" onClick={() => connection.refresh()}>
+      <IconButton
+        label="Refresh connection"
+        className="hidden sm:inline-flex"
+        onClick={() => connection.refresh()}
+      >
         <RefreshCcw className="h-5 w-5" />
       </IconButton>
 

@@ -12,6 +12,7 @@ interface SidebarProps {
   loading: boolean;
   error: string | null;
   open: boolean;
+  allowMobileOpen: boolean;
   onToggle(open: boolean): void;
   onNewChat(): void;
   onSelectChat(chatId: string): void;
@@ -26,6 +27,7 @@ export function Sidebar({
   loading,
   error,
   open,
+  allowMobileOpen,
   onToggle,
   onNewChat,
   onSelectChat,
@@ -76,17 +78,40 @@ export function Sidebar({
     }
   };
 
+  const closeOnNarrowViewport = () => {
+    if (isNarrowViewport()) onToggle(false);
+  };
+
+  const handleNewChat = () => {
+    onNewChat();
+    closeOnNarrowViewport();
+  };
+
+  const visibleOpenClass = allowMobileOpen
+    ? "translate-x-0"
+    : "-translate-x-full md:translate-x-0";
+
   return (
-    <aside
-      className={cn(
-        "absolute inset-y-0 left-0 z-30 flex w-[18rem] flex-col border-r border-border bg-panel/98 shadow-panel transition-transform duration-200 md:relative md:translate-x-0 md:shadow-none",
-        open ? "translate-x-0" : "-translate-x-full md:w-0 md:overflow-hidden md:border-r-0"
-      )}
-    >
+    <>
+      {open && allowMobileOpen ? (
+        <button
+          type="button"
+          aria-label="Close sidebar"
+          className="absolute inset-0 z-20 bg-black/45 md:hidden"
+          onClick={() => onToggle(false)}
+        />
+      ) : null}
+      <aside
+        aria-hidden={!open}
+        className={cn(
+          "absolute inset-y-0 left-0 z-30 flex w-[min(18rem,calc(100vw-3rem))] flex-col border-r border-border bg-panel/98 shadow-panel transition-transform duration-200 md:relative md:translate-x-0 md:shadow-none",
+          open ? visibleOpenClass : "-translate-x-full md:w-0 md:overflow-hidden md:border-r-0"
+        )}
+      >
       <div className="flex h-16 flex-none items-center gap-2 border-b border-border px-3">
         <button
           type="button"
-          onClick={onNewChat}
+          onClick={handleNewChat}
           className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-md bg-accent px-3 text-sm font-medium text-accent-foreground transition hover:bg-accent/90 focus:focus-ring"
         >
           <Plus className="h-4 w-4 flex-none" />
@@ -159,6 +184,7 @@ export function Sidebar({
                             }}
                             onClick={(event) => {
                               onSelectChat(chat.id);
+                              closeOnNarrowViewport();
                               if (pointerSelectingChatRef.current) {
                                 event.currentTarget.blur();
                                 pointerSelectingChatRef.current = false;
@@ -214,14 +240,18 @@ export function Sidebar({
       <div className="flex flex-none items-center gap-2 border-t border-border p-3">
         <button
           type="button"
-          onClick={onOpenSettings}
+          onClick={() => {
+            onOpenSettings();
+            closeOnNarrowViewport();
+          }}
           className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-md border border-border bg-panel-strong px-3 text-sm text-muted-foreground transition hover:text-foreground focus:focus-ring"
         >
           <Settings className="h-4 w-4" />
           <span>Settings</span>
         </button>
       </div>
-    </aside>
+      </aside>
+    </>
   );
 }
 
@@ -243,4 +273,8 @@ function SidebarNotice({
       {children}
     </div>
   );
+}
+
+function isNarrowViewport() {
+  return typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches;
 }

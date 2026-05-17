@@ -11,7 +11,7 @@ export function RegisterServiceWorker() {
   if (!serviceWorker.updateReady || dismissed) return null;
 
   return (
-    <div className="fixed bottom-4 left-1/2 z-50 w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 rounded-md border border-border bg-panel p-3 shadow-panel">
+    <div className="toast-safe-bottom fixed left-1/2 z-50 w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 rounded-md border border-border bg-panel p-3 shadow-panel">
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1 text-sm">
           <div className="font-medium text-foreground">Update ready</div>
