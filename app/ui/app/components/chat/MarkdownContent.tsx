@@ -40,12 +40,17 @@ interface InlineEmphasisPart {
   content: string;
 }
 
+type InlineTextStylePart = InlineTextPart | InlineCodePart | InlineStrongPart | InlineEmphasisPart;
+
+interface InlineMathPart {
+  type: "math";
+  content: InlineTextStylePart[];
+}
+
 export type MarkdownPart = TextPart | CodePart;
 export type InlineMarkdownPart =
-  | InlineTextPart
-  | InlineCodePart
-  | InlineStrongPart
-  | InlineEmphasisPart;
+  | InlineTextStylePart
+  | InlineMathPart;
 
 const KEYWORDS = new Set([
   "and",
@@ -110,6 +115,32 @@ const EMOJI_HEADING_PATTERN =
 const LIST_ITEM_PATTERN = /^\s*(?:[-*+]\s+|\d+[.)]\s+)/;
 const TABLE_ROW_PATTERN = /^\s*\|.+\|\s*$/;
 const BLOCKQUOTE_PATTERN = /^\s{0,3}>/;
+const LIST_LINE_PATTERN = /^([ \t]*)([-*+]|\d+[.)])\s+(.*)$/;
+const LATEX_STRONG_COMMANDS = ["\\mathbf{", "\\textbf{"] as const;
+const LATEX_SYMBOLS: Record<string, string> = {
+  "\\approx": "\u2248",
+  "\\cdot": "\u00b7",
+  "\\leftarrow": "\u2190",
+  "\\rightarrow": "\u2192",
+  "\\times": "\u00d7",
+  "\\to": "\u2192"
+};
+
+interface MarkdownListNode {
+  kind: "ordered" | "unordered";
+  items: MarkdownListItem[];
+}
+
+interface MarkdownListItem {
+  content: string;
+  children: MarkdownListNode[];
+}
+
+interface ParsedListLine {
+  indent: number;
+  kind: "ordered" | "unordered";
+  content: string;
+}
 
 export function MarkdownContent({ content, className }: MarkdownContentProps) {
   const parts = parseMarkdownContent(content);
@@ -196,24 +227,9 @@ function TextBlock({ block }: { block: string }) {
     return <MarkdownTable lines={lines} />;
   }
 
-  if (lines.every((line) => /^\s*[-*]\s+/.test(line))) {
-    return (
-      <ul className="list-disc space-y-1 pl-5">
-        {lines.map((line, index) => (
-          <li key={`${line}-${index}`}>{renderInline(line.replace(/^\s*[-*]\s+/, ""))}</li>
-        ))}
-      </ul>
-    );
-  }
-
-  if (lines.every((line) => /^\s*\d+[.)]\s+/.test(line))) {
-    return (
-      <ol className="list-decimal space-y-1 pl-5">
-        {lines.map((line, index) => (
-          <li key={`${line}-${index}`}>{renderInline(line.replace(/^\s*\d+[.)]\s+/, ""))}</li>
-        ))}
-      </ol>
-    );
+  const listNodes = parseMarkdownListBlock(lines);
+  if (listNodes) {
+    return <>{listNodes.map((node, index) => renderMarkdownList(node, index))}</>;
   }
 
   return (
@@ -226,6 +242,101 @@ function TextBlock({ block }: { block: string }) {
       ))}
     </p>
   );
+}
+
+function renderMarkdownList(node: MarkdownListNode, index: number, nested = false): ReactNode {
+  const Tag = node.kind === "ordered" ? "ol" : "ul";
+  return (
+    <Tag
+      key={`${node.kind}-${index}`}
+      className={cn(
+        node.kind === "ordered" ? "list-decimal" : "list-disc",
+        nested ? "mt-1 space-y-1 pl-5" : "space-y-1 pl-5"
+      )}
+    >
+      {node.items.map((item, itemIndex) => (
+        <li key={`${item.content}-${itemIndex}`}>
+          <span>{renderInline(item.content)}</span>
+          {item.children.map((child, childIndex) =>
+            renderMarkdownList(child, childIndex, true)
+          )}
+        </li>
+      ))}
+    </Tag>
+  );
+}
+
+function parseMarkdownListBlock(lines: string[]): MarkdownListNode[] | null {
+  const parsed = lines.map(parseListLine);
+  if (parsed.some((line) => line === null)) return null;
+
+  const result = parseListSequence(parsed as ParsedListLine[], 0, parsed[0]?.indent ?? 0);
+  if (!result || result.next !== parsed.length || result.nodes.length === 0) return null;
+
+  return result.nodes;
+}
+
+function parseListLine(line: string): ParsedListLine | null {
+  const match = line.match(LIST_LINE_PATTERN);
+  if (!match) return null;
+
+  return {
+    indent: indentationWidth(match[1]),
+    kind: /^\d/.test(match[2]) ? "ordered" : "unordered",
+    content: match[3].trim()
+  };
+}
+
+function parseListSequence(
+  lines: ParsedListLine[],
+  start: number,
+  baseIndent: number
+): { nodes: MarkdownListNode[]; next: number } | null {
+  const nodes: MarkdownListNode[] = [];
+  let cursor = start;
+
+  while (cursor < lines.length) {
+    const line = lines[cursor];
+    if (line.indent < baseIndent) break;
+    if (line.indent > baseIndent) return null;
+
+    const node: MarkdownListNode = { kind: line.kind, items: [] };
+
+    while (cursor < lines.length) {
+      const current = lines[cursor];
+
+      if (current.indent < baseIndent) break;
+      if (current.indent > baseIndent) {
+        const lastItem = node.items[node.items.length - 1];
+        if (!lastItem) return null;
+
+        const childResult = parseListSequence(lines, cursor, current.indent);
+        if (!childResult) return null;
+
+        lastItem.children.push(...childResult.nodes);
+        cursor = childResult.next;
+        continue;
+      }
+
+      if (current.kind !== node.kind) break;
+
+      node.items.push({ content: current.content, children: [] });
+      cursor++;
+    }
+
+    if (node.items.length === 0) return null;
+    nodes.push(node);
+  }
+
+  return { nodes, next: cursor };
+}
+
+function indentationWidth(indent: string) {
+  let width = 0;
+  for (const char of indent) {
+    width += char === "\t" ? 4 : 1;
+  }
+  return width;
 }
 
 function MarkdownTable({ lines }: { lines: string[] }) {
@@ -341,6 +452,50 @@ function renderInline(text: string) {
       );
     }
 
+    if (segment.type === "math") {
+      return (
+        <span
+          key={`math-${index}`}
+          className="whitespace-nowrap font-mono text-[0.95em] text-foreground"
+        >
+          {renderInlineParts(segment.content)}
+        </span>
+      );
+    }
+
+    return <span key={`${segment.content}-${index}`}>{segment.content}</span>;
+  });
+}
+
+function renderInlineParts(parts: InlineTextStylePart[]) {
+  return parts.map((segment, index) => {
+    if (segment.type === "code") {
+      return (
+        <code
+          key={`${segment.content}-${index}`}
+          className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[0.92em]"
+        >
+          {segment.content}
+        </code>
+      );
+    }
+
+    if (segment.type === "strong") {
+      return (
+        <strong key={`${segment.content}-${index}`} className="font-semibold text-foreground">
+          {segment.content}
+        </strong>
+      );
+    }
+
+    if (segment.type === "emphasis") {
+      return (
+        <em key={`${segment.content}-${index}`} className="italic text-foreground/95">
+          {segment.content}
+        </em>
+      );
+    }
+
     return <span key={`${segment.content}-${index}`}>{segment.content}</span>;
   });
 }
@@ -403,6 +558,8 @@ export function parseInlineMarkdown(text: string): InlineMarkdownPart[] {
 
     if (marker.type === "code") {
       parts.push({ type: "code", content: marker.content });
+    } else if (marker.type === "math") {
+      parts.push({ type: "math", content: parseInlineMathContent(marker.content) });
     } else if (marker.type === "strong") {
       parts.push({ type: "strong", content: unescapeMarkdownText(marker.content) });
     } else {
@@ -432,6 +589,19 @@ function findNextInlineMarker(text: string, from: number) {
       continue;
     }
 
+    if (char === "$" && !isEscaped(text, index)) {
+      const end = findUnescaped(text, "$", index + 1);
+      if (end > index + 1 && !text.slice(index + 1, end).includes("\n")) {
+        return {
+          type: "math" as const,
+          index,
+          end: end + 1,
+          content: text.slice(index + 1, end)
+        };
+      }
+      continue;
+    }
+
     if (text.startsWith("**", index) && !isEscaped(text, index)) {
       const end = findUnescaped(text, "**", index + 2);
       if (end > index + 2 && !text.slice(index + 2, end).includes("\n")) {
@@ -443,6 +613,11 @@ function findNextInlineMarker(text: string, from: number) {
         };
       }
       continue;
+    }
+
+    const latexStrong = findLatexStrongMarker(text, index);
+    if (latexStrong) {
+      return latexStrong;
     }
 
     if (char === "*" && !isEscaped(text, index) && text[index - 1] !== "*" && text[index + 1] !== "*") {
@@ -467,8 +642,93 @@ function findNextInlineMarker(text: string, from: number) {
   return null;
 }
 
+function parseInlineMathContent(text: string): InlineTextStylePart[] {
+  const parts: InlineTextStylePart[] = [];
+  let cursor = 0;
+
+  const pushText = (end: number) => {
+    if (end > cursor) {
+      const content = unescapeMarkdownText(text.slice(cursor, end));
+      if (content) {
+        parts.push({ type: "text", content });
+      }
+    }
+  };
+
+  while (cursor < text.length) {
+    const marker = findNextLatexStrongMarker(text, cursor);
+    if (!marker) {
+      pushText(text.length);
+      cursor = text.length;
+      break;
+    }
+
+    pushText(marker.index);
+    parts.push({ type: "strong", content: unescapeMarkdownText(marker.content) });
+    cursor = marker.end;
+  }
+
+  return parts.length > 0 ? parts : [{ type: "text", content: unescapeMarkdownText(text) }];
+}
+
+function findNextLatexStrongMarker(text: string, from: number) {
+  for (let index = from; index < text.length; index++) {
+    const marker = findLatexStrongMarker(text, index);
+    if (marker) return marker;
+  }
+
+  return null;
+}
+
+function findLatexStrongMarker(text: string, index: number) {
+  if (text[index] !== "\\" || isEscaped(text, index)) return null;
+
+  for (const command of LATEX_STRONG_COMMANDS) {
+    if (!text.startsWith(command, index)) continue;
+
+    const contentStart = index + command.length;
+    const contentEnd = findClosingLatexBrace(text, contentStart);
+    if (contentEnd <= contentStart || text.slice(contentStart, contentEnd).includes("\n")) {
+      return null;
+    }
+
+    return {
+      type: "strong" as const,
+      index,
+      end: contentEnd + 1,
+      content: text.slice(contentStart, contentEnd)
+    };
+  }
+
+  return null;
+}
+
+function findClosingLatexBrace(text: string, from: number) {
+  let depth = 1;
+
+  for (let index = from; index < text.length; index++) {
+    const char = text[index];
+    if (isEscaped(text, index)) continue;
+
+    if (char === "{") {
+      depth++;
+    } else if (char === "}") {
+      depth--;
+      if (depth === 0) return index;
+    }
+  }
+
+  return -1;
+}
+
 function unescapeMarkdownText(text: string) {
-  return text.replace(/\\([`*{}\[\]()#+\-.!_|>])/g, "$1");
+  return normalizeLatexInlineText(text.replace(/\\([`*{}\[\]()#+\-.!_|>])/g, "$1"));
+}
+
+function normalizeLatexInlineText(text: string) {
+  return text.replace(/\\(?:approx|cdot|leftarrow|rightarrow|times|to)\b/g, (match) => {
+    return LATEX_SYMBOLS[match] ?? match;
+  });
 }
 
 function findUnescaped(text: string, marker: string, from: number) {

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import {
+  MarkdownContent,
   parseInlineMarkdown,
   parseMarkdownContent,
   splitMarkdownTextBlocks
@@ -78,6 +81,26 @@ describe("parseMarkdownContent", () => {
       "Outro"
     ]);
   });
+
+  it("renders nested mixed lists from model markdown", () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        content: [
+          "1. Primary Circuit (The Conductor):",
+          "    *   Component: A large, durable pump and reservoir system.",
+          "    *   Function: Moves fluid ($\\mathbf{v}$) through the duct.",
+          "2. Electromagnetic Circuit (The Field):",
+          "    *   Component: Superconducting Magnet Coils."
+        ].join("\n")
+      })
+    );
+
+    expect(html).toContain("<ol");
+    expect(html).toContain("<ul");
+    expect(html).toContain("Primary Circuit");
+    expect(html).toContain("<strong");
+    expect(html).not.toContain("*   Component");
+  });
 });
 
 describe("parseInlineMarkdown", () => {
@@ -106,9 +129,23 @@ describe("parseInlineMarkdown", () => {
     ]);
   });
 
-  it("preserves latex-style backslash commands", () => {
+  it("normalizes supported latex-style inline commands", () => {
     expect(parseInlineMarkdown("$\\mathbf{v} \\cdot \\mathbf{v}$")).toEqual([
-      { type: "text", content: "$\\mathbf{v} \\cdot \\mathbf{v}$" }
+      {
+        type: "math",
+        content: [
+          { type: "strong", content: "v" },
+          { type: "text", content: " \u00b7 " },
+          { type: "strong", content: "v" }
+        ]
+      }
+    ]);
+
+    expect(parseInlineMarkdown("\\textbf{Move} $\\rightarrow$ next")).toEqual([
+      { type: "strong", content: "Move" },
+      { type: "text", content: " " },
+      { type: "math", content: [{ type: "text", content: "\u2192" }] },
+      { type: "text", content: " next" }
     ]);
   });
 });
