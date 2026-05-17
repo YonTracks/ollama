@@ -32,6 +32,7 @@ const DEFAULT_SETTINGS: LocalSettings = {
   enableAutoSummarize: true,
   enableRetrieval: true,
   retrievalScope: "current",
+  retrievalChatIds: [],
   contextDefaultsVersion: CONTEXT_DEFAULTS_VERSION,
   retrievalLimit: 4,
   expertMode: false,
@@ -68,7 +69,7 @@ function readLocalSettings(mode: AppMode) {
     const defaults = getDefaultSettings();
     if (!raw) return defaults;
 
-    return normalizeToolMode(
+    return normalizeLocalSettings(
       migrateLocalSettings({
         ...defaults,
         ...(JSON.parse(raw) as Partial<LocalSettings>)
@@ -95,7 +96,7 @@ function migrateLocalSettings(settings: LocalSettings): LocalSettings {
 function toLocalSettings(serverSettings?: Settings, current = getDefaultSettings()): LocalSettings {
   if (!serverSettings) return current;
 
-  return normalizeToolMode({
+  return normalizeLocalSettings({
     ...current,
     selectedModel: serverSettings.SelectedModel ?? current.selectedModel,
     sidebarOpen: serverSettings.SidebarOpen ?? current.sidebarOpen,
@@ -119,7 +120,7 @@ function toLocalSettings(serverSettings?: Settings, current = getDefaultSettings
 }
 
 function toServerSettings(settings: LocalSettings, serverSettings?: Settings): Settings {
-  const normalized = normalizeToolMode(settings);
+  const normalized = normalizeLocalSettings(settings);
   return {
     ...serverSettings,
     Expose: normalized.expose,
@@ -138,6 +139,17 @@ function toServerSettings(settings: LocalSettings, serverSettings?: Settings): S
   };
 }
 
+function normalizeLocalSettings(settings: LocalSettings): LocalSettings {
+  return normalizeToolMode({
+    ...settings,
+    retrievalScope:
+      settings.retrievalScope === "selected" || settings.retrievalScope === "all"
+        ? settings.retrievalScope
+        : "current",
+    retrievalChatIds: uniqueStrings(settings.retrievalChatIds)
+  });
+}
+
 function normalizeToolMode(settings: LocalSettings): LocalSettings {
   if (!settings.agent || !settings.tools) {
     return settings;
@@ -147,6 +159,20 @@ function normalizeToolMode(settings: LocalSettings): LocalSettings {
     ...settings,
     tools: false
   };
+}
+
+function uniqueStrings(values: string[] | undefined): string[] {
+  if (!Array.isArray(values)) return [];
+
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
 }
 
 export function useLocalSettings(mode: AppMode, enabled = true) {

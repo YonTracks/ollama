@@ -1153,6 +1153,33 @@ func (db *database) getVectorMemoryItemsAllChats() ([]VectorMemoryItem, error) {
 	return items, nil
 }
 
+func (db *database) getVectorMemoryItemsForChats(chatIDs []string) ([]VectorMemoryItem, error) {
+	if len(chatIDs) == 0 {
+		return nil, nil
+	}
+
+	query := fmt.Sprintf(`
+		SELECT c.id, c.title, m.id, m.role, m.content, m.thinking, m.model_name, m.created_at, m.updated_at, m.tool_result
+		FROM messages m
+		JOIN chats c ON c.id = m.chat_id
+		WHERE m.chat_id IN (%s)
+		ORDER BY m.updated_at ASC, m.id ASC
+	`, sqlPlaceholders(len(chatIDs)))
+
+	rows, err := db.conn.Query(query, stringArgs(chatIDs)...)
+	if err != nil {
+		return nil, fmt.Errorf("query selected vector memory items: %w", err)
+	}
+	defer rows.Close()
+
+	items, err := scanVectorMemoryItems(rows)
+	if err != nil {
+		return nil, fmt.Errorf("scan selected vector memory items: %w", err)
+	}
+
+	return items, nil
+}
+
 func scanVectorMemoryItems(rows *sql.Rows) ([]VectorMemoryItem, error) {
 	var items []VectorMemoryItem
 	for rows.Next() {
@@ -1256,6 +1283,60 @@ func (db *database) getVectorMemoryEmbeddingsAllChats(model string) ([]VectorMem
 	}
 
 	return embeddings, nil
+}
+
+func (db *database) getVectorMemoryEmbeddingsForChats(model string, chatIDs []string) ([]VectorMemoryEmbedding, error) {
+	if len(chatIDs) == 0 {
+		return nil, nil
+	}
+
+	args := make([]any, 0, len(chatIDs)+1)
+	args = append(args, model)
+	args = append(args, stringArgs(chatIDs)...)
+	rows, err := db.conn.Query(fmt.Sprintf(`
+		SELECT chat_id, content_hash, embedding
+		FROM message_embeddings
+		WHERE model = ? AND chat_id IN (%s)
+	`, sqlPlaceholders(len(chatIDs))), args...)
+	if err != nil {
+		return nil, fmt.Errorf("query selected vector memory embeddings: %w", err)
+	}
+	defer rows.Close()
+
+	var embeddings []VectorMemoryEmbedding
+	for rows.Next() {
+		var item VectorMemoryEmbedding
+		var embeddingBytes []byte
+		if err := rows.Scan(&item.ChatID, &item.ContentHash, &embeddingBytes); err != nil {
+			return nil, fmt.Errorf("scan vector memory embedding: %w", err)
+		}
+		embedding, err := decodeFloat32Vector(embeddingBytes)
+		if err != nil {
+			continue
+		}
+		item.Embedding = embedding
+		embeddings = append(embeddings, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate selected vector memory embeddings: %w", err)
+	}
+
+	return embeddings, nil
+}
+
+func sqlPlaceholders(count int) string {
+	if count <= 0 {
+		return ""
+	}
+	return strings.TrimRight(strings.Repeat("?,", count), ",")
+}
+
+func stringArgs(values []string) []any {
+	args := make([]any, len(values))
+	for i, value := range values {
+		args[i] = value
+	}
+	return args
 }
 
 func (db *database) upsertMessageEmbedding(chatID, model, contentHash string, embedding []float32) error {

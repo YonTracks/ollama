@@ -18,6 +18,7 @@ const baseSettings: OllamaContextSettings = {
   enableAutoTrim: true,
   enableRetrieval: false,
   retrievalScope: "current",
+  retrievalChatIds: [],
   retrievalLimit: 4,
   expertMode: false,
   expertInstructions: ""
@@ -150,12 +151,46 @@ describe("context budget utilities", () => {
     ).toContain("retrieved");
   });
 
+  it("boosts remembered name snippets", () => {
+    const messages = [
+      message("user", "We talked about dashboard colors."),
+      message("assistant", "Use restrained colors."),
+      message("user", "My name is Joe Citizen."),
+      message("assistant", "Nice to meet you, Joe Citizen."),
+      message("user", "What is my name?")
+    ];
+
+    const prepared = prepareContextMessages({
+      messages,
+      settings: {
+        ...baseSettings,
+        enableRetrieval: true,
+        retrievalLimit: 1
+      }
+    });
+    const memory = prepared.messages.find(
+      (preparedMessage) =>
+        preparedMessage.role === "system" &&
+        preparedMessage.content.startsWith("Relevant retrieved conversation memory:")
+    );
+
+    expect(memory?.content).toContain("My name is Joe Citizen");
+    expect(memory?.content).toContain("answer from this memory");
+  });
+
   it("normalizes retrieval memory scope", () => {
     expect(normalizeContextSettings({ retrievalScope: "all" }).retrievalScope).toBe("all");
+    expect(normalizeContextSettings({ retrievalScope: "selected" }).retrievalScope).toBe(
+      "selected"
+    );
     expect(normalizeContextSettings({ retrievalScope: "current" }).retrievalScope).toBe("current");
     expect(
       normalizeContextSettings({ retrievalScope: "unknown" as "current" }).retrievalScope
     ).toBe("current");
+    expect(
+      normalizeContextSettings({ retrievalChatIds: [" chat-a ", "chat-a", "chat-b"] })
+        .retrievalChatIds
+    ).toEqual(["chat-a", "chat-b"]);
   });
 
   it("adds expert instructions as request-only system context", () => {

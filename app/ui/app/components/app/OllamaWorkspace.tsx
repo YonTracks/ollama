@@ -200,6 +200,11 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
       if (activeChatId === chatId) {
         setActiveChatId(null);
       }
+      if (settings.retrievalChatIds.includes(chatId)) {
+        await updateSettings({
+          retrievalChatIds: settings.retrievalChatIds.filter((id) => id !== chatId)
+        });
+      }
       showToast({
         id: "chat-deleted",
         title: "Chat deleted",
@@ -244,6 +249,9 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
     const deletedCount =
       appMode.mode === "standalone" ? await deleteAllStandaloneChats() : await deleteAllChats();
     setActiveChatId(null);
+    if (settings.retrievalChatIds.length > 0) {
+      await updateSettings({ retrievalChatIds: [] });
+    }
     await chatList.refresh();
     return deletedCount;
   };
@@ -342,6 +350,7 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
         settingsError={settingsState.error}
         settingsLoading={settingsState.loading}
         connection={connection}
+        chats={chatList.chats}
         chatCount={chatList.chats.length}
         models={modelState.models}
         selectedModel={selectedModel}

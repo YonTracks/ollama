@@ -580,6 +580,14 @@ func (s *Store) VectorMemoryItemsAllChats() ([]VectorMemoryItem, error) {
 	return s.db.getVectorMemoryItemsAllChats()
 }
 
+func (s *Store) VectorMemoryItemsForChats(chatIDs []string) ([]VectorMemoryItem, error) {
+	if err := s.ensureDB(); err != nil {
+		return nil, err
+	}
+
+	return s.db.getVectorMemoryItemsForChats(chatIDs)
+}
+
 func (s *Store) VectorMemoryEmbeddings(chatID, model string) ([]VectorMemoryEmbedding, error) {
 	if err := s.ensureDB(); err != nil {
 		return nil, err
@@ -594,6 +602,14 @@ func (s *Store) VectorMemoryEmbeddingsAllChats(model string) ([]VectorMemoryEmbe
 	}
 
 	return s.db.getVectorMemoryEmbeddingsAllChats(model)
+}
+
+func (s *Store) VectorMemoryEmbeddingsForChats(model string, chatIDs []string) ([]VectorMemoryEmbedding, error) {
+	if err := s.ensureDB(); err != nil {
+		return nil, err
+	}
+
+	return s.db.getVectorMemoryEmbeddingsForChats(model, chatIDs)
 }
 
 func (s *Store) UpsertMessageEmbedding(chatID, model, contentHash string, embedding []float32) error {

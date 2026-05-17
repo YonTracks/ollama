@@ -268,6 +268,7 @@ function toContextSettings(settings: LocalSettings): OllamaContextSettings {
     enableAutoTrim: settings.enableAutoTrim,
     enableRetrieval: settings.enableRetrieval,
     retrievalScope: settings.retrievalScope,
+    retrievalChatIds: settings.retrievalChatIds,
     retrievalLimit: settings.retrievalLimit,
     expertMode: settings.expertMode,
     expertInstructions: settings.expertInstructions
@@ -631,6 +632,7 @@ export function useChatSession({
           enableAutoSummarize: contextSettings.enableAutoSummarize,
           enableRetrieval: contextSettings.enableRetrieval,
           retrievalScope: contextSettings.retrievalScope,
+          retrievalChatIds: contextSettings.retrievalChatIds,
           retrievalLimit: contextSettings.retrievalLimit,
           expertMode: contextSettings.expertMode,
           expertInstructions: contextSettings.expertInstructions

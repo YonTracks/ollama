@@ -267,6 +267,22 @@ func TestStore(t *testing.T) {
 			!containsVectorMemoryEmbedding(allEmbeddings, "vector-other-chat", "hash-2") {
 			t.Fatalf("expected all vector memory embeddings to include chat IDs: %#v", allEmbeddings)
 		}
+		selectedItems, err := s.VectorMemoryItemsForChats([]string{"vector-other-chat"})
+		if err != nil {
+			t.Fatalf("failed to load selected vector memory items: %v", err)
+		}
+		if !containsVectorMemoryItem(selectedItems, "vector-other-chat", "Physics Notes") ||
+			containsVectorMemoryItem(selectedItems, "vector-chat", "Vector Chat") {
+			t.Fatalf("expected selected vector memory items to stay scoped: %#v", selectedItems)
+		}
+		selectedEmbeddings, err := s.VectorMemoryEmbeddingsForChats("nomic-embed-text", []string{"vector-other-chat"})
+		if err != nil {
+			t.Fatalf("failed to load selected vector memory embeddings: %v", err)
+		}
+		if !containsVectorMemoryEmbedding(selectedEmbeddings, "vector-other-chat", "hash-2") ||
+			containsVectorMemoryEmbedding(selectedEmbeddings, "vector-chat", "hash-1") {
+			t.Fatalf("expected selected vector memory embeddings to stay scoped: %#v", selectedEmbeddings)
+		}
 		if err := s.DeleteChat("vector-chat"); err != nil {
 			t.Fatalf("failed to delete vector chat: %v", err)
 		}

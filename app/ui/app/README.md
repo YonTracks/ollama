@@ -29,10 +29,11 @@ Desktop-app-only settings are hidden in this mode.
 - Auto-summarize old messages and Retrieval memory are enabled by default for new and reset local settings.
 - Retrieval memory defaults to the active conversation and is injected as request-only system context.
 - Desktop retrieval memory uses a cached SQLite vector store when an embedding model is available, and falls back to lexical retrieval when embeddings fail or are disabled.
-- Desktop users can opt into an All chats memory scope; cross-chat snippets are local, source-labeled, and searched from saved chats in SQLite.
+- Desktop users can opt into a Selected memory scope for chosen saved chats plus the current chat, or an All chats scope for every saved chat in SQLite.
+- Cross-chat snippets are local and source-labeled.
 - Standalone browser mode keeps retrieval memory scoped to the current chat.
 - The desktop embedding model defaults to `nomic-embed-text`; set `OLLAMA_RAG_EMBED_MODEL` to another local embedding model, or `off` to force lexical retrieval.
-- Selected-chat/project memory and per-chat sensitive exclusions are not implemented yet.
+- Per-chat sensitive exclusions are not implemented yet.
 - Expert chat mode adds request-only expert instructions; the Models panel can apply an expert template when creating a derived Ollama model.
 
 ## Desktop tools

@@ -91,7 +91,11 @@ export function normalizeContextSettings(
     enableAutoSummarize: Boolean(settings.enableAutoSummarize),
     enableAutoTrim: settings.enableAutoTrim ?? true,
     enableRetrieval: Boolean(settings.enableRetrieval),
-    retrievalScope: settings.retrievalScope === "all" ? "all" : "current",
+    retrievalScope:
+      settings.retrievalScope === "all" || settings.retrievalScope === "selected"
+        ? settings.retrievalScope
+        : "current",
+    retrievalChatIds: uniqueStrings(settings.retrievalChatIds),
     retrievalLimit: boundedInteger(
       settings.retrievalLimit,
       DEFAULT_RETRIEVAL_LIMIT,
@@ -350,15 +354,17 @@ function retrieveRelevantMessages(messages: ChatMessage[], limit: number) {
   const latestUserIndex = findLatestUserIndex(outbound);
   if (latestUserIndex <= 0) return [];
 
-  const queryTerms = tokenizeForRetrieval(messageRetrievalText(outbound[latestUserIndex]));
+  const queryText = messageRetrievalText(outbound[latestUserIndex]);
+  const queryTerms = tokenizeForRetrieval(queryText);
   if (queryTerms.size === 0) return [];
+  const queryIntent = detectRetrievalIntent(queryText);
 
   return outbound
     .slice(0, latestUserIndex)
     .map((message, index) => ({
       message,
       index,
-      score: retrievalScore(queryTerms, message)
+      score: retrievalScore(queryTerms, message) + retrievalIntentScore(queryIntent, message)
     }))
     .filter((candidate) => candidate.score > 0)
     .sort((a, b) => b.score - a.score || b.index - a.index)
@@ -371,7 +377,9 @@ function createRetrievalMessage(messages: ChatMessage[]): ChatMessage | null {
   if (messages.length === 0) return null;
 
   const header = "Relevant retrieved conversation memory:";
-  const maxCharacters = RETRIEVAL_MAX_TOKENS * 4 - header.length - 1;
+  const guidance =
+    "Use these snippets as local conversation memory when directly relevant. If the user asks for remembered details such as their name, answer from this memory instead of saying you do not know.";
+  const maxCharacters = RETRIEVAL_MAX_TOKENS * 4 - header.length - guidance.length - 2;
   const lines: string[] = [];
   let remaining = maxCharacters;
 
@@ -396,7 +404,7 @@ function createRetrievalMessage(messages: ChatMessage[]): ChatMessage | null {
   return {
     id: RETRIEVAL_MESSAGE_ID,
     role: "system",
-    content: `${header}\n${lines.join("\n")}`,
+    content: `${header}\n${guidance}\n${lines.join("\n")}`,
     status: "complete"
   };
 }
@@ -435,6 +443,39 @@ function retrievalScore(queryTerms: Map<string, number>, message: ChatMessage) {
   if (message.role === "user") score += 1;
   if ((message.attachments?.length ?? 0) > 0) score += 1;
 
+  return score;
+}
+
+interface RetrievalIntent {
+  asksUserName: boolean;
+}
+
+function detectRetrievalIntent(text: string): RetrievalIntent {
+  const normalized = text
+    .toLowerCase()
+    .replace(/['?.,\n]/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+
+  return {
+    asksUserName:
+      normalized.includes("my name") ||
+      normalized.includes("whats my name") ||
+      normalized.includes("what is my name") ||
+      normalized.includes("who am i") ||
+      normalized.includes("remember my name")
+  };
+}
+
+function retrievalIntentScore(intent: RetrievalIntent, message: ChatMessage) {
+  if (!intent.asksUserName || message.role === "system") return 0;
+
+  const text = messageRetrievalText(message).toLowerCase();
+  let score = 0;
+  if (text.includes("my name is") || text.includes("name is")) score += 18;
+  if (text.includes("call me")) score += 14;
+  if (text.includes("i'm ") || text.includes("i am ")) score += 4;
+  if (score > 0 && message.role === "user") score += 2;
   return score;
 }
 
@@ -689,6 +730,20 @@ function positiveNumberOrNull(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? value
     : null;
+}
+
+function uniqueStrings(values: string[] | undefined) {
+  if (!Array.isArray(values)) return [];
+
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
 }
 
 function clamp(value: number, min: number, max: number) {

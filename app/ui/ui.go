@@ -1696,6 +1696,7 @@ type contextRequestSettings struct {
 	EnableAutoSummarize      bool
 	EnableRetrieval          bool
 	RetrievalScope           string
+	RetrievalChatIDs         []string
 	RetrievalLimit           int
 	ExpertMode               bool
 	ExpertInstructions       string
@@ -1703,7 +1704,9 @@ type contextRequestSettings struct {
 
 const (
 	retrievalScopeCurrentChat = "current"
+	retrievalScopeSelected    = "selected"
 	retrievalScopeAllChats    = "all"
+	contextMaxRetrievalChats  = 64
 )
 
 func contextSettingsFromRequest(req responses.ChatRequest) contextRequestSettings {
@@ -1728,7 +1731,7 @@ func contextSettingsFromRequest(req responses.ChatRequest) contextRequestSetting
 	}
 
 	retrievalScope := strings.TrimSpace(req.RetrievalScope)
-	if retrievalScope != retrievalScopeAllChats {
+	if retrievalScope != retrievalScopeAllChats && retrievalScope != retrievalScopeSelected {
 		retrievalScope = retrievalScopeCurrentChat
 	}
 
@@ -1742,10 +1745,32 @@ func contextSettingsFromRequest(req responses.ChatRequest) contextRequestSetting
 		EnableAutoSummarize:      req.EnableAutoSummarize != nil && *req.EnableAutoSummarize,
 		EnableRetrieval:          req.EnableRetrieval != nil && *req.EnableRetrieval,
 		RetrievalScope:           retrievalScope,
+		RetrievalChatIDs:         cleanRetrievalChatIDs(req.RetrievalChatIDs),
 		RetrievalLimit:           clampContextInt(req.RetrievalLimit, 1, contextMaxRetrievalLimit, contextDefaultRetrievalLimit),
 		ExpertMode:               req.ExpertMode != nil && *req.ExpertMode,
 		ExpertInstructions:       strings.TrimSpace(req.ExpertInstructions),
 	}
+}
+
+func cleanRetrievalChatIDs(chatIDs []string) []string {
+	if len(chatIDs) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]bool, len(chatIDs))
+	cleaned := make([]string, 0, len(chatIDs))
+	for _, chatID := range chatIDs {
+		chatID = strings.TrimSpace(chatID)
+		if chatID == "" || seen[chatID] {
+			continue
+		}
+		seen[chatID] = true
+		cleaned = append(cleaned, chatID)
+		if len(cleaned) >= contextMaxRetrievalChats {
+			break
+		}
+	}
+	return cleaned
 }
 
 func positiveIntPtr(value *int) *int {
@@ -1896,10 +1921,6 @@ func approximateContextTokens(text string) int {
 
 type storeMessageRetriever func(messages []store.Message, limit int) []store.Message
 
-func augmentStoreMessagesForContext(messages []store.Message, settings contextRequestSettings) ([]store.Message, int, int, bool) {
-	return augmentStoreMessagesForContextWithRetriever(messages, settings, retrieveRelevantStoreMessages)
-}
-
 func augmentStoreMessagesForContextWithRetriever(messages []store.Message, settings contextRequestSettings, retriever storeMessageRetriever) ([]store.Message, int, int, bool) {
 	var synthetic []store.Message
 	retrieved := 0
@@ -1949,10 +1970,12 @@ func retrieveRelevantStoreMessages(messages []store.Message, limit int) []store.
 		return nil
 	}
 
-	queryTerms := tokenizeContextRetrieval(storeRetrievalText(messages[latestUserIndex]))
+	queryText := storeRetrievalText(messages[latestUserIndex])
+	queryTerms := tokenizeContextRetrieval(queryText)
 	if len(queryTerms) == 0 {
 		return nil
 	}
+	queryIntent := detectContextRetrievalIntent(queryText)
 
 	type candidate struct {
 		index int
@@ -1963,7 +1986,7 @@ func retrieveRelevantStoreMessages(messages []store.Message, limit int) []store.
 		if index >= latestUserIndex {
 			break
 		}
-		score := storeRetrievalScore(queryTerms, messages[index])
+		score := storeRetrievalScore(queryTerms, messages[index]) + storeRetrievalIntentScore(queryIntent, messages[index])
 		if score > 0 {
 			candidates = append(candidates, candidate{index: index, score: score})
 		}
@@ -2030,10 +2053,12 @@ func (s *Server) retrieveVectorStoreMessages(ctx context.Context, c *api.Client,
 	if queryText == "" {
 		return nil, false
 	}
+	queryIntent := detectContextRetrievalIntent(queryText)
 
 	items := currentItems
 	var embeddings []store.VectorMemoryEmbedding
-	if settings.RetrievalScope == retrievalScopeAllChats {
+	switch settings.RetrievalScope {
+	case retrievalScopeAllChats:
 		items, err = s.Store.VectorMemoryItemsAllChats()
 		if err != nil {
 			s.log().Debug("cross-chat vector memory unavailable", "error", err)
@@ -2044,7 +2069,19 @@ func (s *Server) retrieveVectorStoreMessages(ctx context.Context, c *api.Client,
 			s.log().Debug("cross-chat vector memory cache unavailable", "error", err)
 			return nil, false
 		}
-	} else {
+	case retrievalScopeSelected:
+		chatIDs := selectedRetrievalChatIDs(chat.ID, settings.RetrievalChatIDs)
+		items, err = s.Store.VectorMemoryItemsForChats(chatIDs)
+		if err != nil {
+			s.log().Debug("selected vector memory unavailable", "error", err)
+			return nil, false
+		}
+		embeddings, err = s.Store.VectorMemoryEmbeddingsForChats(embeddingModel, chatIDs)
+		if err != nil {
+			s.log().Debug("selected vector memory cache unavailable", "error", err)
+			return nil, false
+		}
+	default:
 		embeddings, err = s.Store.VectorMemoryEmbeddings(chat.ID, embeddingModel)
 		if err != nil {
 			s.log().Debug("vector memory cache unavailable", "error", err)
@@ -2060,7 +2097,7 @@ func (s *Server) retrieveVectorStoreMessages(ctx context.Context, c *api.Client,
 	embedCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	queryEmbedding, err := embedTexts(embedCtx, c, embeddingModel, []string{queryText})
+	queryEmbedding, err := embedTexts(embedCtx, c, embeddingModel, []string{vectorMemoryQueryText(queryText, queryIntent)})
 	if err != nil || len(queryEmbedding) != 1 {
 		if err != nil {
 			s.log().Debug("vector memory query embedding unavailable", "model", embeddingModel, "error", err)
@@ -2075,7 +2112,7 @@ func (s *Server) retrieveVectorStoreMessages(ctx context.Context, c *api.Client,
 	}
 
 	queryTerms := tokenizeContextRetrieval(queryText)
-	ensureVectorCandidateEmbeddings(embedCtx, s.Store, c, embeddingModel, queryTerms, candidates)
+	ensureVectorCandidateEmbeddings(embedCtx, s.Store, c, embeddingModel, queryTerms, queryIntent, candidates)
 
 	type scoredMessage struct {
 		index int
@@ -2086,7 +2123,7 @@ func (s *Server) retrieveVectorStoreMessages(ctx context.Context, c *api.Client,
 		if len(candidate.embedding) == 0 {
 			continue
 		}
-		score := cosineSimilarity(queryEmbedding[0], candidate.embedding)
+		score := cosineSimilarity(queryEmbedding[0], candidate.embedding) + vectorMemoryIntentBoost(queryIntent, candidate.item.Message)
 		if score > 0 {
 			scored = append(scored, scoredMessage{index: candidate.index, score: score})
 		}
@@ -2123,7 +2160,7 @@ func (s *Server) retrieveVectorStoreMessages(ctx context.Context, c *api.Client,
 func vectorMemoryCandidateItems(items []store.VectorMemoryItem, queryItem store.VectorMemoryItem, scope string) []store.VectorMemoryItem {
 	candidates := make([]store.VectorMemoryItem, 0, len(items))
 	for _, item := range items {
-		if scope != retrievalScopeAllChats && item.ChatID != queryItem.ChatID {
+		if !retrievalScopeAllowsCrossChat(scope) && item.ChatID != queryItem.ChatID {
 			continue
 		}
 		if item.ChatID == queryItem.ChatID && item.MessageID >= queryItem.MessageID {
@@ -2145,7 +2182,7 @@ func candidatesByIndex(candidates []vectorMemoryCandidate, index int) store.Vect
 
 func vectorRetrievedMessage(item store.VectorMemoryItem, currentChatID, scope string) store.Message {
 	message := item.Message
-	if scope != retrievalScopeAllChats || item.ChatID == "" || item.ChatID == currentChatID {
+	if !retrievalScopeAllowsCrossChat(scope) || item.ChatID == "" || item.ChatID == currentChatID {
 		return message
 	}
 
@@ -2160,6 +2197,18 @@ func vectorRetrievedMessage(item store.VectorMemoryItem, currentChatID, scope st
 		message.Content = source + " " + message.Content
 	}
 	return message
+}
+
+func retrievalScopeAllowsCrossChat(scope string) bool {
+	return scope == retrievalScopeSelected || scope == retrievalScopeAllChats
+}
+
+func selectedRetrievalChatIDs(currentChatID string, selectedChatIDs []string) []string {
+	cleaned := cleanRetrievalChatIDs(append([]string{currentChatID}, selectedChatIDs...))
+	if len(cleaned) == 0 && currentChatID != "" {
+		return []string{currentChatID}
+	}
+	return cleaned
 }
 
 type vectorMemoryCandidate struct {
@@ -2192,8 +2241,8 @@ func vectorMemoryCandidates(items []store.VectorMemoryItem, embeddingByHash map[
 	return candidates
 }
 
-func ensureVectorCandidateEmbeddings(ctx context.Context, st *store.Store, c *api.Client, model string, queryTerms map[string]int, candidates []vectorMemoryCandidate) {
-	missingIndexes := vectorEmbeddingWorkset(queryTerms, candidates)
+func ensureVectorCandidateEmbeddings(ctx context.Context, st *store.Store, c *api.Client, model string, queryTerms map[string]int, queryIntent contextRetrievalIntent, candidates []vectorMemoryCandidate) {
+	missingIndexes := vectorEmbeddingWorkset(queryTerms, queryIntent, candidates)
 	if len(missingIndexes) == 0 {
 		return
 	}
@@ -2215,7 +2264,7 @@ func ensureVectorCandidateEmbeddings(ctx context.Context, st *store.Store, c *ap
 	}
 }
 
-func vectorEmbeddingWorkset(queryTerms map[string]int, candidates []vectorMemoryCandidate) []int {
+func vectorEmbeddingWorkset(queryTerms map[string]int, queryIntent contextRetrievalIntent, candidates []vectorMemoryCandidate) []int {
 	type workItem struct {
 		index   int
 		score   int
@@ -2226,7 +2275,7 @@ func vectorEmbeddingWorkset(queryTerms map[string]int, candidates []vectorMemory
 		if len(candidate.embedding) > 0 {
 			continue
 		}
-		score := storeRetrievalScore(queryTerms, candidate.item.Message)
+		score := storeRetrievalScore(queryTerms, candidate.item.Message) + storeRetrievalIntentScore(queryIntent, candidate.item.Message)
 		work = append(work, workItem{index: index, score: score, recency: candidate.index})
 	}
 
@@ -2291,6 +2340,13 @@ func vectorMemoryText(message store.Message) string {
 	return truncateRunes(storeRetrievalText(message), contextVectorTextMaxChars)
 }
 
+func vectorMemoryQueryText(queryText string, intent contextRetrievalIntent) string {
+	if !intent.AsksUserName {
+		return queryText
+	}
+	return queryText + "\nmy name is\ncall me\ni am\nprevious chat name"
+}
+
 func vectorMemoryHash(text string) string {
 	sum := sha256.Sum256([]byte(text))
 	return hex.EncodeToString(sum[:])
@@ -2325,7 +2381,8 @@ func createStoreRetrievalMessage(messages []store.Message) (store.Message, bool)
 	}
 
 	const header = "Relevant retrieved conversation memory:"
-	maxCharacters := contextRetrievalMaxTokens*4 - len(header) - 1
+	const guidance = "Use these snippets as local conversation memory when directly relevant. If the user asks for remembered details such as their name, answer from this memory instead of saying you do not know."
+	maxCharacters := contextRetrievalMaxTokens*4 - len(header) - len(guidance) - 2
 	remaining := maxCharacters
 	var lines []string
 	for _, message := range messages {
@@ -2350,7 +2407,7 @@ func createStoreRetrievalMessage(messages []store.Message) (store.Message, bool)
 		return store.Message{}, false
 	}
 
-	return store.NewMessage("system", header+"\n"+strings.Join(lines, "\n"), nil), true
+	return store.NewMessage("system", header+"\n"+guidance+"\n"+strings.Join(lines, "\n"), nil), true
 }
 
 func insertStoreSyntheticSystemMessages(messages []store.Message, synthetic []store.Message) []store.Message {
@@ -2408,6 +2465,54 @@ func storeRetrievalScore(queryTerms map[string]int, message store.Message) int {
 	}
 
 	return score
+}
+
+type contextRetrievalIntent struct {
+	AsksUserName bool
+}
+
+func detectContextRetrievalIntent(text string) contextRetrievalIntent {
+	normalized := strings.ToLower(text)
+	normalized = strings.NewReplacer("'", "", "?", " ", ".", " ", ",", " ", "\n", " ").Replace(normalized)
+	normalized = strings.Join(strings.Fields(normalized), " ")
+
+	return contextRetrievalIntent{
+		AsksUserName: strings.Contains(normalized, "my name") ||
+			strings.Contains(normalized, "whats my name") ||
+			strings.Contains(normalized, "what is my name") ||
+			strings.Contains(normalized, "who am i") ||
+			strings.Contains(normalized, "remember my name"),
+	}
+}
+
+func storeRetrievalIntentScore(intent contextRetrievalIntent, message store.Message) int {
+	if !intent.AsksUserName || message.Role == "system" {
+		return 0
+	}
+
+	text := strings.ToLower(storeRetrievalText(message))
+	score := 0
+	if strings.Contains(text, "my name is") || strings.Contains(text, "name is") {
+		score += 18
+	}
+	if strings.Contains(text, "call me") {
+		score += 14
+	}
+	if strings.Contains(text, "i'm ") || strings.Contains(text, "i am ") {
+		score += 4
+	}
+	if score > 0 && message.Role == "user" {
+		score += 2
+	}
+	return score
+}
+
+func vectorMemoryIntentBoost(intent contextRetrievalIntent, message store.Message) float64 {
+	score := storeRetrievalIntentScore(intent, message)
+	if score == 0 {
+		return 0
+	}
+	return min(float64(score)/20, 0.9)
 }
 
 func storeRetrievalText(message store.Message) string {
@@ -3520,6 +3625,9 @@ func (s *Server) generateChat(ctx context.Context, w http.ResponseWriter, flushe
 // buildChatRequest converts store.Chat to api.ChatRequest
 func (s *Server) buildChatRequest(chat *store.Chat, model string, think any, availableTools []map[string]any, settings contextRequestSettings) (*api.ChatRequest, error) {
 	var msgs []api.Message
+	if toolMessage, ok := createToolUseInstructionMessage(availableTools); ok {
+		msgs = append(msgs, toolMessage)
+	}
 	for _, m := range chat.Messages {
 		// Skip empty messages if present
 		if m.Content == "" && m.Thinking == "" && len(m.ToolCalls) == 0 && len(m.Attachments) == 0 {
@@ -3594,4 +3702,34 @@ func (s *Server) buildChatRequest(chat *store.Chat, model string, think any, ava
 	}
 
 	return req, nil
+}
+
+func createToolUseInstructionMessage(availableTools []map[string]any) (api.Message, bool) {
+	if len(availableTools) == 0 {
+		return api.Message{}, false
+	}
+
+	names := make([]string, 0, len(availableTools))
+	hasDesktopTools := false
+	for _, toolSchema := range availableTools {
+		name := getStringFromMap(toolSchema, "name", "")
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+		if strings.HasPrefix(name, "desktop.") {
+			hasDesktopTools = true
+		}
+	}
+	if len(names) == 0 {
+		return api.Message{}, false
+	}
+
+	content := "Tool access is available for this request. Use the available tools when the user asks for information that requires them, instead of saying you cannot access it."
+	if hasDesktopTools {
+		content += " For local file or folder questions, call desktop.list_files, desktop.read_text_file, or desktop.search_files with paths relative to the configured working directory. If a desktop tool reports a scope or permission error, explain that result."
+	}
+	content += " Available tools: " + strings.Join(names, ", ") + "."
+
+	return api.Message{Role: "system", Content: content}, true
 }

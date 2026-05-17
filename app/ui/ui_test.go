@@ -339,6 +339,35 @@ func TestChatInfoAutoTitle(t *testing.T) {
 	}
 }
 
+func TestBuildChatRequestAddsDesktopToolGuidance(t *testing.T) {
+	chat := &store.Chat{
+		ID: "chat",
+		Messages: []store.Message{
+			store.NewMessage("user", "What is in the app/tools folder?", nil),
+		},
+	}
+
+	req, err := (&Server{}).buildChatRequest(chat, "test-model", false, []map[string]any{
+		{
+			"name":        "desktop.list_files",
+			"description": "List files",
+			"schema":      map[string]any{"type": "object"},
+		},
+	}, contextRequestSettings{})
+	if err != nil {
+		t.Fatalf("buildChatRequest returned error: %v", err)
+	}
+	if len(req.Messages) < 2 {
+		t.Fatalf("expected tool guidance plus user message, got %#v", req.Messages)
+	}
+	if req.Messages[0].Role != "system" || !strings.Contains(req.Messages[0].Content, "desktop.list_files") {
+		t.Fatalf("expected desktop tool guidance, got %#v", req.Messages[0])
+	}
+	if req.Messages[1].Role != "user" || req.Messages[1].Content != "What is in the app/tools folder?" {
+		t.Fatalf("expected original user message after guidance, got %#v", req.Messages[1])
+	}
+}
+
 func TestAuthenticationMiddleware(t *testing.T) {
 	tests := []struct {
 		name         string

@@ -659,6 +659,7 @@ export class ChatRequest {
     enableAutoSummarize?: boolean;
     enableRetrieval?: boolean;
     retrievalScope?: string;
+    retrievalChatIds?: string[];
     retrievalLimit?: number;
     expertMode?: boolean;
     expertInstructions?: string;
@@ -685,6 +686,7 @@ export class ChatRequest {
         this.enableAutoSummarize = source["enableAutoSummarize"];
         this.enableRetrieval = source["enableRetrieval"];
         this.retrievalScope = source["retrievalScope"];
+        this.retrievalChatIds = source["retrievalChatIds"];
         this.retrievalLimit = source["retrievalLimit"];
         this.expertMode = source["expertMode"];
         this.expertInstructions = source["expertInstructions"];

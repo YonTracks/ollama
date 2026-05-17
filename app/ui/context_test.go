@@ -150,6 +150,45 @@ func TestPrepareContextChatUsesInjectedRetriever(t *testing.T) {
 	}
 }
 
+func TestPrepareContextChatBoostsRememberedName(t *testing.T) {
+	chat := &store.Chat{
+		ID: "chat",
+		Messages: []store.Message{
+			store.NewMessage("user", "We talked about dashboard colors.", nil),
+			store.NewMessage("assistant", "The dashboard should stay restrained.", nil),
+			store.NewMessage("user", "My name is Joe Citizen.", nil),
+			store.NewMessage("assistant", "Nice to meet you, Joe Citizen.", nil),
+			store.NewMessage("user", "What is my name and what is in app/tools?", nil),
+		},
+	}
+
+	prepared, notice := prepareContextChat(chat, contextRequestSettings{
+		Mode:                     "friendly",
+		ReserveOutputTokens:      40,
+		NearFullThresholdPercent: 85,
+		EnableRetrieval:          true,
+		RetrievalLimit:           1,
+	})
+
+	if notice.RetrievedMemoryCount == nil || *notice.RetrievedMemoryCount != 1 {
+		t.Fatalf("expected one retrieved memory, got %#v", notice.RetrievedMemoryCount)
+	}
+
+	var memory string
+	for _, message := range prepared.Messages {
+		if message.Role == "system" && strings.HasPrefix(message.Content, "Relevant retrieved conversation memory:") {
+			memory = message.Content
+			break
+		}
+	}
+	if !strings.Contains(memory, "My name is Joe Citizen") {
+		t.Fatalf("expected name memory to be retrieved, got %q", memory)
+	}
+	if !strings.Contains(memory, "answer from this memory") {
+		t.Fatalf("expected retrieval guidance, got %q", memory)
+	}
+}
+
 func TestContextSettingsNormalizeRetrievalScope(t *testing.T) {
 	allChats := "all"
 	settings := contextSettingsFromRequest(responses.ChatRequest{
@@ -157,6 +196,17 @@ func TestContextSettingsNormalizeRetrievalScope(t *testing.T) {
 	})
 	if settings.RetrievalScope != retrievalScopeAllChats {
 		t.Fatalf("expected all-chat retrieval scope, got %q", settings.RetrievalScope)
+	}
+
+	settings = contextSettingsFromRequest(responses.ChatRequest{
+		RetrievalScope:   retrievalScopeSelected,
+		RetrievalChatIDs: []string{" chat-a ", "chat-a", "", "chat-b"},
+	})
+	if settings.RetrievalScope != retrievalScopeSelected {
+		t.Fatalf("expected selected-chat retrieval scope, got %q", settings.RetrievalScope)
+	}
+	if got := strings.Join(settings.RetrievalChatIDs, ","); got != "chat-a,chat-b" {
+		t.Fatalf("expected cleaned retrieval chat IDs, got %q", got)
 	}
 
 	settings = contextSettingsFromRequest(responses.ChatRequest{
@@ -183,6 +233,11 @@ func TestCrossChatVectorMemoryLabelsSources(t *testing.T) {
 	if strings.Contains(currentMessage.Content, "[From") {
 		t.Fatalf("did not expect current chat source label, got %q", currentMessage.Content)
 	}
+
+	selectedMessage := vectorRetrievedMessage(item, "current-chat", retrievalScopeSelected)
+	if !strings.Contains(selectedMessage.Content, `[From "Physics Notes"]`) {
+		t.Fatalf("expected selected cross-chat source label, got %q", selectedMessage.Content)
+	}
 }
 
 func TestCrossChatVectorCandidatesAllowFirstMessageQueries(t *testing.T) {
@@ -203,6 +258,16 @@ func TestCrossChatVectorCandidatesAllowFirstMessageQueries(t *testing.T) {
 	candidates := vectorMemoryCandidateItems(items, query, retrievalScopeAllChats)
 	if len(candidates) != 1 || candidates[0].ChatID != "source-chat" {
 		t.Fatalf("expected cross-chat candidate for first message query, got %#v", candidates)
+	}
+
+	candidates = vectorMemoryCandidateItems(items, query, retrievalScopeSelected)
+	if len(candidates) != 1 || candidates[0].ChatID != "source-chat" {
+		t.Fatalf("expected selected cross-chat candidate for first message query, got %#v", candidates)
+	}
+
+	selectedIDs := selectedRetrievalChatIDs("current-chat", []string{"source-chat", "current-chat"})
+	if got := strings.Join(selectedIDs, ","); got != "current-chat,source-chat" {
+		t.Fatalf("expected current chat plus selected IDs, got %q", got)
 	}
 }
 

@@ -1,7 +1,7 @@
 export type ConnectionStatus = "checking" | "connected" | "disconnected" | "offline";
 
 export type ContextManagementMode = "strict" | "friendly";
-export type RetrievalMemoryScope = "current" | "all";
+export type RetrievalMemoryScope = "current" | "selected" | "all";
 
 export interface LocalSettings {
   selectedModel: string;
@@ -22,6 +22,7 @@ export interface LocalSettings {
   enableAutoSummarize: boolean;
   enableRetrieval: boolean;
   retrievalScope: RetrievalMemoryScope;
+  retrievalChatIds: string[];
   contextDefaultsVersion?: number;
   retrievalLimit: number;
   expertMode: boolean;

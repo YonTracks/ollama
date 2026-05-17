@@ -45,6 +45,7 @@ import { cn, formatBytes } from "@/lib/utils";
 import type { useOllamaConnection } from "@/hooks/useOllamaConnection";
 import type { AppMode } from "@/lib/appMode";
 import type {
+  ChatInfo,
   CloudStatusResponse,
   OllamaModel,
   OllamaUser
@@ -79,6 +80,7 @@ interface SettingsDrawerProps {
   settingsError: string | null;
   settingsLoading: boolean;
   connection: ReturnType<typeof useOllamaConnection>;
+  chats: ChatInfo[];
   chatCount: number;
   models: OllamaModel[];
   selectedModel: string;
@@ -98,6 +100,7 @@ export function SettingsDrawer({
   settingsError,
   settingsLoading,
   connection,
+  chats,
   chatCount,
   models,
   selectedModel,
@@ -125,6 +128,7 @@ export function SettingsDrawer({
   const [deletingChats, setDeletingChats] = useState(false);
   const [deleteChatsError, setDeleteChatsError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTabId>("general");
+  const [memoryChatSearch, setMemoryChatSearch] = useState("");
 
   const standalone = appMode === "standalone";
   const cloudOverriddenByEnv = cloudStatus?.source === "env" || cloudStatus?.source === "both";
@@ -138,6 +142,24 @@ export function SettingsDrawer({
   const modelManagerApiBase = standalone
     ? settings.coreApiBase || undefined
     : getApiBase() || SAME_ORIGIN_CORE_API_BASE;
+  const selectedMemoryChatIds = useMemo(
+    () => settings.retrievalChatIds ?? [],
+    [settings.retrievalChatIds]
+  );
+  const selectedMemoryChatIdSet = useMemo(
+    () => new Set(selectedMemoryChatIds),
+    [selectedMemoryChatIds]
+  );
+  const filteredMemoryChats = useMemo(() => {
+    const query = memoryChatSearch.trim().toLowerCase();
+    if (!query) return chats;
+
+    return chats.filter((chat) =>
+      [chat.title, chat.userExcerpt, chat.id]
+        .filter(Boolean)
+        .some((value) => value.toLowerCase().includes(query))
+    );
+  }, [chats, memoryChatSearch]);
   const desktopToolMode: DesktopToolMode = settings.agent
     ? "agent"
     : settings.tools
@@ -253,6 +275,21 @@ export function SettingsDrawer({
       tone: restart ? "warning" : "success"
     });
     return true;
+  };
+
+  const handleRetrievalScopeUpdate = (retrievalScope: LocalSettings["retrievalScope"]) => {
+    handleUpdate({ retrievalScope });
+  };
+
+  const handleToggleMemoryChat = (chatId: string, checked: boolean) => {
+    const next = checked
+      ? [...selectedMemoryChatIds.filter((id) => id !== chatId), chatId]
+      : selectedMemoryChatIds.filter((id) => id !== chatId);
+    handleUpdate({ retrievalChatIds: next });
+  };
+
+  const handleClearMemoryChats = () => {
+    handleUpdate({ retrievalChatIds: [] });
   };
 
   const handleCloudToggle = async (enabled: boolean) => {
@@ -396,6 +433,7 @@ export function SettingsDrawer({
         enableAutoSummarize: true,
         enableRetrieval: true,
         retrievalScope: "current",
+        retrievalChatIds: [],
         retrievalLimit: 4,
         expertMode: false,
         expertInstructions: "",
@@ -423,6 +461,7 @@ export function SettingsDrawer({
         enableAutoSummarize: true,
         enableRetrieval: true,
         retrievalScope: "current",
+        retrievalChatIds: [],
         retrievalLimit: 4,
         expertMode: false,
         expertInstructions: "",
@@ -977,21 +1016,22 @@ export function SettingsDrawer({
                   <div className="mb-3">
                     <div className="text-sm font-medium">Memory scope</div>
                     <div className="mt-0.5 text-xs text-muted-foreground">
-                      Current chat is private by default. All chats searches local saved chats and labels cross-chat sources.
+                      Current chat is private by default. Selected and All chats search local saved chats and label cross-chat sources.
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-3 gap-2">
                     {([
-                      ["current", "Current chat"],
+                      ["current", "Current"],
+                      ["selected", "Selected"],
                       ["all", "All chats"]
                     ] as const).map(([scope, label]) => (
                       <button
                         key={scope}
                         type="button"
-                        onClick={() => handleUpdate({ retrievalScope: scope })}
-                        disabled={standalone && scope === "all"}
+                        onClick={() => handleRetrievalScopeUpdate(scope)}
+                        disabled={standalone && scope !== "current"}
                         className={cn(
-                          "h-10 rounded-md border px-3 text-sm transition focus:focus-ring disabled:cursor-not-allowed disabled:opacity-50",
+                          "h-10 rounded-md border px-2 text-sm transition focus:focus-ring disabled:cursor-not-allowed disabled:opacity-50",
                           settings.retrievalScope === scope
                             ? "border-accent/45 bg-accent text-accent-foreground"
                             : "border-border text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -1001,6 +1041,82 @@ export function SettingsDrawer({
                       </button>
                     ))}
                   </div>
+                  {settings.retrievalScope === "selected" ? (
+                    <div className="mt-3 rounded-md border border-border/70 bg-background/60">
+                      <div className="flex items-center justify-between gap-2 border-b border-border/70 px-3 py-2">
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium">Selected chats</div>
+                          <div className="mt-0.5 text-xs text-muted-foreground">
+                            {selectedMemoryChatIds.length} selected. Current chat is included.
+                          </div>
+                        </div>
+                        {selectedMemoryChatIds.length > 0 ? (
+                          <button
+                            type="button"
+                            onClick={handleClearMemoryChats}
+                            className="h-8 rounded-md border border-border px-2 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring"
+                          >
+                            Clear
+                          </button>
+                        ) : null}
+                      </div>
+
+                      {chats.length > 0 ? (
+                        <div className="border-b border-border/70 px-3 py-2">
+                          <label className="relative block" htmlFor="memory-chat-search">
+                            <span className="sr-only">Search memory chats</span>
+                            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                            <input
+                              id="memory-chat-search"
+                              type="search"
+                              value={memoryChatSearch}
+                              onChange={(event) => setMemoryChatSearch(event.target.value)}
+                              placeholder="Search chats"
+                              className="h-9 w-full rounded-md border border-border bg-background pl-8 pr-3 text-sm outline-none placeholder:text-muted-foreground focus:focus-ring"
+                            />
+                          </label>
+                        </div>
+                      ) : null}
+
+                      <div className="scrollbar-subtle max-h-56 overflow-y-auto p-2">
+                        {chats.length === 0 ? (
+                          <div className="px-2 py-3 text-xs text-muted-foreground">
+                            No saved chats yet.
+                          </div>
+                        ) : filteredMemoryChats.length === 0 ? (
+                          <div className="px-2 py-3 text-xs text-muted-foreground">
+                            No matching chats.
+                          </div>
+                        ) : (
+                          filteredMemoryChats.slice(0, 50).map((chat) => (
+                            <label
+                              key={chat.id}
+                              className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-2 transition hover:bg-muted/70"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selectedMemoryChatIdSet.has(chat.id)}
+                                onChange={(event) =>
+                                  handleToggleMemoryChat(chat.id, event.target.checked)
+                                }
+                                className="mt-1 h-4 w-4 flex-none accent-[var(--accent)]"
+                              />
+                              <span className="min-w-0">
+                                <span className="block truncate text-sm font-medium">
+                                  {chat.title}
+                                </span>
+                                {chat.userExcerpt ? (
+                                  <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                                    {chat.userExcerpt}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </label>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
                 <NumericRow
                   label="Memory snippets"
@@ -1489,10 +1605,12 @@ function settingsToastDescription(updates: Partial<LocalSettings>) {
       : "Retrieval memory disabled.";
   }
   if ("retrievalScope" in updates) {
+    if (updates.retrievalScope === "selected") return "Retrieval memory uses selected chats.";
     return updates.retrievalScope === "all"
       ? "Retrieval memory can search all chats."
       : "Retrieval memory limited to the current chat.";
   }
+  if ("retrievalChatIds" in updates) return "Selected memory chats updated.";
   if ("retrievalLimit" in updates) return "Retrieval memory updated.";
   if ("expertMode" in updates) {
     return updates.expertMode ? "Expert chat mode enabled." : "Expert chat mode disabled.";
