@@ -24,6 +24,7 @@ import {
 import { ConnectionIndicator } from "@/components/status/ConnectionIndicator";
 import { ModelManager } from "@/components/settings/ModelManager";
 import { IconButton } from "@/components/ui/IconButton";
+import { useToast } from "@/components/ui/ToastProvider";
 import {
   disconnectUser,
   fetchConnectUrl,
@@ -52,6 +53,10 @@ const CONTEXT_LENGTH_OPTIONS = [4096, 8192, 16384, 32768, 65536, 131072, 262144]
 
 type SettingsTabId = "general" | "models" | "chat" | "advanced" | "data";
 
+interface ToastOptions {
+  silent?: boolean;
+}
+
 const SETTINGS_TABS: Array<{
   id: SettingsTabId;
   label: string;
@@ -76,10 +81,10 @@ interface SettingsDrawerProps {
   selectedModel: string;
   onClose(): void;
   onChangeMode(mode: AppMode): void;
-  onSelectModel(model: string): void;
-  onUpdateSettings(updates: Partial<LocalSettings>): Promise<void> | void;
-  onRefreshConnection(): void;
-  onRefreshModels(): void;
+  onSelectModel(model: string, options?: ToastOptions): Promise<boolean | void> | boolean | void;
+  onUpdateSettings(updates: Partial<LocalSettings>): Promise<boolean | void> | boolean | void;
+  onRefreshConnection(options?: ToastOptions): Promise<boolean | void> | boolean | void;
+  onRefreshModels(options?: ToastOptions): Promise<boolean | void> | boolean | void;
   onDeleteAllChats(): Promise<number> | number;
 }
 
@@ -101,6 +106,7 @@ export function SettingsDrawer({
   onRefreshModels,
   onDeleteAllChats
 }: SettingsDrawerProps) {
+  const { showToast } = useToast();
   const [cloudStatus, setCloudStatus] = useState<CloudStatusResponse | null>(null);
   const [cloudLoading, setCloudLoading] = useState(false);
   const [cloudError, setCloudError] = useState<string | null>(null);
@@ -212,9 +218,33 @@ export function SettingsDrawer({
     }
   };
 
-  const handleUpdate = async (updates: Partial<LocalSettings>, restart = false) => {
-    await Promise.resolve(onUpdateSettings(updates));
+  const handleUpdate = async (
+    updates: Partial<LocalSettings>,
+    restart = false,
+    description?: string
+  ) => {
+    const updated = await Promise.resolve(onUpdateSettings(updates));
+    if (updated === false) {
+      showToast({
+        id: "settings-save-error",
+        title: "Settings were not saved",
+        description: "Check the connection and try again.",
+        tone: "danger",
+        duration: 7000
+      });
+      return false;
+    }
+
     showSaved(restart);
+    showToast({
+      id: restart ? "settings-restart" : "settings-saved",
+      title: "Settings saved",
+      description: restart
+        ? `${description ?? settingsToastDescription(updates)} Ollama is restarting to apply this change.`
+        : description ?? settingsToastDescription(updates),
+      tone: restart ? "warning" : "success"
+    });
+    return true;
   };
 
   const handleCloudToggle = async (enabled: boolean) => {
@@ -224,10 +254,26 @@ export function SettingsDrawer({
     setCloudError(null);
     try {
       setCloudStatus(await updateCloudSetting(enabled));
-      onRefreshModels();
+      onRefreshModels({ silent: true });
       showSaved(true);
+      showToast({
+        id: "cloud-setting",
+        title: enabled ? "Cloud models enabled" : "Cloud models disabled",
+        description: enabled
+          ? "Cloud-backed models and web search can be used after restart."
+          : "Cloud-backed features are off after restart.",
+        tone: "warning"
+      });
     } catch (error) {
-      setCloudError(error instanceof Error ? error.message : "Failed to update cloud setting");
+      const message = error instanceof Error ? error.message : "Failed to update cloud setting";
+      setCloudError(message);
+      showToast({
+        id: "cloud-setting",
+        title: "Cloud setting failed",
+        description: message,
+        tone: "danger",
+        duration: 7000
+      });
     } finally {
       setCloudLoading(false);
     }
@@ -241,14 +287,34 @@ export function SettingsDrawer({
       const connectUrl = await fetchConnectUrl();
       if (connectUrl) {
         window.open(connectUrl, "_blank", "noopener,noreferrer");
+        showToast({
+          id: "account-sign-in",
+          title: "Sign-in opened",
+          description: "Complete sign-in in the browser, then return to Ollama.",
+          tone: "info"
+        });
         setAwaitingSignIn(false);
         return;
       }
 
       setUser(await fetchUser());
+      showToast({
+        id: "account-sign-in",
+        title: "Signed in",
+        description: "Your Ollama account is connected.",
+        tone: "success"
+      });
       setAwaitingSignIn(false);
     } catch (error) {
-      setUserError(error instanceof Error ? error.message : "Failed to start sign in");
+      const message = error instanceof Error ? error.message : "Failed to start sign in";
+      setUserError(message);
+      showToast({
+        id: "account-sign-in",
+        title: "Sign-in failed",
+        description: message,
+        tone: "danger",
+        duration: 7000
+      });
       setAwaitingSignIn(false);
     }
   };
@@ -260,8 +326,22 @@ export function SettingsDrawer({
       await disconnectUser();
       setUser(null);
       showSaved();
+      showToast({
+        id: "account-sign-out",
+        title: "Signed out",
+        description: "Your Ollama account was disconnected.",
+        tone: "success"
+      });
     } catch (error) {
-      setUserError(error instanceof Error ? error.message : "Failed to sign out");
+      const message = error instanceof Error ? error.message : "Failed to sign out";
+      setUserError(message);
+      showToast({
+        id: "account-sign-out",
+        title: "Sign-out failed",
+        description: message,
+        tone: "danger",
+        duration: 7000
+      });
     }
   };
 
@@ -298,7 +378,7 @@ export function SettingsDrawer({
         imageGenerationWidth: 1024,
         imageGenerationHeight: 1024,
         imageGenerationSteps: 20
-      });
+      }, false, "Standalone settings reset to defaults.");
       return;
     }
 
@@ -322,7 +402,8 @@ export function SettingsDrawer({
         imageGenerationHeight: 1024,
         imageGenerationSteps: 20
       },
-      true
+      true,
+      "Desktop settings reset to defaults."
     );
   };
 
@@ -331,11 +412,26 @@ export function SettingsDrawer({
     setDeleteChatsError(null);
 
     try {
-      await Promise.resolve(onDeleteAllChats());
+      const deletedCount = await Promise.resolve(onDeleteAllChats());
       setConfirmDeleteChats(false);
       showSaved();
+      showToast({
+        id: "delete-all-chats",
+        title: "Chats deleted",
+        description:
+          deletedCount === 1 ? "Deleted 1 chat." : `Deleted ${deletedCount} chats.`,
+        tone: "success"
+      });
     } catch (error) {
-      setDeleteChatsError(error instanceof Error ? error.message : "Failed to delete chats");
+      const message = error instanceof Error ? error.message : "Failed to delete chats";
+      setDeleteChatsError(message);
+      showToast({
+        id: "delete-all-chats",
+        title: "Could not delete chats",
+        description: message,
+        tone: "danger",
+        duration: 7000
+      });
     } finally {
       setDeletingChats(false);
     }
@@ -444,7 +540,7 @@ export function SettingsDrawer({
               <SettingsSection
                 title="Connection"
                 action={
-                  <IconButton label="Refresh connection" onClick={onRefreshConnection}>
+                  <IconButton label="Refresh connection" onClick={() => onRefreshConnection()}>
                     <RefreshCcw className="h-4 w-4" />
                   </IconButton>
                 }
@@ -484,7 +580,7 @@ export function SettingsDrawer({
                         value={settings.coreApiBase}
                         placeholder={DEFAULT_CORE_API_BASE}
                         onChange={(event) => onUpdateSettings({ coreApiBase: event.target.value })}
-                        onBlur={onRefreshConnection}
+                        onBlur={() => onRefreshConnection()}
                         className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm focus:focus-ring"
                       />
                     </div>
@@ -578,7 +674,7 @@ export function SettingsDrawer({
             <SettingsSection
               title="Model"
               action={
-                <IconButton label="Refresh models" onClick={onRefreshModels}>
+                <IconButton label="Refresh models" onClick={() => onRefreshModels()}>
                   <RefreshCcw className="h-4 w-4" />
                 </IconButton>
               }
@@ -702,7 +798,7 @@ export function SettingsDrawer({
                     true
                   )
                 }
-                className="w-full accent-[var(--accent)] focus:focus-ring disabled:opacity-55"
+                className="w-full accent-(--accent) focus:focus-ring disabled:opacity-55"
               />
               <div className="mt-2 grid grid-cols-4 gap-1 text-[11px] text-muted-foreground sm:grid-cols-7">
                 {CONTEXT_LENGTH_OPTIONS.map((value) => (
@@ -1025,7 +1121,7 @@ function ToggleRow({
         checked={checked}
         disabled={disabled}
         onChange={(event) => onChange(event.target.checked)}
-        className="mt-0.5 h-5 w-5 flex-none accent-[var(--accent)] focus:focus-ring"
+        className="mt-0.5 h-5 w-5 flex-none accent-(--accent) focus:focus-ring"
       />
     </label>
   );
@@ -1151,6 +1247,57 @@ function Notice({
 function formatContextLength(value: number) {
   if (!value) return "Default";
   return `${Math.round(value / 1024)}k`;
+}
+
+function settingsToastDescription(updates: Partial<LocalSettings>) {
+  if ("models" in updates) {
+    return updates.models ? "Model directory updated." : "Model directory reset.";
+  }
+  if ("workingDir" in updates) {
+    return updates.workingDir ? "Working directory updated." : "Working directory reset.";
+  }
+  if ("expose" in updates) {
+    return updates.expose ? "Network access enabled." : "Network access disabled.";
+  }
+  if ("browser" in updates) {
+    return updates.browser ? "Browser access enabled." : "Browser access disabled.";
+  }
+  if ("autoUpdateEnabled" in updates) {
+    return updates.autoUpdateEnabled
+      ? "Automatic update downloads enabled."
+      : "Automatic update downloads disabled.";
+  }
+  if ("webSearchEnabled" in updates) {
+    return updates.webSearchEnabled ? "Web search enabled." : "Web search disabled.";
+  }
+  if ("thinkEnabled" in updates) {
+    return updates.thinkEnabled ? "Thinking enabled." : "Thinking disabled.";
+  }
+  if ("thinkLevel" in updates) return "Thinking level updated.";
+  if ("compactMessages" in updates) {
+    return updates.compactMessages ? "Compact messages enabled." : "Compact messages disabled.";
+  }
+  if ("contextMode" in updates) return "Context mode updated.";
+  if (
+    "contextLength" in updates ||
+    "maxOutputTokens" in updates ||
+    "reserveOutputTokens" in updates ||
+    "nearFullThresholdPercent" in updates
+  ) {
+    return "Context settings updated.";
+  }
+  if ("enableAutoTrim" in updates) {
+    return updates.enableAutoTrim ? "Auto-trim enabled." : "Auto-trim disabled.";
+  }
+  if (
+    "imageGenerationWidth" in updates ||
+    "imageGenerationHeight" in updates ||
+    "imageGenerationSteps" in updates
+  ) {
+    return "Image generation settings updated.";
+  }
+
+  return "Your preferences are up to date.";
 }
 
 async function selectNativeDirectory(kind: "models" | "working") {

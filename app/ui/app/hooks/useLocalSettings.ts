@@ -186,24 +186,27 @@ export function useLocalSettings(mode: AppMode, enabled = true) {
   const updateSettings = useCallback(
     async (updates: Partial<LocalSettings>) => {
       const next = { ...settings, ...updates };
+      setError(null);
       persistLocal(next);
 
       if (mode === "standalone") {
-        return;
+        return true;
       }
 
       if (!serverSettings) {
-        return;
+        return true;
       }
 
       try {
         const response = await updateServerSettings(toServerSettings(next, serverSettings));
         setServerSettings(response.settings);
         persistLocal(toLocalSettings(response.settings, next));
+        return true;
       } catch (updateError) {
         const message =
           updateError instanceof Error ? updateError.message : "Failed to update settings";
         setError(message);
+        return false;
       }
     },
     [mode, persistLocal, serverSettings, settings]

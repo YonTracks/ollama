@@ -20,7 +20,7 @@ export function useModels(enabled: boolean, mode: AppMode, coreApiBase?: string)
 
   const refresh = useCallback(
     async (signal?: AbortSignal) => {
-      if (!enabled) return;
+      if (!enabled) return false;
       setLoading(true);
       setError(null);
 
@@ -30,10 +30,12 @@ export function useModels(enabled: boolean, mode: AppMode, coreApiBase?: string)
             ? await listStandaloneModels(coreApiBase, signal)
             : await listModels(signal);
         setModels(nextModels);
+        return true;
       } catch (refreshError) {
         const message =
           refreshError instanceof Error ? refreshError.message : "Failed to load models";
         setError(message);
+        return false;
       } finally {
         setLoading(false);
       }

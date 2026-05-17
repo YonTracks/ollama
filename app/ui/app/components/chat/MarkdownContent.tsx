@@ -217,7 +217,7 @@ function TextBlock({ block }: { block: string }) {
   }
 
   return (
-    <p className="whitespace-pre-wrap break-words">
+    <p className="whitespace-pre-wrap wrap-break-word">
       {lines.map((line, index) => (
         <span key={`${line}-${index}`}>
           {index > 0 ? <br /> : null}

@@ -270,7 +270,7 @@ function MessageAttachments({
               <img
                 src={imageAttachmentDataUrl(attachment)}
                 alt={attachment.name}
-                className="max-h-[32rem] w-full object-contain"
+                className="max-h-128 w-full object-contain"
               />
             ) : (
               <span
@@ -294,7 +294,7 @@ function MessageAttachments({
               <FileIcon className="h-4 w-4 flex-none text-muted-foreground" />
             )}
             <span className="min-w-0">
-              <span className="block max-w-[14rem] truncate font-medium text-foreground">
+              <span className="block max-w-56 truncate font-medium text-foreground">
                 {attachment.name}
               </span>
               <span className="block text-[11px] leading-4 text-muted-foreground">

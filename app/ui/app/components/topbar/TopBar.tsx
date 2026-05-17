@@ -23,6 +23,7 @@ interface TopBarProps {
   onSelectModel(model: string): void;
   onToggleSidebar(): void;
   onOpenSettings(): void;
+  onRefreshConnection(): void;
   onRefreshModels(): void;
 }
 
@@ -35,6 +36,7 @@ export function TopBar({
   onSelectModel,
   onToggleSidebar,
   onOpenSettings,
+  onRefreshConnection,
   onRefreshModels
 }: TopBarProps) {
   return (
@@ -79,7 +81,7 @@ export function TopBar({
       <IconButton
         label="Refresh connection"
         className="hidden sm:inline-flex"
-        onClick={() => connection.refresh()}
+        onClick={onRefreshConnection}
       >
         <RefreshCcw className="h-5 w-5" />
       </IconButton>

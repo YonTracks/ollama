@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { MessageList } from "@/components/chat/MessageList";
 import { PromptComposer } from "@/components/chat/PromptComposer";
+import { useToast } from "@/components/ui/ToastProvider";
 import { cn } from "@/lib/utils";
 import type { useChatSession } from "@/hooks/useChats";
 import type { useOllamaConnection } from "@/hooks/useOllamaConnection";
@@ -24,7 +25,7 @@ interface ChatPanelProps {
   selectedModel: string;
   settings: LocalSettings;
   chat: ReturnType<typeof useChatSession>;
-  onUpdateSettings(updates: Partial<LocalSettings>): void;
+  onUpdateSettings(updates: Partial<LocalSettings>): Promise<boolean | void> | boolean | void;
 }
 
 export function ChatPanel({
@@ -36,8 +37,10 @@ export function ChatPanel({
   chat,
   onUpdateSettings
 }: ChatPanelProps) {
+  const { showToast } = useToast();
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const previousMessageCountRef = useRef(0);
+  const previousErrorRef = useRef<string | null>(null);
   const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
   const [showScrollButton, setShowScrollButton] = useState(false);
 
@@ -94,6 +97,23 @@ export function ChatPanel({
   useEffect(() => {
     window.requestAnimationFrame(() => scrollToBottom("auto"));
   }, [activeChatId, scrollToBottom]);
+
+  useEffect(() => {
+    if (!chat.error) {
+      previousErrorRef.current = null;
+      return;
+    }
+
+    if (chat.error === previousErrorRef.current) return;
+    previousErrorRef.current = chat.error;
+    showToast({
+      id: "chat-error",
+      title: "Chat request failed",
+      description: chat.error,
+      tone: "danger",
+      duration: 7000
+    });
+  }, [chat.error, showToast]);
 
   useEffect(() => {
     const previousMessageCount = previousMessageCountRef.current;
@@ -207,7 +227,16 @@ export function ChatPanel({
         webSearchAvailable={!standalone}
         streaming={chat.streaming}
         onSend={chat.send}
-        onStop={chat.stop}
+        onStop={() => {
+          chat.stop();
+          showToast({
+            id: "chat-stopped",
+            title: "Response stopped",
+            description: "The current generation was cancelled.",
+            tone: "info",
+            duration: 2400
+          });
+        }}
         onUpdateSettings={onUpdateSettings}
       />
     </section>

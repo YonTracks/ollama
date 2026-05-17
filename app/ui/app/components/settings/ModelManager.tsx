@@ -16,15 +16,20 @@ import {
   standaloneBlobExists,
   uploadStandaloneBlob
 } from "@/lib/ollama/standalone";
+import { useToast } from "@/components/ui/ToastProvider";
 import { cn, formatBytes } from "@/lib/utils";
 import type { ModelOperationEvent, OllamaModel } from "@/lib/ollama/types";
+
+interface ToastOptions {
+  silent?: boolean;
+}
 
 interface ModelManagerProps {
   models: OllamaModel[];
   selectedModel: string;
   apiBase?: string;
-  onSelectModel(model: string): void;
-  onRefreshModels(): Promise<void> | void;
+  onSelectModel(model: string, options?: ToastOptions): Promise<boolean | void> | boolean | void;
+  onRefreshModels(options?: ToastOptions): Promise<boolean | void> | boolean | void;
 }
 
 type OperationKind = "pull" | "create" | "import" | "delete";
@@ -44,6 +49,7 @@ export function ModelManager({
   onSelectModel,
   onRefreshModels
 }: ModelManagerProps) {
+  const { showToast } = useToast();
   const localModels = useMemo(() => models.filter((model) => model.local), [models]);
   const firstLocalModel = localModels[0]?.name ?? selectedModel;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -112,6 +118,13 @@ export function ModelManager({
     setOperation(kind);
     clearNotices();
     setStatus("Starting");
+    showToast({
+      id: "model-operation",
+      title: modelOperationStartTitle(kind),
+      description: modelToSelect ?? "Progress is shown in the Models panel.",
+      tone: "info",
+      duration: 5000
+    });
 
     try {
       for await (const event of stream) {
@@ -120,14 +133,27 @@ export function ModelManager({
       }
 
       setSuccess(completeMessage);
-      if (modelToSelect) onSelectModel(modelToSelect);
-      await Promise.resolve(onRefreshModels());
+      showToast({
+        id: "model-operation",
+        title: modelOperationSuccessTitle(kind),
+        description: completeMessage,
+        tone: "success"
+      });
+      if (modelToSelect) await Promise.resolve(onSelectModel(modelToSelect, { silent: true }));
+      await Promise.resolve(onRefreshModels({ silent: true }));
     } catch (operationError) {
-      setError(
+      const message =
         operationError instanceof Error
           ? operationError.message
-          : "Model operation failed."
-      );
+          : "Model operation failed.";
+      setError(message);
+      showToast({
+        id: "model-operation",
+        title: modelOperationErrorTitle(kind),
+        description: message,
+        tone: "danger",
+        duration: 7000
+      });
     } finally {
       setOperation(null);
     }
@@ -174,6 +200,14 @@ export function ModelManager({
     if (file && !importName.trim()) {
       setImportName(file.name.replace(/\.gguf$/i, "").toLowerCase().replace(/\s+/g, "-"));
     }
+    if (file) {
+      showToast({
+        id: "model-import-file",
+        title: "GGUF selected",
+        description: `${file.name} (${formatBytes(file.size)})`,
+        tone: "info"
+      });
+    }
     event.target.value = "";
   };
 
@@ -183,6 +217,13 @@ export function ModelManager({
 
     setOperation("import");
     clearNotices();
+    showToast({
+      id: "model-operation",
+      title: "Importing model",
+      description: model,
+      tone: "info",
+      duration: 5000
+    });
 
     try {
       setStatus("Hashing GGUF");
@@ -206,15 +247,28 @@ export function ModelManager({
       }
 
       setSuccess(`${model} imported`);
+      showToast({
+        id: "model-operation",
+        title: "Model imported",
+        description: `${model} is ready to use.`,
+        tone: "success"
+      });
       setImportFile(null);
-      onSelectModel(model);
-      await Promise.resolve(onRefreshModels());
+      await Promise.resolve(onSelectModel(model, { silent: true }));
+      await Promise.resolve(onRefreshModels({ silent: true }));
     } catch (operationError) {
-      setError(
+      const message =
         operationError instanceof Error
           ? operationError.message
-          : "Model import failed."
-      );
+          : "Model import failed.";
+      setError(message);
+      showToast({
+        id: "model-operation",
+        title: "Model import failed",
+        description: message,
+        tone: "danger",
+        duration: 7000
+      });
     } finally {
       setOperation(null);
     }
@@ -227,20 +281,42 @@ export function ModelManager({
     setOperation("delete");
     clearNotices();
     setStatus("Deleting model");
+    showToast({
+      id: "model-operation",
+      title: "Deleting model",
+      description: model,
+      tone: "warning",
+      duration: 5000
+    });
 
     try {
       await deleteStandaloneModel(model, apiBase);
       setSuccess(`${model} deleted`);
+      showToast({
+        id: "model-operation",
+        title: "Model deleted",
+        description: model,
+        tone: "success"
+      });
       setConfirmDelete(false);
       setDeleteName("");
-      if (selectedModel === model) onSelectModel("");
-      await Promise.resolve(onRefreshModels());
+      if (selectedModel === model) {
+        await Promise.resolve(onSelectModel("", { silent: true }));
+      }
+      await Promise.resolve(onRefreshModels({ silent: true }));
     } catch (operationError) {
-      setError(
+      const message =
         operationError instanceof Error
           ? operationError.message
-          : "Model delete failed."
-      );
+          : "Model delete failed.";
+      setError(message);
+      showToast({
+        id: "model-operation",
+        title: "Model delete failed",
+        description: message,
+        tone: "danger",
+        duration: 7000
+      });
     } finally {
       setOperation(null);
     }
@@ -513,6 +589,27 @@ function ModelNotice({
       {children}
     </div>
   );
+}
+
+function modelOperationStartTitle(kind: OperationKind) {
+  if (kind === "pull") return "Pulling model";
+  if (kind === "create") return "Creating model";
+  if (kind === "delete") return "Deleting model";
+  return "Importing model";
+}
+
+function modelOperationSuccessTitle(kind: OperationKind) {
+  if (kind === "pull") return "Model added";
+  if (kind === "create") return "Model created";
+  if (kind === "delete") return "Model deleted";
+  return "Model imported";
+}
+
+function modelOperationErrorTitle(kind: OperationKind) {
+  if (kind === "pull") return "Model pull failed";
+  if (kind === "create") return "Model create failed";
+  if (kind === "delete") return "Model delete failed";
+  return "Model import failed";
 }
 
 function modelParameters({

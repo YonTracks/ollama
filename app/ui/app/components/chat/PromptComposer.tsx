@@ -20,6 +20,7 @@ import {
   type DragEvent
 } from "react";
 import { IconButton } from "@/components/ui/IconButton";
+import { useToast } from "@/components/ui/ToastProvider";
 import { imageAttachmentDataUrl } from "@/lib/ollama/attachments";
 import { isImageGenerationModel } from "@/lib/ollama/models";
 import { cn, createClientId, formatBytes } from "@/lib/utils";
@@ -34,7 +35,7 @@ interface PromptComposerProps {
   streaming: boolean;
   onSend(prompt: string, attachments?: ChatAttachment[]): void;
   onStop(): void;
-  onUpdateSettings(updates: Partial<LocalSettings>): void;
+  onUpdateSettings(updates: Partial<LocalSettings>): Promise<boolean | void> | boolean | void;
 }
 
 const MAX_ATTACHMENTS = 8;
@@ -106,6 +107,7 @@ export function PromptComposer({
   onStop,
   onUpdateSettings
 }: PromptComposerProps) {
+  const { showToast } = useToast();
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -137,7 +139,15 @@ export function PromptComposer({
 
     const remainingSlots = Math.max(0, MAX_ATTACHMENTS - attachments.length);
     if (remainingSlots === 0) {
-      setAttachmentError(`Remove an attachment before adding another one.`);
+      const message = "Remove an attachment before adding another one.";
+      setAttachmentError(message);
+      showToast({
+        id: "attachment-error",
+        title: "Attachment not added",
+        description: message,
+        tone: "danger",
+        duration: 7000
+      });
       return;
     }
 
@@ -160,9 +170,29 @@ export function PromptComposer({
       setAttachments((current) =>
         [...current, ...nextAttachments].slice(0, MAX_ATTACHMENTS)
       );
+      showToast({
+        id: "attachments-added",
+        title: nextAttachments.length === 1 ? "Attachment added" : "Attachments added",
+        description:
+          nextAttachments.length === 1
+            ? nextAttachments[0].name
+            : `${nextAttachments.length} files are ready to send.`,
+        tone: "success",
+        duration: 2600
+      });
     }
 
-    setAttachmentError(errors.length > 0 ? errors.join(" ") : null);
+    const attachmentErrorMessage = errors.length > 0 ? errors.join(" ") : null;
+    setAttachmentError(attachmentErrorMessage);
+    if (attachmentErrorMessage) {
+      showToast({
+        id: "attachment-error",
+        title: "Attachment not added",
+        description: attachmentErrorMessage,
+        tone: "danger",
+        duration: 7000
+      });
+    }
   };
 
   const handleFileInput = (event: ChangeEvent<HTMLInputElement>) => {

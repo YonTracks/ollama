@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { RegisterWebviewReady } from "@/components/native/RegisterWebviewReady";
 import { RegisterServiceWorker } from "@/components/pwa/RegisterServiceWorker";
+import { ToastProvider } from "@/components/ui/ToastProvider";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -38,9 +39,11 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <RegisterServiceWorker />
-        <RegisterWebviewReady />
-        {children}
+        <ToastProvider>
+          <RegisterServiceWorker />
+          <RegisterWebviewReady />
+          {children}
+        </ToastProvider>
       </body>
     </html>
   );

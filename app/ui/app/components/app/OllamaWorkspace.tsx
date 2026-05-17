@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { SettingsDrawer } from "@/components/settings/SettingsDrawer";
 import { TopBar } from "@/components/topbar/TopBar";
+import { useToast } from "@/components/ui/ToastProvider";
 import { useAppMode } from "@/hooks/useAppMode";
 import { useChatList, useChatSession } from "@/hooks/useChats";
 import { useLocalSettings } from "@/hooks/useLocalSettings";
@@ -13,13 +14,19 @@ import { useOllamaConnection } from "@/hooks/useOllamaConnection";
 import { deleteAllChats } from "@/lib/ollama/client";
 import { deleteAllStandaloneChats } from "@/lib/ollama/standalone-db";
 import { cn } from "@/lib/utils";
+import type { LocalSettings } from "@/types/app";
 
 interface OllamaWorkspaceProps {
   initialSettingsOpen?: boolean;
 }
 
+interface ToastOptions {
+  silent?: boolean;
+}
+
 export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspaceProps) {
   const appMode = useAppMode();
+  const { showToast } = useToast();
   const settingsState = useLocalSettings(appMode.mode, appMode.ready);
   const { settings, updateSettings } = settingsState;
   const connection = useOllamaConnection(
@@ -93,10 +100,143 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
     }
   });
 
+  const handleRefreshModels = useCallback(
+    async (options?: ToastOptions) => {
+      const refreshed = await modelState.refresh();
+      if (!options?.silent) {
+        showToast({
+          id: "models-refresh",
+          title: refreshed ? "Models refreshed" : "Could not refresh models",
+          description: refreshed
+            ? "The model list is up to date."
+            : "Check the Ollama connection and try again.",
+          tone: refreshed ? "success" : "danger",
+          duration: refreshed ? 2600 : 7000
+        });
+      }
+      return refreshed;
+    },
+    [modelState, showToast]
+  );
+
+  const handleRefreshConnection = useCallback(
+    async (options?: ToastOptions) => {
+      const connected = await connection.refresh();
+      if (!options?.silent) {
+        showToast({
+          id: "connection-refresh",
+          title: connected ? "Connection refreshed" : "Ollama is not reachable",
+          description: connected
+            ? "The app can reach the local Ollama API."
+            : "Check that Ollama is running, then refresh again.",
+          tone: connected ? "success" : "danger",
+          duration: connected ? 2600 : 7000
+        });
+      }
+      return connected;
+    },
+    [connection, showToast]
+  );
+
+  const handleSelectModel = useCallback(
+    async (selected: string, options?: ToastOptions) => {
+      const previous = settings.selectedModel;
+      const saved = await updateSettings({ selectedModel: selected });
+
+      if (saved === false) {
+        showToast({
+          id: "model-select",
+          title: "Model selection was not saved",
+          description: "Check the Ollama connection and try again.",
+          tone: "danger",
+          duration: 7000
+        });
+        return false;
+      }
+
+      if (!options?.silent && selected && selected !== previous) {
+        showToast({
+          id: "model-select",
+          title: "Model selected",
+          description: selected,
+          tone: "success"
+        });
+      }
+
+      return true;
+    },
+    [settings.selectedModel, showToast, updateSettings]
+  );
+
+  const handleQuickSettingsUpdate = useCallback(
+    async (updates: Partial<LocalSettings>) => {
+      const saved = await updateSettings(updates);
+      if (saved === false) {
+        showToast({
+          id: "quick-setting",
+          title: "Setting was not saved",
+          description: "Check the Ollama connection and try again.",
+          tone: "danger",
+          duration: 7000
+        });
+        return false;
+      }
+
+      showToast({
+        id: "quick-setting",
+        title: "Chat setting saved",
+        description: quickSettingsToastDescription(updates),
+        tone: "success",
+        duration: 2200
+      });
+      return true;
+    },
+    [showToast, updateSettings]
+  );
+
   const handleDeleteChat = async (chatId: string) => {
-    await chatList.remove(chatId);
-    if (activeChatId === chatId) {
-      setActiveChatId(null);
+    try {
+      await chatList.remove(chatId);
+      if (activeChatId === chatId) {
+        setActiveChatId(null);
+      }
+      showToast({
+        id: "chat-deleted",
+        title: "Chat deleted",
+        description: "The conversation was removed.",
+        tone: "success"
+      });
+    } catch (error) {
+      showToast({
+        id: "chat-deleted",
+        title: "Could not delete chat",
+        description: error instanceof Error ? error.message : "The conversation was not removed.",
+        tone: "danger",
+        duration: 7000
+      });
+    }
+  };
+
+  const handleRenameChat = async (chatId: string, title: string) => {
+    const previousTitle = chatList.chats.find((chat) => chat.id === chatId)?.title ?? "";
+    if (title.trim() === previousTitle.trim()) return;
+
+    try {
+      await chatList.rename(chatId, title);
+      showToast({
+        id: "chat-renamed",
+        title: "Chat renamed",
+        description: title,
+        tone: "success"
+      });
+    } catch (error) {
+      showToast({
+        id: "chat-renamed",
+        title: "Could not rename chat",
+        description: error instanceof Error ? error.message : "The title was not saved.",
+        tone: "danger",
+        duration: 7000
+      });
     }
   };
 
@@ -109,8 +249,18 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
   };
 
   const handleChangeMode = (mode: typeof appMode.mode) => {
+    if (mode === appMode.mode) return;
     setActiveChatId(null);
     appMode.setMode(mode);
+    showToast({
+      id: "app-mode",
+      title: mode === "standalone" ? "Standalone mode" : "Desktop app mode",
+      description:
+        mode === "standalone"
+          ? "The UI will use the core Ollama API and browser storage."
+          : "The UI will use the desktop app backend.",
+      tone: "info"
+    });
   };
 
   const handleToggleSidebar = (sidebarOpen: boolean) => {
@@ -145,7 +295,7 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
           onToggle={handleToggleSidebar}
           onNewChat={() => setActiveChatId(null)}
           onSelectChat={setActiveChatId}
-          onRenameChat={chatList.rename}
+          onRenameChat={handleRenameChat}
           onDeleteChat={handleDeleteChat}
           onOpenSettings={openSettings}
         />
@@ -162,12 +312,15 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
             modelsLoading={modelState.loading}
             modelError={modelState.error}
             selectedModel={selectedModel}
-            onSelectModel={(selected) => updateSettings({ selectedModel: selected })}
+            onSelectModel={handleSelectModel}
             onToggleSidebar={() =>
               handleToggleSidebar(!settings.sidebarOpen)
             }
             onOpenSettings={openSettings}
-            onRefreshModels={modelState.refresh}
+            onRefreshConnection={handleRefreshConnection}
+            onRefreshModels={() => {
+              void handleRefreshModels();
+            }}
           />
 
           <ChatPanel
@@ -177,7 +330,7 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
             selectedModel={selectedModel}
             settings={settings}
             chat={chatSession}
-            onUpdateSettings={updateSettings}
+            onUpdateSettings={handleQuickSettingsUpdate}
           />
         </main>
       </div>
@@ -194,12 +347,31 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
         selectedModel={selectedModel}
         onClose={closeSettings}
         onChangeMode={handleChangeMode}
-        onSelectModel={(selectedModel) => updateSettings({ selectedModel })}
+        onSelectModel={handleSelectModel}
         onUpdateSettings={updateSettings}
-        onRefreshConnection={() => connection.refresh()}
-        onRefreshModels={modelState.refresh}
+        onRefreshConnection={handleRefreshConnection}
+        onRefreshModels={handleRefreshModels}
         onDeleteAllChats={handleDeleteAllChats}
       />
     </div>
   );
+}
+
+function quickSettingsToastDescription(updates: Partial<LocalSettings>) {
+  if ("webSearchEnabled" in updates) {
+    return updates.webSearchEnabled ? "Web search enabled." : "Web search disabled.";
+  }
+  if ("thinkEnabled" in updates) {
+    return updates.thinkEnabled ? "Thinking enabled." : "Thinking disabled.";
+  }
+  if ("thinkLevel" in updates) return "Thinking level updated.";
+  if (
+    "imageGenerationWidth" in updates ||
+    "imageGenerationHeight" in updates ||
+    "imageGenerationSteps" in updates
+  ) {
+    return "Image generation settings updated.";
+  }
+
+  return "Your chat preferences are up to date.";
 }
