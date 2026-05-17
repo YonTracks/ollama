@@ -1633,6 +1633,10 @@ type contextRequestSettings struct {
 	NearFullThresholdPercent int
 	EnableAutoTrim           bool
 	EnableAutoSummarize      bool
+	EnableRetrieval          bool
+	RetrievalLimit           int
+	ExpertMode               bool
+	ExpertInstructions       string
 }
 
 func contextSettingsFromRequest(req responses.ChatRequest) contextRequestSettings {
@@ -1664,12 +1668,30 @@ func contextSettingsFromRequest(req responses.ChatRequest) contextRequestSetting
 		NearFullThresholdPercent: threshold,
 		EnableAutoTrim:           enableAutoTrim,
 		EnableAutoSummarize:      req.EnableAutoSummarize != nil && *req.EnableAutoSummarize,
+		EnableRetrieval:          req.EnableRetrieval != nil && *req.EnableRetrieval,
+		RetrievalLimit:           clampContextInt(req.RetrievalLimit, 1, contextMaxRetrievalLimit, contextDefaultRetrievalLimit),
+		ExpertMode:               req.ExpertMode != nil && *req.ExpertMode,
+		ExpertInstructions:       strings.TrimSpace(req.ExpertInstructions),
 	}
 }
 
 func positiveIntPtr(value *int) *int {
 	if value == nil || *value <= 0 {
 		return nil
+	}
+
+	return value
+}
+
+func clampContextInt(value, minValue, maxValue, defaultValue int) int {
+	if value == 0 {
+		value = defaultValue
+	}
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
 	}
 
 	return value
@@ -1696,7 +1718,57 @@ func applyContextOptions(options map[string]any, settings contextRequestSettings
 const (
 	contextMessageOverheadTokens = 12
 	contextImageAttachmentTokens = 512
+	contextSummaryMinTokens      = 24
+	contextSummaryMaxTokens      = 512
+	contextRetrievalMaxTokens    = 640
+	contextRetrievalSnippetChars = 320
+	contextDefaultRetrievalLimit = 4
+	contextMaxRetrievalLimit     = 8
 )
+
+const contextDefaultExpertInstructions = "Act as a careful domain expert. Use retrieved memory when it is relevant, keep claims grounded, and call out missing information instead of guessing."
+
+var contextRetrievalStopWords = map[string]struct{}{
+	"about":   {},
+	"after":   {},
+	"again":   {},
+	"also":    {},
+	"and":     {},
+	"are":     {},
+	"because": {},
+	"but":     {},
+	"can":     {},
+	"could":   {},
+	"for":     {},
+	"from":    {},
+	"have":    {},
+	"how":     {},
+	"into":    {},
+	"like":    {},
+	"make":    {},
+	"more":    {},
+	"not":     {},
+	"old":     {},
+	"our":     {},
+	"please":  {},
+	"should":  {},
+	"that":    {},
+	"the":     {},
+	"their":   {},
+	"then":    {},
+	"there":   {},
+	"this":    {},
+	"use":     {},
+	"was":     {},
+	"what":    {},
+	"when":    {},
+	"where":   {},
+	"which":   {},
+	"with":    {},
+	"would":   {},
+	"you":     {},
+	"your":    {},
+}
 
 func estimateStoreMessagesTokens(messages []store.Message) int {
 	total := 0
@@ -1746,23 +1818,228 @@ func approximateContextTokens(text string) int {
 	return (len([]rune(text)) + 3) / 4
 }
 
-func trimStoreMessagesToBudget(messages []store.Message, promptBudget int) []store.Message {
+func augmentStoreMessagesForContext(messages []store.Message, settings contextRequestSettings) ([]store.Message, int, int, bool) {
+	var synthetic []store.Message
+	retrieved := 0
+	retrievedTokens := 0
+
+	if settings.ExpertMode {
+		synthetic = append(synthetic, createStoreExpertMessage(settings))
+	}
+
+	if settings.Mode == "friendly" && settings.EnableRetrieval {
+		retrievedMessages := retrieveRelevantStoreMessages(messages, settings.RetrievalLimit)
+		if retrievalMessage, ok := createStoreRetrievalMessage(retrievedMessages); ok {
+			synthetic = append(synthetic, retrievalMessage)
+			retrieved = len(retrievedMessages)
+			retrievedTokens = estimateStoreMessageTokens(retrievalMessage)
+		}
+	}
+
+	if len(synthetic) == 0 {
+		return messages, 0, 0, false
+	}
+
+	return insertStoreSyntheticSystemMessages(messages, synthetic), retrieved, retrievedTokens, settings.ExpertMode
+}
+
+func createStoreExpertMessage(settings contextRequestSettings) store.Message {
+	instructions := settings.ExpertInstructions
+	if instructions == "" {
+		instructions = contextDefaultExpertInstructions
+	}
+
+	return store.NewMessage("system", "Expert mode instructions:\n"+instructions, nil)
+}
+
+func retrieveRelevantStoreMessages(messages []store.Message, limit int) []store.Message {
 	outboundIndexes := outboundStoreMessageIndexes(messages)
 	latestUserIndex := -1
-	required := map[int]bool{}
-
 	for _, index := range outboundIndexes {
-		message := messages[index]
-		if message.Role == "system" || message.Role == "tool" || len(message.ToolCalls) > 0 {
-			required[index] = true
-		}
-		if message.Role == "user" {
+		if messages[index].Role == "user" {
 			latestUserIndex = index
 		}
 	}
-	if latestUserIndex >= 0 {
-		required[latestUserIndex] = true
+	if latestUserIndex <= 0 {
+		return nil
 	}
+
+	queryTerms := tokenizeContextRetrieval(storeRetrievalText(messages[latestUserIndex]))
+	if len(queryTerms) == 0 {
+		return nil
+	}
+
+	type candidate struct {
+		index int
+		score int
+	}
+	var candidates []candidate
+	for _, index := range outboundIndexes {
+		if index >= latestUserIndex {
+			break
+		}
+		score := storeRetrievalScore(queryTerms, messages[index])
+		if score > 0 {
+			candidates = append(candidates, candidate{index: index, score: score})
+		}
+	}
+
+	slices.SortFunc(candidates, func(a, b candidate) int {
+		if a.score != b.score {
+			return b.score - a.score
+		}
+		return b.index - a.index
+	})
+
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	slices.SortFunc(candidates, func(a, b candidate) int {
+		return a.index - b.index
+	})
+
+	retrieved := make([]store.Message, 0, len(candidates))
+	for _, candidate := range candidates {
+		retrieved = append(retrieved, messages[candidate.index])
+	}
+
+	return retrieved
+}
+
+func createStoreRetrievalMessage(messages []store.Message) (store.Message, bool) {
+	if len(messages) == 0 {
+		return store.Message{}, false
+	}
+
+	const header = "Relevant retrieved conversation memory:"
+	maxCharacters := contextRetrievalMaxTokens*4 - len(header) - 1
+	remaining := maxCharacters
+	var lines []string
+	for _, message := range messages {
+		excerpt := truncateContextSummaryText(summarizeStoreMessage(message), min(contextRetrievalSnippetChars, remaining))
+		if excerpt == "" {
+			continue
+		}
+
+		line := fmt.Sprintf("- %s: %s", storeRoleLabel(message.Role), excerpt)
+		nextLine := truncateContextSummaryText(line, remaining)
+		if nextLine == "" {
+			break
+		}
+
+		lines = append(lines, nextLine)
+		remaining -= len([]rune(nextLine)) + 1
+		if remaining <= 32 {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return store.Message{}, false
+	}
+
+	return store.NewMessage("system", header+"\n"+strings.Join(lines, "\n"), nil), true
+}
+
+func insertStoreSyntheticSystemMessages(messages []store.Message, synthetic []store.Message) []store.Message {
+	filtered := make([]store.Message, 0, len(messages)+len(synthetic))
+	insertIndex := -1
+	for _, message := range messages {
+		if isSyntheticContextMessage(message) {
+			continue
+		}
+		if insertIndex < 0 && message.Role != "system" {
+			insertIndex = len(filtered)
+		}
+		filtered = append(filtered, message)
+	}
+
+	if insertIndex < 0 {
+		return append(filtered, synthetic...)
+	}
+
+	prepared := make([]store.Message, 0, len(filtered)+len(synthetic))
+	prepared = append(prepared, filtered[:insertIndex]...)
+	prepared = append(prepared, synthetic...)
+	prepared = append(prepared, filtered[insertIndex:]...)
+	return prepared
+}
+
+func isSyntheticContextMessage(message store.Message) bool {
+	if message.Role != "system" {
+		return false
+	}
+
+	return strings.HasPrefix(message.Content, "Summary of earlier omitted conversation:") ||
+		strings.HasPrefix(message.Content, "Relevant retrieved conversation memory:") ||
+		strings.HasPrefix(message.Content, "Expert mode instructions:")
+}
+
+func storeRetrievalScore(queryTerms map[string]int, message store.Message) int {
+	if message.Role == "system" {
+		return 0
+	}
+
+	messageTerms := tokenizeContextRetrieval(storeRetrievalText(message))
+	score := 0
+	for term, queryWeight := range queryTerms {
+		if messageWeight, ok := messageTerms[term]; ok {
+			score += queryWeight * messageWeight
+		}
+	}
+
+	if message.Role == "user" {
+		score++
+	}
+	if len(message.Attachments) > 0 {
+		score++
+	}
+
+	return score
+}
+
+func storeRetrievalText(message store.Message) string {
+	content := message.Content
+	if message.Role == "user" && len(message.Attachments) > 0 {
+		content, _ = promptAndImagesFromMessage(message)
+	}
+
+	parts := []string{content, message.Thinking, message.ToolName}
+	if message.ToolResult != nil {
+		parts = append(parts, string(*message.ToolResult))
+	}
+	for _, toolCall := range message.ToolCalls {
+		parts = append(parts, toolCall.Function.Name, toolCall.Function.Arguments)
+	}
+
+	return strings.Join(parts, " ")
+}
+
+func tokenizeContextRetrieval(text string) map[string]int {
+	terms := map[string]int{}
+	for _, term := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '_' && r != '-'
+	}) {
+		if len([]rune(term)) < 3 {
+			continue
+		}
+		if _, ok := contextRetrievalStopWords[term]; ok {
+			continue
+		}
+		terms[term]++
+	}
+
+	return terms
+}
+
+func trimStoreMessagesToBudget(messages []store.Message, promptBudget int) []store.Message {
+	outboundIndexes := outboundStoreMessageIndexes(messages)
+	selected := selectedStoreMessageIndexesToBudget(messages, outboundIndexes, promptBudget)
+
+	return filterStoreMessagesBySelectedIndexes(messages, selected)
+}
+
+func selectedStoreMessageIndexesToBudget(messages []store.Message, outboundIndexes []int, promptBudget int) map[int]bool {
+	required := requiredStoreMessageIndexes(messages, outboundIndexes)
 
 	selected := map[int]bool{}
 	selectedTokens := 0
@@ -1784,14 +2061,38 @@ func trimStoreMessagesToBudget(messages []store.Message, promptBudget int) []sto
 		}
 	}
 
-	trimmed := make([]store.Message, 0, len(messages))
+	return selected
+}
+
+func requiredStoreMessageIndexes(messages []store.Message, outboundIndexes []int) map[int]bool {
+	latestUserIndex := -1
+	required := map[int]bool{}
+
+	for _, index := range outboundIndexes {
+		message := messages[index]
+		if message.Role == "system" || message.Role == "tool" || len(message.ToolCalls) > 0 {
+			required[index] = true
+		}
+		if message.Role == "user" {
+			latestUserIndex = index
+		}
+	}
+	if latestUserIndex >= 0 {
+		required[latestUserIndex] = true
+	}
+
+	return required
+}
+
+func filterStoreMessagesBySelectedIndexes(messages []store.Message, selected map[int]bool) []store.Message {
+	filtered := make([]store.Message, 0, len(messages))
 	for index, message := range messages {
 		if !isOutboundStoreMessage(message) || selected[index] {
-			trimmed = append(trimmed, message)
+			filtered = append(filtered, message)
 		}
 	}
 
-	return trimmed
+	return filtered
 }
 
 func omittedMessageStats(original []store.Message, trimmed []store.Message) (int, int) {
@@ -1820,6 +2121,203 @@ func omittedMessageStats(original []store.Message, trimmed []store.Message) (int
 	}
 
 	return count, tokens
+}
+
+func summarizeStoreMessagesToBudget(messages []store.Message, promptBudget int) ([]store.Message, bool) {
+	outboundIndexes := outboundStoreMessageIndexes(messages)
+	required := requiredStoreMessageIndexes(messages, outboundIndexes)
+	selected := selectedStoreMessageIndexesToBudget(messages, outboundIndexes, promptBudget)
+	summaryTokenBudget := min(contextSummaryMaxTokens, max(contextSummaryMinTokens, promptBudget/4))
+
+	for attempt := 0; attempt < 12; attempt++ {
+		omittedIndexes := omittedStoreMessageIndexes(outboundIndexes, selected)
+		if len(omittedIndexes) == 0 {
+			return nil, false
+		}
+
+		summaryMessage, ok := createStoreSummaryMessage(messages, omittedIndexes, summaryTokenBudget)
+		if !ok {
+			break
+		}
+
+		candidate := insertStoreSummaryMessage(messages, selected, summaryMessage)
+		if estimateStoreMessagesTokens(candidate) <= promptBudget {
+			return candidate, true
+		}
+
+		removable := firstRemovableSelectedStoreMessageIndex(outboundIndexes, selected, required)
+		if removable >= 0 {
+			delete(selected, removable)
+			continue
+		}
+
+		if summaryTokenBudget > contextSummaryMinTokens {
+			summaryTokenBudget = max(contextSummaryMinTokens, int(float64(summaryTokenBudget)*0.7))
+			continue
+		}
+
+		break
+	}
+
+	return nil, false
+}
+
+func omittedStoreMessageIndexes(outboundIndexes []int, selected map[int]bool) []int {
+	var omitted []int
+	for _, index := range outboundIndexes {
+		if !selected[index] {
+			omitted = append(omitted, index)
+		}
+	}
+
+	return omitted
+}
+
+func firstRemovableSelectedStoreMessageIndex(outboundIndexes []int, selected map[int]bool, required map[int]bool) int {
+	for _, index := range outboundIndexes {
+		if selected[index] && !required[index] {
+			return index
+		}
+	}
+
+	return -1
+}
+
+func createStoreSummaryMessage(messages []store.Message, omittedIndexes []int, maxSummaryTokens int) (store.Message, bool) {
+	content, ok := storeSummaryContent(messages, omittedIndexes, maxSummaryTokens)
+	if !ok {
+		return store.Message{}, false
+	}
+
+	return store.NewMessage("system", content, nil), true
+}
+
+func storeSummaryContent(messages []store.Message, omittedIndexes []int, maxSummaryTokens int) (string, bool) {
+	const header = "Summary of earlier omitted conversation:"
+	maxCharacters := max(0, maxSummaryTokens*4-len(header)-1)
+	if maxCharacters < 32 {
+		return "", false
+	}
+
+	var lines []string
+	remaining := maxCharacters
+	perMessageCharacters := max(48, maxCharacters/max(len(omittedIndexes), 1))
+	for _, index := range omittedIndexes {
+		excerpt := summarizeStoreMessage(messages[index])
+		if excerpt == "" {
+			continue
+		}
+
+		line := fmt.Sprintf("- %s: %s", storeRoleLabel(messages[index].Role), excerpt)
+		nextLine := truncateContextSummaryText(line, min(remaining, perMessageCharacters))
+		if nextLine == "" {
+			break
+		}
+
+		lines = append(lines, nextLine)
+		remaining -= len([]rune(nextLine)) + 1
+		if remaining <= 12 {
+			break
+		}
+	}
+
+	if len(lines) == 0 {
+		return "", false
+	}
+
+	return header + "\n" + strings.Join(lines, "\n"), true
+}
+
+func summarizeStoreMessage(message store.Message) string {
+	var parts []string
+	if content := strings.TrimSpace(message.Content); content != "" {
+		parts = append(parts, content)
+	}
+
+	if len(message.Attachments) > 0 {
+		var names []string
+		for index, attachment := range message.Attachments {
+			if index >= 4 {
+				break
+			}
+			names = append(names, attachment.Filename)
+		}
+		remaining := len(message.Attachments) - len(names)
+		attachmentSummary := "[attachments: " + strings.Join(names, ", ")
+		if remaining > 0 {
+			attachmentSummary += fmt.Sprintf(", +%d more", remaining)
+		}
+		attachmentSummary += "]"
+		parts = append(parts, attachmentSummary)
+	}
+
+	if len(parts) == 0 && strings.TrimSpace(message.Thinking) != "" {
+		parts = append(parts, strings.TrimSpace(message.Thinking))
+	}
+	if len(message.ToolCalls) > 0 {
+		parts = append(parts, "called tools")
+	}
+	if message.ToolName != "" {
+		parts = append(parts, "tool "+message.ToolName)
+	}
+	if message.ToolResult != nil {
+		parts = append(parts, "tool result")
+	}
+
+	return truncateContextSummaryText(strings.Join(strings.Fields(strings.Join(parts, " ")), " "), 280)
+}
+
+func insertStoreSummaryMessage(messages []store.Message, selected map[int]bool, summaryMessage store.Message) []store.Message {
+	prepared := make([]store.Message, 0, len(messages)+1)
+	inserted := false
+
+	for index, message := range messages {
+		keep := !isOutboundStoreMessage(message) || selected[index]
+		if !keep {
+			continue
+		}
+
+		if !inserted && message.Role != "system" {
+			prepared = append(prepared, summaryMessage)
+			inserted = true
+		}
+		prepared = append(prepared, message)
+	}
+
+	if !inserted {
+		prepared = append(prepared, summaryMessage)
+	}
+
+	return prepared
+}
+
+func storeRoleLabel(role string) string {
+	switch role {
+	case "assistant":
+		return "Assistant"
+	case "system":
+		return "System"
+	case "tool":
+		return "Tool"
+	default:
+		return "User"
+	}
+}
+
+func truncateContextSummaryText(text string, maxCharacters int) string {
+	if maxCharacters <= 0 {
+		return ""
+	}
+
+	runes := []rune(text)
+	if len(runes) <= maxCharacters {
+		return text
+	}
+	if maxCharacters <= 3 {
+		return strings.Repeat(".", maxCharacters)
+	}
+
+	return strings.TrimRight(string(runes[:maxCharacters-3]), " \t\r\n") + "..."
 }
 
 func outboundStoreMessageIndexes(messages []store.Message) []int {
@@ -1860,38 +2358,61 @@ func storeMessageKey(message store.Message) string {
 }
 
 func prepareContextChat(chat *store.Chat, settings contextRequestSettings) (*store.Chat, *store.ContextNotice) {
-	beforeTokens := estimateStoreMessagesTokens(chat.Messages)
+	augmentedMessages, retrievedCount, retrievedTokens, expertMode := augmentStoreMessagesForContext(chat.Messages, settings)
+	augmentedChat := *chat
+	augmentedChat.Messages = augmentedMessages
+
+	beforeTokens := estimateStoreMessagesTokens(augmentedMessages)
 	notice := &store.ContextNotice{
 		Mode:                        settings.Mode,
 		Action:                      "none",
 		EstimatedPromptTokensBefore: &beforeTokens,
 		EstimatedPromptTokensAfter:  &beforeTokens,
 		OutputReserveTokens:         &settings.ReserveOutputTokens,
+		ExpertMode:                  expertMode,
+	}
+	if retrievedCount > 0 {
+		notice.RetrievedMemoryCount = &retrievedCount
+		notice.EstimatedRetrievedTokens = &retrievedTokens
 	}
 
-	if settings.Mode != "friendly" || !settings.EnableAutoTrim || settings.NumCtx == nil {
-		return chat, notice
+	if settings.Mode != "friendly" || settings.NumCtx == nil || (!settings.EnableAutoTrim && !settings.EnableAutoSummarize) {
+		return &augmentedChat, notice
 	}
 
 	promptBudget := *settings.NumCtx - settings.ReserveOutputTokens
 	if promptBudget <= 0 || beforeTokens+settings.ReserveOutputTokens <= *settings.NumCtx {
-		return chat, notice
+		return &augmentedChat, notice
 	}
 
-	trimmedMessages := trimStoreMessagesToBudget(chat.Messages, promptBudget)
-	afterTokens := estimateStoreMessagesTokens(trimmedMessages)
-	omittedCount, omittedTokens := omittedMessageStats(chat.Messages, trimmedMessages)
-	trimmed := *chat
-	trimmed.Messages = trimmedMessages
+	action := "trimmed"
+	preparedMessages := []store.Message(nil)
+	if settings.EnableAutoSummarize {
+		if summarizedMessages, ok := summarizeStoreMessagesToBudget(augmentedMessages, promptBudget); ok {
+			preparedMessages = summarizedMessages
+			action = "summarized"
+		}
+	}
+	if preparedMessages == nil {
+		if !settings.EnableAutoTrim {
+			return &augmentedChat, notice
+		}
+		preparedMessages = trimStoreMessagesToBudget(augmentedMessages, promptBudget)
+	}
+
+	afterTokens := estimateStoreMessagesTokens(preparedMessages)
+	omittedCount, omittedTokens := omittedMessageStats(augmentedMessages, preparedMessages)
+	prepared := augmentedChat
+	prepared.Messages = preparedMessages
 
 	if omittedCount > 0 {
-		notice.Action = "trimmed"
+		notice.Action = action
 		notice.OmittedMessageCount = &omittedCount
 		notice.EstimatedOmittedTokens = &omittedTokens
 	}
 	notice.EstimatedPromptTokensAfter = &afterTokens
 
-	return &trimmed, notice
+	return &prepared, notice
 }
 
 func contextWarnings(stats *store.ResponseStats, notice *store.ContextNotice, settings contextRequestSettings) []store.ContextWarning {
@@ -1923,6 +2444,18 @@ func contextWarnings(stats *store.ResponseStats, notice *store.ContextNotice, se
 		warnings = append(warnings, store.ContextWarning{
 			Kind:    "summarized",
 			Message: "Older messages were summarized to fit the selected context.",
+		})
+	}
+
+	if notice != nil && notice.RetrievedMemoryCount != nil && *notice.RetrievedMemoryCount > 0 {
+		count := strconv.Itoa(*notice.RetrievedMemoryCount)
+		suffix := "s"
+		if *notice.RetrievedMemoryCount == 1 {
+			suffix = ""
+		}
+		warnings = append(warnings, store.ContextWarning{
+			Kind:    "retrieved",
+			Message: fmt.Sprintf("%s relevant older message%s retrieved into context.", count, suffix),
 		})
 	}
 

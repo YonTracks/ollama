@@ -88,6 +88,10 @@ export interface OllamaContextSettings {
   nearFullThresholdPercent: number;
   enableAutoSummarize: boolean;
   enableAutoTrim: boolean;
+  enableRetrieval: boolean;
+  retrievalLimit: number;
+  expertMode: boolean;
+  expertInstructions: string;
 }
 
 export interface ContextNotice {
@@ -95,6 +99,9 @@ export interface ContextNotice {
   action: "none" | "trimmed" | "summarized";
   omittedMessageCount?: number;
   estimatedOmittedTokens?: number;
+  retrievedMemoryCount?: number;
+  estimatedRetrievedTokens?: number;
+  expertMode?: boolean;
   estimatedPromptTokensBefore?: number;
   estimatedPromptTokensAfter?: number;
   outputReserveTokens?: number;
@@ -105,6 +112,7 @@ export interface ContextWarning {
     | "near-limit"
     | "full"
     | "possible-truncation"
+    | "retrieved"
     | "trimmed"
     | "summarized"
     | "strict-input-too-long";
@@ -164,6 +172,10 @@ export interface ChatRequest {
   nearFullThresholdPercent?: number;
   enableAutoTrim?: boolean;
   enableAutoSummarize?: boolean;
+  enableRetrieval?: boolean;
+  retrievalLimit?: number;
+  expertMode?: boolean;
+  expertInstructions?: string;
   estimatedPromptTokens?: number;
 }
 

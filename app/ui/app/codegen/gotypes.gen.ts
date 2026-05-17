@@ -66,6 +66,9 @@ export class ContextNotice {
     action: string;
     omittedMessageCount?: number;
     estimatedOmittedTokens?: number;
+    retrievedMemoryCount?: number;
+    estimatedRetrievedTokens?: number;
+    expertMode?: boolean;
     estimatedPromptTokensBefore?: number;
     estimatedPromptTokensAfter?: number;
     outputReserveTokens?: number;
@@ -76,6 +79,9 @@ export class ContextNotice {
         this.action = source["action"];
         this.omittedMessageCount = source["omittedMessageCount"];
         this.estimatedOmittedTokens = source["estimatedOmittedTokens"];
+        this.retrievedMemoryCount = source["retrievedMemoryCount"];
+        this.estimatedRetrievedTokens = source["estimatedRetrievedTokens"];
+        this.expertMode = source["expertMode"];
         this.estimatedPromptTokensBefore = source["estimatedPromptTokensBefore"];
         this.estimatedPromptTokensAfter = source["estimatedPromptTokensAfter"];
         this.outputReserveTokens = source["outputReserveTokens"];
@@ -651,6 +657,10 @@ export class ChatRequest {
     nearFullThresholdPercent?: number;
     enableAutoTrim?: boolean;
     enableAutoSummarize?: boolean;
+    enableRetrieval?: boolean;
+    retrievalLimit?: number;
+    expertMode?: boolean;
+    expertInstructions?: string;
 
     constructor(source: any = {}) {
         if ('string' === typeof source) source = JSON.parse(source);
@@ -672,6 +682,10 @@ export class ChatRequest {
         this.nearFullThresholdPercent = source["nearFullThresholdPercent"];
         this.enableAutoTrim = source["enableAutoTrim"];
         this.enableAutoSummarize = source["enableAutoSummarize"];
+        this.enableRetrieval = source["enableRetrieval"];
+        this.retrievalLimit = source["retrievalLimit"];
+        this.expertMode = source["expertMode"];
+        this.expertInstructions = source["expertInstructions"];
     }
 
 	convertValues(a: any, classs: any, asMap: boolean = false): any {

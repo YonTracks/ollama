@@ -224,7 +224,11 @@ function toContextSettings(settings: LocalSettings): OllamaContextSettings {
     reserveOutputTokens: settings.reserveOutputTokens,
     nearFullThresholdPercent: settings.nearFullThresholdPercent,
     enableAutoSummarize: settings.enableAutoSummarize,
-    enableAutoTrim: settings.enableAutoTrim
+    enableAutoTrim: settings.enableAutoTrim,
+    enableRetrieval: settings.enableRetrieval,
+    retrievalLimit: settings.retrievalLimit,
+    expertMode: settings.expertMode,
+    expertInstructions: settings.expertInstructions
   };
 }
 
@@ -582,7 +586,11 @@ export function useChatSession({
           reserveOutputTokens: contextSettings.reserveOutputTokens,
           nearFullThresholdPercent: contextSettings.nearFullThresholdPercent,
           enableAutoTrim: contextSettings.enableAutoTrim,
-          enableAutoSummarize: contextSettings.enableAutoSummarize
+          enableAutoSummarize: contextSettings.enableAutoSummarize,
+          enableRetrieval: contextSettings.enableRetrieval,
+          retrievalLimit: contextSettings.retrievalLimit,
+          expertMode: contextSettings.expertMode,
+          expertInstructions: contextSettings.expertInstructions
         };
 
         for await (const event of sendChat(targetChatId, request, controller.signal)) {

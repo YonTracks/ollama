@@ -149,6 +149,10 @@ type ChatRequest struct {
 	NearFullThresholdPercent int          `json:"nearFullThresholdPercent,omitempty"`
 	EnableAutoTrim           *bool        `json:"enableAutoTrim,omitempty"`
 	EnableAutoSummarize      *bool        `json:"enableAutoSummarize,omitempty"`
+	EnableRetrieval          *bool        `json:"enableRetrieval,omitempty"`
+	RetrievalLimit           int          `json:"retrievalLimit,omitempty"`
+	ExpertMode               *bool        `json:"expertMode,omitempty"`
+	ExpertInstructions       string       `json:"expertInstructions,omitempty"`
 }
 
 type Error struct {

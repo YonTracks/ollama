@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import {
+  BrainCircuit,
   Download,
   FileArchive,
   Plus,
@@ -40,6 +41,15 @@ const DEFAULT_CREATE_PARAMETERS = {
   contextLength: "4096",
   topP: "0.9",
   repeatPenalty: "1.1"
+};
+
+const EXPERT_CREATE_PARAMETERS = {
+  systemPrompt:
+    "You are a careful expert assistant. Ground answers in provided context, use retrieval memory when available, ask for missing details when needed, and keep recommendations precise and actionable.",
+  temperature: "0.3",
+  contextLength: "8192",
+  topP: "0.85",
+  repeatPenalty: "1.08"
 };
 
 export function ModelManager({
@@ -192,6 +202,21 @@ export function ModelManager({
       `${model} created`,
       model
     );
+  };
+
+  const applyExpertTemplate = () => {
+    setCreateSystem(EXPERT_CREATE_PARAMETERS.systemPrompt);
+    setTemperature(EXPERT_CREATE_PARAMETERS.temperature);
+    setContextLength(EXPERT_CREATE_PARAMETERS.contextLength);
+    setTopP(EXPERT_CREATE_PARAMETERS.topP);
+    setRepeatPenalty(EXPERT_CREATE_PARAMETERS.repeatPenalty);
+    showToast({
+      id: "model-expert-template",
+      title: "Expert template applied",
+      description: "The create model fields were updated.",
+      tone: "info",
+      duration: 3000
+    });
   };
 
   const handleImportFile = (event: ChangeEvent<HTMLInputElement>) => {
@@ -381,7 +406,16 @@ export function ModelManager({
           </select>
         </div>
         <div className="mt-2 flex items-center gap-2 text-sm font-medium">
-          System Prompt
+          <span className="min-w-0 flex-1">System Prompt</span>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={applyExpertTemplate}
+            className="inline-flex h-8 flex-none items-center justify-center gap-2 rounded-md border border-border px-2 text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring disabled:opacity-55"
+          >
+            <BrainCircuit className="h-3.5 w-3.5" />
+            Expert
+          </button>
         </div>
         <textarea
           value={createSystem}

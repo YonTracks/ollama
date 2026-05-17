@@ -23,6 +23,12 @@ Standalone mode uses `/api/version`, `/api/tags`, and `/api/chat`, stores chats
 in IndexedDB, stores standalone settings in local storage, and avoids `/api/v1/*`.
 Desktop-app-only settings are hidden in this mode.
 
+## Context features
+
+- Friendly context mode can trim, summarize, and retrieve relevant older turns before requests are sent.
+- Retrieval memory is local to the active conversation and is injected as request-only system context.
+- Expert chat mode adds request-only expert instructions; the Models panel can apply an expert template when creating a derived Ollama model.
+
 ## Build
 
 - `npm run build` runs `next build` with `output: "export"`.

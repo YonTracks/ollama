@@ -11,6 +11,58 @@ const MESSAGE_OVERHEAD_TOKENS = 12;
 const IMAGE_ATTACHMENT_TOKENS = 512;
 const POSSIBLE_TRUNCATION_RATIO = 1.25;
 const POSSIBLE_TRUNCATION_MIN_GAP = 512;
+const SUMMARY_MESSAGE_ID = "context-summary";
+const RETRIEVAL_MESSAGE_ID = "context-retrieval";
+const EXPERT_MESSAGE_ID = "context-expert";
+const SUMMARY_MIN_TOKENS = 24;
+const SUMMARY_MAX_TOKENS = 512;
+const RETRIEVAL_MAX_TOKENS = 640;
+const RETRIEVAL_SNIPPET_MAX_CHARACTERS = 320;
+const DEFAULT_RETRIEVAL_LIMIT = 4;
+const MAX_RETRIEVAL_LIMIT = 8;
+const DEFAULT_EXPERT_INSTRUCTIONS =
+  "Act as a careful domain expert. Use retrieved memory when it is relevant, keep claims grounded, and call out missing information instead of guessing.";
+const RETRIEVAL_STOP_WORDS = new Set([
+  "about",
+  "after",
+  "again",
+  "also",
+  "and",
+  "are",
+  "because",
+  "but",
+  "can",
+  "could",
+  "for",
+  "from",
+  "have",
+  "how",
+  "into",
+  "like",
+  "make",
+  "more",
+  "not",
+  "old",
+  "our",
+  "please",
+  "should",
+  "that",
+  "the",
+  "their",
+  "then",
+  "there",
+  "this",
+  "use",
+  "was",
+  "what",
+  "when",
+  "where",
+  "which",
+  "with",
+  "would",
+  "you",
+  "your"
+]);
 
 export interface ContextBudgetResult {
   estimatedPromptTokens: number;
@@ -37,7 +89,16 @@ export function normalizeContextSettings(
     reserveOutputTokens: Math.max(0, settings.reserveOutputTokens ?? 1024),
     nearFullThresholdPercent: clamp(settings.nearFullThresholdPercent ?? 85, 1, 100),
     enableAutoSummarize: Boolean(settings.enableAutoSummarize),
-    enableAutoTrim: settings.enableAutoTrim ?? true
+    enableAutoTrim: settings.enableAutoTrim ?? true,
+    enableRetrieval: Boolean(settings.enableRetrieval),
+    retrievalLimit: boundedInteger(
+      settings.retrievalLimit,
+      DEFAULT_RETRIEVAL_LIMIT,
+      1,
+      MAX_RETRIEVAL_LIMIT
+    ),
+    expertMode: Boolean(settings.expertMode),
+    expertInstructions: settings.expertInstructions?.trim() ?? ""
   };
 }
 
@@ -87,9 +148,11 @@ export function prepareContextMessages(params: {
   settings: OllamaContextSettings;
 }): PreparedContextPayload {
   const settings = normalizeContextSettings(params.settings);
+  const augmentation = augmentContextMessages(params.messages, settings);
+  const inputMessages = augmentation.messages;
   const contextLimit = settings.numCtx;
   const beforeBudget = calculateContextBudget({
-    messages: params.messages,
+    messages: inputMessages,
     contextLimit,
     outputReserveTokens: settings.reserveOutputTokens,
     nearFullThresholdPercent: settings.nearFullThresholdPercent
@@ -97,16 +160,19 @@ export function prepareContextMessages(params: {
 
   if (
     settings.mode !== "friendly" ||
-    !settings.enableAutoTrim ||
     !contextLimit ||
-    !beforeBudget.wouldExceedLimit
+    !beforeBudget.wouldExceedLimit ||
+    (!settings.enableAutoTrim && !settings.enableAutoSummarize)
   ) {
     return {
-      messages: params.messages,
+      messages: inputMessages,
       budget: beforeBudget,
       contextNotice: {
         mode: settings.mode,
         action: "none",
+        retrievedMemoryCount: augmentation.retrievedMessages.length || undefined,
+        estimatedRetrievedTokens: augmentation.estimatedRetrievedTokens || undefined,
+        expertMode: augmentation.expertMode || undefined,
         estimatedPromptTokensBefore: beforeBudget.estimatedPromptTokens,
         estimatedPromptTokensAfter: beforeBudget.estimatedPromptTokens,
         outputReserveTokens: beforeBudget.estimatedOutputReserve
@@ -114,19 +180,21 @@ export function prepareContextMessages(params: {
     };
   }
 
-  const preparedMessages = trimMessagesToBudget(
-    params.messages,
-    Math.max(0, contextLimit - settings.reserveOutputTokens)
-  );
+  const promptBudget = Math.max(0, contextLimit - settings.reserveOutputTokens);
+  const managedContext =
+    settings.enableAutoSummarize
+      ? summarizeMessagesToBudget(inputMessages, promptBudget) ??
+        (settings.enableAutoTrim ? trimContextMessages(inputMessages, promptBudget) : null)
+      : trimContextMessages(inputMessages, promptBudget);
+  const preparedMessages = managedContext?.messages ?? inputMessages;
   const afterBudget = calculateContextBudget({
     messages: preparedMessages,
     contextLimit,
     outputReserveTokens: settings.reserveOutputTokens,
     nearFullThresholdPercent: settings.nearFullThresholdPercent
   });
-  const beforeOutbound = outboundMessages(params.messages);
-  const afterOutbound = new Set(outboundMessages(preparedMessages));
-  const omittedMessages = beforeOutbound.filter((message) => !afterOutbound.has(message));
+  const omittedMessages =
+    managedContext?.omittedMessages ?? omittedOutboundMessages(inputMessages, preparedMessages);
   const estimatedOmittedTokens = omittedMessages.reduce(
     (total, message) => total + estimateMessageTokens(message),
     0
@@ -137,9 +205,12 @@ export function prepareContextMessages(params: {
     budget: afterBudget,
     contextNotice: {
       mode: "friendly",
-      action: omittedMessages.length > 0 ? "trimmed" : "none",
+      action: omittedMessages.length > 0 ? managedContext?.action ?? "trimmed" : "none",
       omittedMessageCount: omittedMessages.length || undefined,
       estimatedOmittedTokens: estimatedOmittedTokens || undefined,
+      retrievedMemoryCount: augmentation.retrievedMessages.length || undefined,
+      estimatedRetrievedTokens: augmentation.estimatedRetrievedTokens || undefined,
+      expertMode: augmentation.expertMode || undefined,
       estimatedPromptTokensBefore: beforeBudget.estimatedPromptTokens,
       estimatedPromptTokensAfter: afterBudget.estimatedPromptTokens,
       outputReserveTokens: afterBudget.estimatedOutputReserve
@@ -192,6 +263,15 @@ export function buildContextWarnings(params: {
     });
   }
 
+  if ((notice?.retrievedMemoryCount ?? 0) > 0) {
+    warnings.push({
+      kind: "retrieved",
+      message: `${notice?.retrievedMemoryCount ?? "Some"} relevant older message${
+        notice?.retrievedMemoryCount === 1 ? "" : "s"
+      } retrieved into context.`
+    });
+  }
+
   const estimatedPromptTokens =
     notice?.estimatedPromptTokensAfter ?? notice?.estimatedPromptTokensBefore;
   const contextUnderPressure =
@@ -228,6 +308,150 @@ export function strictContextWarning(errorMessage: string): ContextWarning | nul
   };
 }
 
+function augmentContextMessages(messages: ChatMessage[], settings: OllamaContextSettings) {
+  const syntheticMessages: ChatMessage[] = [];
+  const retrievedMessages = settings.mode === "friendly" && settings.enableRetrieval
+    ? retrieveRelevantMessages(messages, settings.retrievalLimit)
+    : [];
+  const retrievalMessage = createRetrievalMessage(retrievedMessages);
+  const expertMessage = createExpertMessage(settings);
+
+  if (expertMessage) syntheticMessages.push(expertMessage);
+  if (retrievalMessage) syntheticMessages.push(retrievalMessage);
+
+  return {
+    messages:
+      syntheticMessages.length > 0
+        ? insertSyntheticSystemMessages(messages, syntheticMessages)
+        : messages,
+    retrievedMessages,
+    estimatedRetrievedTokens: retrievalMessage ? estimateMessageTokens(retrievalMessage) : 0,
+    expertMode: Boolean(expertMessage)
+  };
+}
+
+function createExpertMessage(settings: OllamaContextSettings): ChatMessage | null {
+  if (!settings.expertMode) return null;
+
+  const instructions =
+    settings.expertInstructions.trim() || DEFAULT_EXPERT_INSTRUCTIONS;
+
+  return {
+    id: EXPERT_MESSAGE_ID,
+    role: "system",
+    content: `Expert mode instructions:\n${instructions}`,
+    status: "complete"
+  };
+}
+
+function retrieveRelevantMessages(messages: ChatMessage[], limit: number) {
+  const outbound = outboundMessages(messages);
+  const latestUserIndex = findLatestUserIndex(outbound);
+  if (latestUserIndex <= 0) return [];
+
+  const queryTerms = tokenizeForRetrieval(messageRetrievalText(outbound[latestUserIndex]));
+  if (queryTerms.size === 0) return [];
+
+  return outbound
+    .slice(0, latestUserIndex)
+    .map((message, index) => ({
+      message,
+      index,
+      score: retrievalScore(queryTerms, message)
+    }))
+    .filter((candidate) => candidate.score > 0)
+    .sort((a, b) => b.score - a.score || b.index - a.index)
+    .slice(0, limit)
+    .sort((a, b) => a.index - b.index)
+    .map((candidate) => candidate.message);
+}
+
+function createRetrievalMessage(messages: ChatMessage[]): ChatMessage | null {
+  if (messages.length === 0) return null;
+
+  const header = "Relevant retrieved conversation memory:";
+  const maxCharacters = RETRIEVAL_MAX_TOKENS * 4 - header.length - 1;
+  const lines: string[] = [];
+  let remaining = maxCharacters;
+
+  for (const message of messages) {
+    const excerpt = truncateText(
+      summarizeMessage(message),
+      Math.min(RETRIEVAL_SNIPPET_MAX_CHARACTERS, remaining)
+    );
+    if (!excerpt) continue;
+
+    const line = `- ${roleLabel(message.role)}: ${excerpt}`;
+    const nextLine = truncateText(line, remaining);
+    if (!nextLine) break;
+
+    lines.push(nextLine);
+    remaining -= nextLine.length + 1;
+    if (remaining <= 32) break;
+  }
+
+  if (lines.length === 0) return null;
+
+  return {
+    id: RETRIEVAL_MESSAGE_ID,
+    role: "system",
+    content: `${header}\n${lines.join("\n")}`,
+    status: "complete"
+  };
+}
+
+function insertSyntheticSystemMessages(
+  messages: ChatMessage[],
+  syntheticMessages: ChatMessage[]
+) {
+  const withoutSynthetic = messages.filter(
+    (message) =>
+      message.id !== EXPERT_MESSAGE_ID &&
+      message.id !== RETRIEVAL_MESSAGE_ID &&
+      message.id !== SUMMARY_MESSAGE_ID
+  );
+  const insertIndex = withoutSynthetic.findIndex((message) => message.role !== "system");
+  if (insertIndex < 0) return [...withoutSynthetic, ...syntheticMessages];
+
+  return [
+    ...withoutSynthetic.slice(0, insertIndex),
+    ...syntheticMessages,
+    ...withoutSynthetic.slice(insertIndex)
+  ];
+}
+
+function retrievalScore(queryTerms: Map<string, number>, message: ChatMessage) {
+  if (message.role === "system") return 0;
+
+  const messageTerms = tokenizeForRetrieval(messageRetrievalText(message));
+  let score = 0;
+
+  for (const [term, queryWeight] of queryTerms) {
+    const messageWeight = messageTerms.get(term);
+    if (messageWeight) score += queryWeight * messageWeight;
+  }
+
+  if (message.role === "user") score += 1;
+  if ((message.attachments?.length ?? 0) > 0) score += 1;
+
+  return score;
+}
+
+function messageRetrievalText(message: ChatMessage) {
+  const content = buildMessageContentWithAttachments(message.content, message.attachments);
+  return [content, message.thinking ?? "", message.toolName ?? ""].join(" ");
+}
+
+function tokenizeForRetrieval(text: string) {
+  const terms = new Map<string, number>();
+  for (const term of text.toLowerCase().match(/[a-z0-9][a-z0-9_-]{2,}/g) ?? []) {
+    if (RETRIEVAL_STOP_WORDS.has(term)) continue;
+    terms.set(term, (terms.get(term) ?? 0) + 1);
+  }
+
+  return terms;
+}
+
 function trimMessagesToBudget(messages: ChatMessage[], promptBudget: number) {
   const outbound = outboundMessages(messages);
   const latestUserIndex = findLatestUserIndex(outbound);
@@ -257,6 +481,180 @@ function trimMessagesToBudget(messages: ChatMessage[], promptBudget: number) {
   }
 
   return messages.filter((message) => !outbound.includes(message) || selected.has(message));
+}
+
+function trimContextMessages(messages: ChatMessage[], promptBudget: number) {
+  const preparedMessages = trimMessagesToBudget(messages, promptBudget);
+
+  return {
+    messages: preparedMessages,
+    action: "trimmed" as const,
+    omittedMessages: omittedOutboundMessages(messages, preparedMessages)
+  };
+}
+
+function summarizeMessagesToBudget(messages: ChatMessage[], promptBudget: number) {
+  const outbound = outboundMessages(messages);
+  const required = requiredMessages(outbound);
+  const trimmed = trimMessagesToBudget(messages, promptBudget);
+  const selected = new Set(outboundMessages(trimmed).filter((message) => outbound.includes(message)));
+  let summaryTokenBudget = Math.min(
+    SUMMARY_MAX_TOKENS,
+    Math.max(SUMMARY_MIN_TOKENS, Math.floor(promptBudget * 0.25))
+  );
+
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const omittedMessages = outbound.filter((message) => !selected.has(message));
+    if (omittedMessages.length === 0) return null;
+
+    const summaryMessage = createSummaryMessage(omittedMessages, summaryTokenBudget);
+    if (!summaryMessage) break;
+
+    const candidateMessages = insertSummaryMessage(messages, outbound, selected, summaryMessage);
+    if (estimateMessagesTokens(candidateMessages) <= promptBudget) {
+      return {
+        messages: candidateMessages,
+        action: "summarized" as const,
+        omittedMessages
+      };
+    }
+
+    const removable = outbound.find(
+      (message) => selected.has(message) && !required.has(message)
+    );
+    if (removable) {
+      selected.delete(removable);
+      continue;
+    }
+
+    if (summaryTokenBudget > SUMMARY_MIN_TOKENS) {
+      summaryTokenBudget = Math.max(
+        SUMMARY_MIN_TOKENS,
+        Math.floor(summaryTokenBudget * 0.7)
+      );
+      continue;
+    }
+
+    break;
+  }
+
+  return null;
+}
+
+function requiredMessages(messages: ChatMessage[]) {
+  const latestUserIndex = findLatestUserIndex(messages);
+  const required = new Set<ChatMessage>();
+
+  messages.forEach((message, index) => {
+    if (message.role === "system" || index === latestUserIndex) {
+      required.add(message);
+    }
+  });
+
+  return required;
+}
+
+function createSummaryMessage(messages: ChatMessage[], maxSummaryTokens: number): ChatMessage | null {
+  const content = buildSummaryContent(messages, maxSummaryTokens);
+  if (!content) return null;
+
+  return {
+    id: SUMMARY_MESSAGE_ID,
+    role: "system",
+    content,
+    status: "complete"
+  };
+}
+
+function buildSummaryContent(messages: ChatMessage[], maxSummaryTokens: number) {
+  const header = "Summary of earlier omitted conversation:";
+  const maxCharacters = Math.max(0, maxSummaryTokens * 4 - header.length - 1);
+  if (maxCharacters < 32) return null;
+
+  const lines: string[] = [];
+  let remaining = maxCharacters;
+  const perMessageCharacters = Math.max(
+    48,
+    Math.floor(maxCharacters / Math.max(messages.length, 1))
+  );
+
+  for (const message of messages) {
+    const excerpt = summarizeMessage(message);
+    if (!excerpt) continue;
+
+    const line = `- ${roleLabel(message.role)}: ${excerpt}`;
+    const nextLine = truncateText(line, Math.min(remaining, perMessageCharacters));
+    if (!nextLine) break;
+
+    lines.push(nextLine);
+    remaining -= nextLine.length + 1;
+    if (remaining <= 12) break;
+  }
+
+  if (lines.length === 0) return null;
+  return `${header}\n${lines.join("\n")}`;
+}
+
+function summarizeMessage(message: ChatMessage) {
+  const parts = [message.content.trim()];
+  if ((message.attachments?.length ?? 0) > 0) {
+    const attachmentNames = message.attachments
+      ?.slice(0, 4)
+      .map((attachment) => attachment.name)
+      .join(", ");
+    const remaining = Math.max(0, (message.attachments?.length ?? 0) - 4);
+    parts.push(
+      `[attachments: ${attachmentNames}${remaining > 0 ? `, +${remaining} more` : ""}]`
+    );
+  }
+  if (!message.content.trim() && message.thinking?.trim()) {
+    parts.push(message.thinking.trim());
+  }
+
+  return truncateText(parts.filter(Boolean).join(" ").replace(/\s+/g, " "), 280);
+}
+
+function insertSummaryMessage(
+  messages: ChatMessage[],
+  outbound: ChatMessage[],
+  selected: Set<ChatMessage>,
+  summaryMessage: ChatMessage
+) {
+  const preparedMessages: ChatMessage[] = [];
+  let inserted = false;
+
+  for (const message of messages) {
+    const keep = !outbound.includes(message) || selected.has(message);
+    if (!keep) continue;
+
+    if (!inserted && message.role !== "system") {
+      preparedMessages.push(summaryMessage);
+      inserted = true;
+    }
+    preparedMessages.push(message);
+  }
+
+  if (!inserted) preparedMessages.push(summaryMessage);
+  return preparedMessages;
+}
+
+function omittedOutboundMessages(original: ChatMessage[], prepared: ChatMessage[]) {
+  const preparedOutbound = new Set(outboundMessages(prepared));
+  return outboundMessages(original).filter((message) => !preparedOutbound.has(message));
+}
+
+function roleLabel(role: ChatMessage["role"]) {
+  if (role === "assistant") return "Assistant";
+  if (role === "system") return "System";
+  if (role === "tool") return "Tool";
+  return "User";
+}
+
+function truncateText(text: string, maxCharacters: number) {
+  if (maxCharacters <= 0) return "";
+  if (text.length <= maxCharacters) return text;
+  if (maxCharacters <= 3) return ".".repeat(maxCharacters);
+  return `${text.slice(0, maxCharacters - 3).trimEnd()}...`;
 }
 
 function outboundMessages(messages: ChatMessage[]) {
@@ -294,6 +692,16 @@ function positiveNumberOrNull(value: number | null | undefined) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function boundedInteger(
+  value: number | null | undefined,
+  defaultValue: number,
+  min: number,
+  max: number
+) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return defaultValue;
+  return clamp(Math.round(value), min, max);
 }
 
 function uniqueWarnings(warnings: ContextWarning[]) {

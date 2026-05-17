@@ -19,6 +19,10 @@ export interface LocalSettings {
   nearFullThresholdPercent: number;
   enableAutoTrim: boolean;
   enableAutoSummarize: boolean;
+  enableRetrieval: boolean;
+  retrievalLimit: number;
+  expertMode: boolean;
+  expertInstructions: string;
   webSearchEnabled: boolean;
   thinkEnabled: boolean;
   thinkLevel: "none" | "low" | "medium" | "high";

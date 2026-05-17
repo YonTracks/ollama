@@ -113,7 +113,7 @@ function ToastViewport({
 }) {
   return (
     <div
-      className="toast-safe-bottom pointer-events-none fixed left-1/2 z-[60] flex w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 flex-col gap-2 sm:left-auto sm:right-4 sm:w-96 sm:translate-x-0"
+      className="toast-safe-bottom pointer-events-none fixed left-1/2 z-60 flex w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 flex-col gap-2 sm:left-auto sm:right-4 sm:w-96 sm:translate-x-0"
       aria-live="polite"
       aria-atomic="false"
     >
@@ -159,7 +159,7 @@ function ToastItem({
         <div className="min-w-0 flex-1">
           <div className="font-medium text-foreground">{toast.title}</div>
           {toast.description ? (
-            <div className="mt-0.5 break-words text-muted-foreground">
+            <div className="mt-0.5 wrap-break-word text-muted-foreground">
               {toast.description}
             </div>
           ) : null}

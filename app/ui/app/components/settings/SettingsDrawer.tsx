@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Bolt,
+  BrainCircuit,
   CheckCircle2,
   Cloud,
   Cpu,
@@ -12,6 +13,7 @@ import {
   HardDrive,
   RefreshCcw,
   RotateCcw,
+  Search,
   Server,
   Settings,
   Shield,
@@ -375,6 +377,10 @@ export function SettingsDrawer({
         nearFullThresholdPercent: 85,
         enableAutoTrim: true,
         enableAutoSummarize: false,
+        enableRetrieval: false,
+        retrievalLimit: 4,
+        expertMode: false,
+        expertInstructions: "",
         imageGenerationWidth: 1024,
         imageGenerationHeight: 1024,
         imageGenerationSteps: 20
@@ -397,6 +403,10 @@ export function SettingsDrawer({
         nearFullThresholdPercent: 85,
         enableAutoTrim: true,
         enableAutoSummarize: false,
+        enableRetrieval: false,
+        retrievalLimit: 4,
+        expertMode: false,
+        expertInstructions: "",
         autoUpdateEnabled: true,
         imageGenerationWidth: 1024,
         imageGenerationHeight: 1024,
@@ -459,7 +469,7 @@ export function SettingsDrawer({
         aria-labelledby="settings-title"
         className={cn(
           "relative z-10 flex h-[min(760px,calc(100dvh-1.5rem))] w-full max-w-[calc(100vw-1.5rem)] flex-col overflow-hidden rounded-lg border border-border bg-panel shadow-panel transition duration-200 sm:h-[min(780px,calc(100dvh-3rem))] sm:max-w-3xl",
-          open ? "translate-y-0 scale-100 opacity-100" : "translate-y-2 scale-[0.98] opacity-0"
+          open ? "translate-y-0 scale-100 opacity-100" : "translate-y-2 scale-98 opacity-0"
         )}
       >
         <div
@@ -931,11 +941,42 @@ export function SettingsDrawer({
             <ToggleRow
               icon={<HardDrive className="h-4 w-4" />}
               label="Auto-summarize old messages"
-              description="Reserved for a future summarization pass. Trimming is used for now."
+              description="Friendly mode can replace omitted older turns with a compact summary."
               checked={settings.enableAutoSummarize}
-              disabled
-              onChange={() => handleUpdate({ enableAutoSummarize: false })}
+              onChange={(enableAutoSummarize) => handleUpdate({ enableAutoSummarize })}
             />
+            <ToggleRow
+              icon={<Search className="h-4 w-4" />}
+              label="Retrieval memory (RAG)"
+              description="Friendly mode can retrieve relevant older turns before trimming or summarizing."
+              checked={settings.enableRetrieval}
+              onChange={(enableRetrieval) => handleUpdate({ enableRetrieval })}
+            />
+            {settings.enableRetrieval ? (
+              <NumericRow
+                label="Memory snippets"
+                value={settings.retrievalLimit}
+                min={1}
+                max={8}
+                step={1}
+                onChange={(retrievalLimit) => handleUpdate({ retrievalLimit })}
+              />
+            ) : null}
+            <ToggleRow
+              icon={<BrainCircuit className="h-4 w-4" />}
+              label="Expert chat mode"
+              description="Adds persistent expert instructions to each chat request."
+              checked={settings.expertMode}
+              onChange={(expertMode) => handleUpdate({ expertMode })}
+            />
+            {settings.expertMode ? (
+              <TextAreaRow
+                label="Expert instructions"
+                value={settings.expertInstructions}
+                placeholder="Answer as a careful domain expert. Use retrieved memory when relevant and call out uncertainty."
+                onChange={(expertInstructions) => handleUpdate({ expertInstructions })}
+              />
+            ) : null}
           </SettingsSection>
           ) : null}
 
@@ -1169,6 +1210,46 @@ function NumericRow({
   );
 }
 
+function TextAreaRow({
+  label,
+  value,
+  placeholder,
+  onChange
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  onChange(value: string): void;
+}) {
+  const id = `settings-${label.toLowerCase().replace(/\s+/g, "-")}`;
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  const commit = () => {
+    if (draft !== value) onChange(draft);
+  };
+
+  return (
+    <div className="rounded-md border border-border bg-panel-strong px-3 py-3">
+      <label htmlFor={id} className="mb-2 block text-sm font-medium">
+        {label}
+      </label>
+      <textarea
+        id={id}
+        value={draft}
+        placeholder={placeholder}
+        rows={4}
+        onBlur={commit}
+        onChange={(event) => setDraft(event.target.value)}
+        className="block w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:focus-ring"
+      />
+    </div>
+  );
+}
+
 function PathRow({
   icon,
   label,
@@ -1289,6 +1370,21 @@ function settingsToastDescription(updates: Partial<LocalSettings>) {
   if ("enableAutoTrim" in updates) {
     return updates.enableAutoTrim ? "Auto-trim enabled." : "Auto-trim disabled.";
   }
+  if ("enableAutoSummarize" in updates) {
+    return updates.enableAutoSummarize
+      ? "Auto-summarize enabled."
+      : "Auto-summarize disabled.";
+  }
+  if ("enableRetrieval" in updates) {
+    return updates.enableRetrieval
+      ? "Retrieval memory enabled."
+      : "Retrieval memory disabled.";
+  }
+  if ("retrievalLimit" in updates) return "Retrieval memory updated.";
+  if ("expertMode" in updates) {
+    return updates.expertMode ? "Expert chat mode enabled." : "Expert chat mode disabled.";
+  }
+  if ("expertInstructions" in updates) return "Expert instructions updated.";
   if (
     "imageGenerationWidth" in updates ||
     "imageGenerationHeight" in updates ||

@@ -14,7 +14,11 @@ const baseSettings: OllamaContextSettings = {
   reserveOutputTokens: 40,
   nearFullThresholdPercent: 85,
   enableAutoSummarize: false,
-  enableAutoTrim: true
+  enableAutoTrim: true,
+  enableRetrieval: false,
+  retrievalLimit: 4,
+  expertMode: false,
+  expertInstructions: ""
 };
 
 function message(role: ChatMessage["role"], content: string): ChatMessage {
@@ -77,6 +81,91 @@ describe("context budget utilities", () => {
     expect(estimateMessagesTokens(prepared.messages)).toBeLessThan(
       estimateMessagesTokens(messages)
     );
+  });
+
+  it("friendly summarization replaces omitted messages with a compact summary", () => {
+    const messages = [
+      message("system", "Always answer carefully."),
+      message("user", `old user topic ${"alpha ".repeat(120)}`),
+      message("assistant", `old assistant answer ${"beta ".repeat(120)}`),
+      message("user", "latest question")
+    ];
+
+    const prepared = prepareContextMessages({
+      messages,
+      settings: {
+        ...baseSettings,
+        numCtx: 260,
+        enableAutoSummarize: true
+      }
+    });
+    const summary = prepared.messages.find(
+      (preparedMessage) =>
+        preparedMessage.role === "system" &&
+        preparedMessage.content.startsWith("Summary of earlier omitted conversation:")
+    );
+
+    expect(prepared.contextNotice.action).toBe("summarized");
+    expect(summary?.content).toContain("old user topic");
+    expect(summary?.content).toContain("old assistant answer");
+    expect(prepared.messages).toContain(messages[0]);
+    expect(prepared.messages).toContain(messages[3]);
+    expect(prepared.messages).not.toContain(messages[1]);
+    expect(estimateMessagesTokens(prepared.messages)).toBeLessThanOrEqual(220);
+  });
+
+  it("retrieves relevant older messages into context memory", () => {
+    const messages = [
+      message("system", "Always answer carefully."),
+      message("user", "The customer escalation policy says gold accounts need same-day review."),
+      message("assistant", "Gold account escalations should be reviewed before end of day."),
+      message("user", "We also discussed dashboard colors."),
+      message("assistant", "The dashboard should use restrained colors."),
+      message("user", "What should I do for a gold account escalation?")
+    ];
+
+    const prepared = prepareContextMessages({
+      messages,
+      settings: {
+        ...baseSettings,
+        enableRetrieval: true,
+        retrievalLimit: 2
+      }
+    });
+    const memory = prepared.messages.find(
+      (preparedMessage) =>
+        preparedMessage.role === "system" &&
+        preparedMessage.content.startsWith("Relevant retrieved conversation memory:")
+    );
+
+    expect(prepared.contextNotice.retrievedMemoryCount).toBeGreaterThan(0);
+    expect(memory?.content).toContain("gold accounts");
+    expect(memory?.content).not.toContain("dashboard colors");
+    expect(
+      buildContextWarnings({ contextNotice: prepared.contextNotice }).map(
+        (warning) => warning.kind
+      )
+    ).toContain("retrieved");
+  });
+
+  it("adds expert instructions as request-only system context", () => {
+    const messages = [message("user", "Diagnose this build failure.")];
+
+    const prepared = prepareContextMessages({
+      messages,
+      settings: {
+        ...baseSettings,
+        expertMode: true,
+        expertInstructions: "Answer like a senior release engineer."
+      }
+    });
+
+    expect(prepared.contextNotice.expertMode).toBe(true);
+    expect(prepared.messages[0]).toMatchObject({
+      role: "system",
+      content: expect.stringContaining("senior release engineer")
+    });
+    expect(prepared.messages).toContain(messages[0]);
   });
 
   it("detects warning conditions", () => {
