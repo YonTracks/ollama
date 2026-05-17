@@ -5,11 +5,14 @@ package ui
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httputil"
 	"os"
@@ -998,7 +1001,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 				reqChat = &temp
 			}
 		}
-		preparedChat, notice := prepareContextChat(reqChat, contextSettings)
+		preparedChat, notice := s.prepareContextChat(ctx, c, reqChat, req.Model, contextSettings)
 		if contextNotice == nil || (notice != nil && notice.Action != "none") {
 			contextNotice = notice
 		}
@@ -1782,9 +1785,12 @@ const (
 	contextRetrievalSnippetChars = 320
 	contextDefaultRetrievalLimit = 4
 	contextMaxRetrievalLimit     = 8
+	contextVectorIndexLimit      = 64
+	contextVectorTextMaxChars    = 2048
 )
 
 const contextDefaultExpertInstructions = "Act as a careful domain expert. Use retrieved memory when it is relevant, keep claims grounded, and call out missing information instead of guessing."
+const defaultEmbeddingModel = "nomic-embed-text"
 
 var contextRetrievalStopWords = map[string]struct{}{
 	"about":   {},
@@ -1876,7 +1882,13 @@ func approximateContextTokens(text string) int {
 	return (len([]rune(text)) + 3) / 4
 }
 
+type storeMessageRetriever func(messages []store.Message, limit int) []store.Message
+
 func augmentStoreMessagesForContext(messages []store.Message, settings contextRequestSettings) ([]store.Message, int, int, bool) {
+	return augmentStoreMessagesForContextWithRetriever(messages, settings, retrieveRelevantStoreMessages)
+}
+
+func augmentStoreMessagesForContextWithRetriever(messages []store.Message, settings contextRequestSettings, retriever storeMessageRetriever) ([]store.Message, int, int, bool) {
 	var synthetic []store.Message
 	retrieved := 0
 	retrievedTokens := 0
@@ -1886,7 +1898,10 @@ func augmentStoreMessagesForContext(messages []store.Message, settings contextRe
 	}
 
 	if settings.Mode == "friendly" && settings.EnableRetrieval {
-		retrievedMessages := retrieveRelevantStoreMessages(messages, settings.RetrievalLimit)
+		if retriever == nil {
+			retriever = retrieveRelevantStoreMessages
+		}
+		retrievedMessages := retriever(messages, settings.RetrievalLimit)
 		if retrievalMessage, ok := createStoreRetrievalMessage(retrievedMessages); ok {
 			synthetic = append(synthetic, retrievalMessage)
 			retrieved = len(retrievedMessages)
@@ -1962,6 +1977,268 @@ func retrieveRelevantStoreMessages(messages []store.Message, limit int) []store.
 	}
 
 	return retrieved
+}
+
+func (s *Server) prepareContextChat(ctx context.Context, c *api.Client, chat *store.Chat, model string, settings contextRequestSettings) (*store.Chat, *store.ContextNotice) {
+	retriever := retrieveRelevantStoreMessages
+	if settings.Mode == "friendly" && settings.EnableRetrieval {
+		if vectorMessages, ok := s.retrieveVectorStoreMessages(ctx, c, chat, model, settings); ok {
+			retriever = func([]store.Message, int) []store.Message {
+				return vectorMessages
+			}
+		}
+	}
+
+	return prepareContextChatWithRetriever(chat, settings, retriever)
+}
+
+func (s *Server) retrieveVectorStoreMessages(ctx context.Context, c *api.Client, chat *store.Chat, model string, settings contextRequestSettings) ([]store.Message, bool) {
+	if s.Store == nil || chat == nil || chat.ID == "" || c == nil {
+		return nil, false
+	}
+
+	embeddingModel := retrievalEmbeddingModel(model)
+	if embeddingModel == "" {
+		return nil, false
+	}
+
+	items, err := s.Store.VectorMemoryItems(chat.ID)
+	if err != nil {
+		s.log().Debug("vector memory unavailable", "error", err)
+		return nil, false
+	}
+	embeddings, err := s.Store.VectorMemoryEmbeddings(chat.ID, embeddingModel)
+	if err != nil {
+		s.log().Debug("vector memory cache unavailable", "error", err)
+		return nil, false
+	}
+	embeddingByHash := make(map[string][]float32, len(embeddings))
+	for _, embedding := range embeddings {
+		embeddingByHash[embedding.ContentHash] = embedding.Embedding
+	}
+
+	latestUserItemIndex := latestVectorUserItemIndex(items)
+	if latestUserItemIndex <= 0 {
+		return nil, false
+	}
+
+	queryText := vectorMemoryText(items[latestUserItemIndex].Message)
+	if queryText == "" {
+		return nil, false
+	}
+
+	embedCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	queryEmbedding, err := embedTexts(embedCtx, c, embeddingModel, []string{queryText})
+	if err != nil || len(queryEmbedding) != 1 {
+		if err != nil {
+			s.log().Debug("vector memory query embedding unavailable", "model", embeddingModel, "error", err)
+		}
+		return nil, false
+	}
+
+	candidates := vectorMemoryCandidates(items[:latestUserItemIndex], embeddingByHash)
+	if len(candidates) == 0 {
+		return nil, false
+	}
+
+	queryTerms := tokenizeContextRetrieval(queryText)
+	ensureVectorCandidateEmbeddings(embedCtx, s.Store, c, chat.ID, embeddingModel, queryTerms, candidates)
+
+	type scoredMessage struct {
+		index int
+		score float64
+	}
+	var scored []scoredMessage
+	for _, candidate := range candidates {
+		if len(candidate.embedding) == 0 {
+			continue
+		}
+		score := cosineSimilarity(queryEmbedding[0], candidate.embedding)
+		if score > 0 {
+			scored = append(scored, scoredMessage{index: candidate.index, score: score})
+		}
+	}
+	if len(scored) == 0 {
+		return nil, false
+	}
+
+	slices.SortFunc(scored, func(a, b scoredMessage) int {
+		if a.score != b.score {
+			if a.score > b.score {
+				return -1
+			}
+			return 1
+		}
+		return b.index - a.index
+	})
+	if len(scored) > settings.RetrievalLimit {
+		scored = scored[:settings.RetrievalLimit]
+	}
+	slices.SortFunc(scored, func(a, b scoredMessage) int {
+		return a.index - b.index
+	})
+
+	retrieved := make([]store.Message, 0, len(scored))
+	for _, candidate := range scored {
+		retrieved = append(retrieved, items[candidate.index].Message)
+	}
+
+	return retrieved, len(retrieved) > 0
+}
+
+type vectorMemoryCandidate struct {
+	index       int
+	item        store.VectorMemoryItem
+	text        string
+	contentHash string
+	embedding   []float32
+}
+
+func vectorMemoryCandidates(items []store.VectorMemoryItem, embeddingByHash map[string][]float32) []vectorMemoryCandidate {
+	candidates := make([]vectorMemoryCandidate, 0, len(items))
+	for index, item := range items {
+		if item.Message.Role == "system" {
+			continue
+		}
+		text := vectorMemoryText(item.Message)
+		if text == "" {
+			continue
+		}
+		contentHash := vectorMemoryHash(text)
+		candidates = append(candidates, vectorMemoryCandidate{
+			index:       index,
+			item:        item,
+			text:        text,
+			contentHash: contentHash,
+			embedding:   embeddingByHash[contentHash],
+		})
+	}
+	return candidates
+}
+
+func ensureVectorCandidateEmbeddings(ctx context.Context, st *store.Store, c *api.Client, chatID, model string, queryTerms map[string]int, candidates []vectorMemoryCandidate) {
+	missingIndexes := vectorEmbeddingWorkset(queryTerms, candidates)
+	if len(missingIndexes) == 0 {
+		return
+	}
+
+	texts := make([]string, 0, len(missingIndexes))
+	for _, index := range missingIndexes {
+		texts = append(texts, candidates[index].text)
+	}
+
+	embeddings, err := embedTexts(ctx, c, model, texts)
+	if err != nil || len(embeddings) != len(missingIndexes) {
+		return
+	}
+
+	for i, candidateIndex := range missingIndexes {
+		candidate := &candidates[candidateIndex]
+		candidate.embedding = embeddings[i]
+		_ = st.UpsertMessageEmbedding(chatID, model, candidate.contentHash, embeddings[i])
+	}
+}
+
+func vectorEmbeddingWorkset(queryTerms map[string]int, candidates []vectorMemoryCandidate) []int {
+	type workItem struct {
+		index   int
+		score   int
+		recency int
+	}
+	var work []workItem
+	for index, candidate := range candidates {
+		if len(candidate.embedding) > 0 {
+			continue
+		}
+		score := storeRetrievalScore(queryTerms, candidate.item.Message)
+		work = append(work, workItem{index: index, score: score, recency: candidate.index})
+	}
+
+	slices.SortFunc(work, func(a, b workItem) int {
+		if a.score != b.score {
+			return b.score - a.score
+		}
+		return b.recency - a.recency
+	})
+	if len(work) > contextVectorIndexLimit {
+		work = work[:contextVectorIndexLimit]
+	}
+
+	indexes := make([]int, 0, len(work))
+	for _, item := range work {
+		indexes = append(indexes, item.index)
+	}
+	return indexes
+}
+
+func embedTexts(ctx context.Context, c *api.Client, model string, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	inputs := make([]string, len(texts))
+	for i, text := range texts {
+		inputs[i] = truncateRunes(text, contextVectorTextMaxChars)
+	}
+	truncate := true
+	resp, err := c.Embed(ctx, &api.EmbedRequest{
+		Model:    model,
+		Input:    inputs,
+		Truncate: &truncate,
+		Options:  map[string]any{},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Embeddings, nil
+}
+
+func latestVectorUserItemIndex(items []store.VectorMemoryItem) int {
+	for i := len(items) - 1; i >= 0; i-- {
+		if items[i].Message.Role == "user" {
+			return i
+		}
+	}
+	return -1
+}
+
+func retrievalEmbeddingModel(_ string) string {
+	if value := strings.TrimSpace(os.Getenv("OLLAMA_RAG_EMBED_MODEL")); value != "" {
+		if strings.EqualFold(value, "off") || strings.EqualFold(value, "false") || value == "0" {
+			return ""
+		}
+		return value
+	}
+	return defaultEmbeddingModel
+}
+
+func vectorMemoryText(message store.Message) string {
+	return truncateRunes(storeRetrievalText(message), contextVectorTextMaxChars)
+}
+
+func vectorMemoryHash(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:])
+}
+
+func cosineSimilarity(a, b []float32) float64 {
+	if len(a) == 0 || len(a) != len(b) {
+		return 0
+	}
+
+	var dot, normA, normB float64
+	for i := range a {
+		av := float64(a[i])
+		bv := float64(b[i])
+		dot += av * bv
+		normA += av * av
+		normB += bv * bv
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }
 
 func createStoreRetrievalMessage(messages []store.Message) (store.Message, bool) {
@@ -2378,6 +2655,17 @@ func truncateContextSummaryText(text string, maxCharacters int) string {
 	return strings.TrimRight(string(runes[:maxCharacters-3]), " \t\r\n") + "..."
 }
 
+func truncateRunes(text string, maxCharacters int) string {
+	if maxCharacters <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= maxCharacters {
+		return text
+	}
+	return string(runes[:maxCharacters])
+}
+
 func outboundStoreMessageIndexes(messages []store.Message) []int {
 	indexes := make([]int, 0, len(messages))
 	for index, message := range messages {
@@ -2416,7 +2704,11 @@ func storeMessageKey(message store.Message) string {
 }
 
 func prepareContextChat(chat *store.Chat, settings contextRequestSettings) (*store.Chat, *store.ContextNotice) {
-	augmentedMessages, retrievedCount, retrievedTokens, expertMode := augmentStoreMessagesForContext(chat.Messages, settings)
+	return prepareContextChatWithRetriever(chat, settings, nil)
+}
+
+func prepareContextChatWithRetriever(chat *store.Chat, settings contextRequestSettings, retriever storeMessageRetriever) (*store.Chat, *store.ContextNotice) {
+	augmentedMessages, retrievedCount, retrievedTokens, expertMode := augmentStoreMessagesForContextWithRetriever(chat.Messages, settings, retriever)
 	augmentedChat := *chat
 	augmentedChat.Messages = augmentedMessages
 

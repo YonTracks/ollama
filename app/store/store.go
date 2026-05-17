@@ -51,6 +51,16 @@ type Message struct {
 	ThinkingTimeEnd   *time.Time       `json:"thinkingTimeEnd,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
 }
 
+type VectorMemoryItem struct {
+	MessageID int64
+	Message   Message
+}
+
+type VectorMemoryEmbedding struct {
+	ContentHash string
+	Embedding   []float32
+}
+
 type OllamaUsageMetrics struct {
 	TotalDuration      *int64 `json:"total_duration"`
 	LoadDuration       *int64 `json:"load_duration"`
@@ -549,6 +559,30 @@ func (s *Store) UpdateChatBrowserState(chatID string, state json.RawMessage) err
 	}
 
 	return s.db.updateChatBrowserState(chatID, state)
+}
+
+func (s *Store) VectorMemoryItems(chatID string) ([]VectorMemoryItem, error) {
+	if err := s.ensureDB(); err != nil {
+		return nil, err
+	}
+
+	return s.db.getVectorMemoryItems(chatID)
+}
+
+func (s *Store) VectorMemoryEmbeddings(chatID, model string) ([]VectorMemoryEmbedding, error) {
+	if err := s.ensureDB(); err != nil {
+		return nil, err
+	}
+
+	return s.db.getVectorMemoryEmbeddings(chatID, model)
+}
+
+func (s *Store) UpsertMessageEmbedding(chatID, model, contentHash string, embedding []float32) error {
+	if err := s.ensureDB(); err != nil {
+		return err
+	}
+
+	return s.db.upsertMessageEmbedding(chatID, model, contentHash, embedding)
 }
 
 func (s *Store) User() (*User, error) {

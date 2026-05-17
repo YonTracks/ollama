@@ -107,6 +107,48 @@ func TestPrepareContextChatRetrievesRelevantMemory(t *testing.T) {
 	}
 }
 
+func TestPrepareContextChatUsesInjectedRetriever(t *testing.T) {
+	chat := &store.Chat{
+		ID: "chat",
+		Messages: []store.Message{
+			store.NewMessage("user", "Remember the vector-only policy.", nil),
+			store.NewMessage("assistant", "Stored.", nil),
+			store.NewMessage("user", "What policy did we discuss?", nil),
+		},
+	}
+
+	prepared, notice := prepareContextChatWithRetriever(
+		chat,
+		contextRequestSettings{
+			Mode:                     "friendly",
+			ReserveOutputTokens:      40,
+			NearFullThresholdPercent: 85,
+			EnableRetrieval:          true,
+			RetrievalLimit:           1,
+		},
+		func(messages []store.Message, limit int) []store.Message {
+			if limit != 1 {
+				t.Fatalf("retrieval limit = %d, want 1", limit)
+			}
+			return []store.Message{messages[0]}
+		},
+	)
+
+	if notice.RetrievedMemoryCount == nil || *notice.RetrievedMemoryCount != 1 {
+		t.Fatalf("expected one retrieved memory, got %#v", notice.RetrievedMemoryCount)
+	}
+	var memory string
+	for _, message := range prepared.Messages {
+		if message.Role == "system" && strings.HasPrefix(message.Content, "Relevant retrieved conversation memory:") {
+			memory = message.Content
+			break
+		}
+	}
+	if !strings.Contains(memory, "vector-only policy") {
+		t.Fatalf("expected injected retrieval memory, got %q", memory)
+	}
+}
+
 func TestPrepareContextChatAddsExpertInstructions(t *testing.T) {
 	chat := &store.Chat{
 		ID: "chat",

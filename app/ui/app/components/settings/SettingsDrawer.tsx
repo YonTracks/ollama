@@ -965,7 +965,7 @@ export function SettingsDrawer({
             <ToggleRow
               icon={<Search className="h-4 w-4" />}
               label="Retrieval memory (RAG)"
-              description="Friendly mode can retrieve relevant older turns before trimming or summarizing."
+              description="Friendly mode can retrieve relevant older turns. Desktop mode uses cached vector memory when embeddings are available."
               checked={settings.enableRetrieval}
               onChange={(enableRetrieval) => handleUpdate({ enableRetrieval })}
             />

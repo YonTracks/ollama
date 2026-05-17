@@ -3,9 +3,12 @@
 package store
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -14,7 +17,7 @@ import (
 
 // currentSchemaVersion defines the current database schema version.
 // Increment this when making schema changes that require migrations.
-const currentSchemaVersion = 18
+const currentSchemaVersion = 19
 
 // database wraps the SQLite connection.
 // SQLite handles its own locking for concurrent access:
@@ -135,6 +138,19 @@ func (db *database) init() error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_tool_calls_message_id ON tool_calls(message_id);
+
+	CREATE TABLE IF NOT EXISTS message_embeddings (
+		chat_id TEXT NOT NULL,
+		model TEXT NOT NULL,
+		content_hash TEXT NOT NULL,
+		dimensions INTEGER NOT NULL,
+		embedding BLOB NOT NULL,
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (chat_id, model, content_hash),
+		FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_message_embeddings_chat_model ON message_embeddings(chat_id, model);
 
 	CREATE TABLE IF NOT EXISTS attachments (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -286,6 +302,11 @@ func (db *database) migrate() error {
 				return fmt.Errorf("migrate v17 to v18: %w", err)
 			}
 			version = 18
+		case 18:
+			if err := db.migrateV18ToV19(); err != nil {
+				return fmt.Errorf("migrate v18 to v19: %w", err)
+			}
+			version = 19
 		default:
 			// If we have a version we don't recognize, just set it to current
 			// This might happen during development
@@ -590,6 +611,29 @@ func (db *database) migrateV17ToV18() error {
 	return nil
 }
 
+// migrateV18ToV19 adds cached vector embeddings for semantic retrieval.
+func (db *database) migrateV18ToV19() error {
+	_, err := db.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS message_embeddings (
+			chat_id TEXT NOT NULL,
+			model TEXT NOT NULL,
+			content_hash TEXT NOT NULL,
+			dimensions INTEGER NOT NULL,
+			embedding BLOB NOT NULL,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (chat_id, model, content_hash),
+			FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+		);
+		CREATE INDEX IF NOT EXISTS idx_message_embeddings_chat_model ON message_embeddings(chat_id, model);
+		UPDATE settings SET schema_version = 19;
+	`)
+	if err != nil {
+		return fmt.Errorf("create message_embeddings table: %w", err)
+	}
+
+	return nil
+}
+
 // cleanupOrphanedData removes orphaned records that may exist due to the foreign key bug
 func (db *database) cleanupOrphanedData() error {
 	_, err := db.conn.Exec(`
@@ -606,6 +650,14 @@ func (db *database) cleanupOrphanedData() error {
 	`)
 	if err != nil {
 		return fmt.Errorf("cleanup orphaned attachments: %w", err)
+	}
+
+	_, err = db.conn.Exec(`
+		DELETE FROM message_embeddings
+		WHERE chat_id NOT IN (SELECT id FROM chats)
+	`)
+	if err != nil {
+		return fmt.Errorf("cleanup orphaned message_embeddings: %w", err)
 	}
 
 	_, err = db.conn.Exec(`
@@ -1056,6 +1108,115 @@ func (db *database) getMessages(chatID string, loadAttachmentData bool) ([]Messa
 	return messages, nil
 }
 
+func (db *database) getVectorMemoryItems(chatID string) ([]VectorMemoryItem, error) {
+	query := `
+		SELECT m.id, m.role, m.content, m.thinking, m.model_name, m.created_at, m.updated_at, m.tool_result
+		FROM messages m
+		WHERE m.chat_id = ?
+		ORDER BY m.id ASC
+	`
+
+	rows, err := db.conn.Query(query, chatID)
+	if err != nil {
+		return nil, fmt.Errorf("query vector memory items: %w", err)
+	}
+	defer rows.Close()
+
+	var items []VectorMemoryItem
+	for rows.Next() {
+		var item VectorMemoryItem
+		var modelName sql.NullString
+		var toolResult sql.NullString
+
+		err := rows.Scan(
+			&item.MessageID,
+			&item.Message.Role,
+			&item.Message.Content,
+			&item.Message.Thinking,
+			&modelName,
+			&item.Message.CreatedAt,
+			&item.Message.UpdatedAt,
+			&toolResult,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scan vector memory item: %w", err)
+		}
+
+		if modelName.Valid {
+			item.Message.Model = modelName.String
+		}
+		if toolResult.Valid && toolResult.String != "" {
+			var result json.RawMessage
+			if err := json.Unmarshal([]byte(toolResult.String), &result); err == nil {
+				item.Message.ToolResult = &result
+			}
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate vector memory items: %w", err)
+	}
+
+	return items, nil
+}
+
+func (db *database) getVectorMemoryEmbeddings(chatID, model string) ([]VectorMemoryEmbedding, error) {
+	rows, err := db.conn.Query(`
+		SELECT content_hash, embedding
+		FROM message_embeddings
+		WHERE chat_id = ? AND model = ?
+	`, chatID, model)
+	if err != nil {
+		return nil, fmt.Errorf("query vector memory embeddings: %w", err)
+	}
+	defer rows.Close()
+
+	var embeddings []VectorMemoryEmbedding
+	for rows.Next() {
+		var item VectorMemoryEmbedding
+		var embeddingBytes []byte
+		if err := rows.Scan(&item.ContentHash, &embeddingBytes); err != nil {
+			return nil, fmt.Errorf("scan vector memory embedding: %w", err)
+		}
+		embedding, err := decodeFloat32Vector(embeddingBytes)
+		if err != nil {
+			continue
+		}
+		item.Embedding = embedding
+		embeddings = append(embeddings, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate vector memory embeddings: %w", err)
+	}
+
+	return embeddings, nil
+}
+
+func (db *database) upsertMessageEmbedding(chatID, model, contentHash string, embedding []float32) error {
+	if len(embedding) == 0 {
+		return fmt.Errorf("embedding is empty")
+	}
+
+	encoded, err := encodeFloat32Vector(embedding)
+	if err != nil {
+		return err
+	}
+
+	_, err = db.conn.Exec(`
+		INSERT INTO message_embeddings (chat_id, model, content_hash, dimensions, embedding, updated_at)
+		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(chat_id, model, content_hash) DO UPDATE SET
+			dimensions = excluded.dimensions,
+			embedding = excluded.embedding,
+			updated_at = CURRENT_TIMESTAMP
+	`, chatID, model, contentHash, len(embedding), encoded)
+	if err != nil {
+		return fmt.Errorf("upsert message embedding: %w", err)
+	}
+
+	return nil
+}
+
 func (db *database) insertMessage(tx *sql.Tx, chatID string, msg Message) (int64, error) {
 	query := `
 		INSERT INTO messages (chat_id, role, content, thinking, stream, model_name, created_at, updated_at, thinking_time_start, thinking_time_end, tool_result, stats, context_notice, context_warnings)
@@ -1169,6 +1330,34 @@ func messageContextWarningsSQL(warnings []ContextWarning) (sql.NullString, error
 	}
 
 	return sql.NullString{String: string(warningBytes), Valid: true}, nil
+}
+
+func encodeFloat32Vector(vector []float32) ([]byte, error) {
+	buffer := bytes.NewBuffer(make([]byte, 0, len(vector)*4))
+	for _, value := range vector {
+		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+			return nil, fmt.Errorf("embedding contains non-finite value")
+		}
+		if err := binary.Write(buffer, binary.LittleEndian, value); err != nil {
+			return nil, fmt.Errorf("encode embedding: %w", err)
+		}
+	}
+	return buffer.Bytes(), nil
+}
+
+func decodeFloat32Vector(data []byte) ([]float32, error) {
+	if len(data)%4 != 0 {
+		return nil, fmt.Errorf("invalid embedding byte length")
+	}
+
+	vector := make([]float32, len(data)/4)
+	reader := bytes.NewReader(data)
+	for i := range vector {
+		if err := binary.Read(reader, binary.LittleEndian, &vector[i]); err != nil {
+			return nil, fmt.Errorf("decode embedding: %w", err)
+		}
+	}
+	return vector, nil
 }
 
 func (db *database) getAttachments(messageID int64, loadData bool) ([]File, error) {

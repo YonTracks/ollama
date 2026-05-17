@@ -58,6 +58,16 @@ OLLAMA_DESKTOP_TOOLS=1 go run ./cmd/app -dev
 
 The registered desktop tools are `desktop.list_files`, `desktop.read_text_file`, and `desktop.search_files`. They are scoped to the working directory selected in settings, reject path escapes, and skip hidden files plus common generated/dependency folders by default.
 
+#### Vector retrieval memory
+
+Desktop Retrieval memory stores local message embeddings in SQLite for semantic recall. The default embedding model is `nomic-embed-text`:
+
+```bash
+ollama pull nomic-embed-text
+```
+
+Set `OLLAMA_RAG_EMBED_MODEL` to use another local embedding model, or set it to `off` to force lexical retrieval. If embedding is unavailable, the app falls back to lexical retrieval automatically.
+
 ## Build
 
 

@@ -205,6 +205,46 @@ func TestStore(t *testing.T) {
 		}
 	})
 
+	t.Run("vector memory embeddings survive chat rewrites", func(t *testing.T) {
+		chat := NewChat("vector-chat")
+		chat.Messages = append(chat.Messages, NewMessage("user", "remember the gold account policy", nil))
+		if err := s.SetChat(*chat); err != nil {
+			t.Fatalf("failed to save vector chat: %v", err)
+		}
+
+		items, err := s.VectorMemoryItems("vector-chat")
+		if err != nil {
+			t.Fatalf("failed to load vector memory items: %v", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("expected one vector memory item, got %d", len(items))
+		}
+
+		if err := s.UpsertMessageEmbedding("vector-chat", "nomic-embed-text", "hash-1", []float32{0.25, 0.5, 0.75}); err != nil {
+			t.Fatalf("failed to save vector embedding: %v", err)
+		}
+
+		chat.Title = "Vector Chat"
+		chat.Messages = append(chat.Messages, NewMessage("assistant", "noted", nil))
+		if err := s.SetChat(*chat); err != nil {
+			t.Fatalf("failed to rewrite vector chat: %v", err)
+		}
+
+		embeddings, err := s.VectorMemoryEmbeddings("vector-chat", "nomic-embed-text")
+		if err != nil {
+			t.Fatalf("failed to load vector memory embeddings: %v", err)
+		}
+		if len(embeddings) != 1 || embeddings[0].ContentHash != "hash-1" {
+			t.Fatalf("unexpected embeddings: %#v", embeddings)
+		}
+		if got := embeddings[0].Embedding; len(got) != 3 || got[0] != 0.25 || got[2] != 0.75 {
+			t.Fatalf("unexpected embedding vector: %#v", got)
+		}
+		if err := s.DeleteChat("vector-chat"); err != nil {
+			t.Fatalf("failed to delete vector chat: %v", err)
+		}
+	})
+
 	t.Run("delete chat", func(t *testing.T) {
 		if err := s.DeleteChat("test-chat-1"); err != nil {
 			t.Fatalf("failed to delete chat: %v", err)
