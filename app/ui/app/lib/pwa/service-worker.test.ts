@@ -18,4 +18,18 @@ describe("service worker cache policy", () => {
     expect(source).toContain("cache.put(request, copy)");
     expect(source).not.toContain('cache.put("/", copy)');
   });
+
+  it("uses a new cache version for app shell updates", () => {
+    const source = readFileSync(join(process.cwd(), "public", "sw.js"), "utf8");
+
+    expect(source).toContain('const CACHE_VERSION = "ollama-app-shell-v4"');
+  });
+
+  it("registers service worker updates without stale browser cache", () => {
+    const source = readFileSync(join(process.cwd(), "hooks", "useServiceWorker.ts"), "utf8");
+
+    expect(source).toContain('updateViaCache: "none"');
+    expect(source).toContain('"controllerchange"');
+    expect(source).toContain("nextRegistration.update()");
+  });
 });

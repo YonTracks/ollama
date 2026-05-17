@@ -1,4 +1,4 @@
-const CACHE_VERSION = "ollama-app-shell-v3";
+const CACHE_VERSION = "ollama-app-shell-v4";
 const STATIC_CACHE = `${CACHE_VERSION}:static`;
 const APP_SHELL = [
   "/",

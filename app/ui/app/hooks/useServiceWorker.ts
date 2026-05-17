@@ -22,13 +22,30 @@ export function useServiceWorker() {
     }
 
     let mounted = true;
+    let reloadingForUpdate = false;
+
+    const activateUpdate = (nextRegistration: ServiceWorkerRegistration) => {
+      if (!nextRegistration.waiting) return false;
+
+      reloadingForUpdate = true;
+      nextRegistration.waiting.postMessage({ type: "SKIP_WAITING" });
+      return true;
+    };
+
+    const handleControllerChange = () => {
+      if (!reloadingForUpdate) return;
+      window.location.reload();
+    };
+
+    navigator.serviceWorker.addEventListener("controllerchange", handleControllerChange);
 
     const register = async () => {
       setState((current) => ({ ...current, supported: true, installing: true }));
 
       try {
         const nextRegistration = await navigator.serviceWorker.register("/sw.js", {
-          scope: "/"
+          scope: "/",
+          updateViaCache: "none"
         });
 
         if (!mounted) return;
@@ -40,6 +57,7 @@ export function useServiceWorker() {
           updateReady: Boolean(nextRegistration.waiting),
           error: null
         });
+        if (activateUpdate(nextRegistration)) return;
 
         nextRegistration.addEventListener("updatefound", () => {
           const installing = nextRegistration.installing;
@@ -47,10 +65,13 @@ export function useServiceWorker() {
 
           installing.addEventListener("statechange", () => {
             if (installing.state === "installed" && navigator.serviceWorker.controller) {
+              activateUpdate(nextRegistration);
               setState((current) => ({ ...current, updateReady: true }));
             }
           });
         });
+
+        nextRegistration.update().catch(() => undefined);
       } catch (error) {
         if (!mounted) return;
         setState({
@@ -67,6 +88,7 @@ export function useServiceWorker() {
 
     return () => {
       mounted = false;
+      navigator.serviceWorker.removeEventListener("controllerchange", handleControllerChange);
     };
   }, []);
 

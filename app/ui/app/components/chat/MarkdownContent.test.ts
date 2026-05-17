@@ -121,11 +121,70 @@ describe("parseInlineMarkdown", () => {
       { type: "emphasis", content: "emphasis" },
       { type: "text", content: " here" }
     ]);
+
+    expect(parseInlineMarkdown("*text*")).toEqual([
+      { type: "emphasis", content: "text" }
+    ]);
+
+    expect(
+      parseInlineMarkdown(
+        "Plasma is the *substance* or the *medium*, and MHD is the *theory* or the *tool* used to describe the physics of that substance."
+      )
+    ).toEqual([
+      { type: "text", content: "Plasma is the " },
+      { type: "emphasis", content: "substance" },
+      { type: "text", content: " or the " },
+      { type: "emphasis", content: "medium" },
+      { type: "text", content: ", and MHD is the " },
+      { type: "emphasis", content: "theory" },
+      { type: "text", content: " or the " },
+      { type: "emphasis", content: "tool" },
+      { type: "text", content: " used to describe the physics of that substance." }
+    ]);
+
+    const html = renderToStaticMarkup(
+      createElement(MarkdownContent, {
+        content:
+          "Plasma is the *substance* or the *medium*, and MHD is the *theory* or the *tool* used to describe the physics of that substance."
+      })
+    );
+
+    expect(html).toContain("<em");
+    expect(html).not.toContain("*substance*");
+    expect(html).not.toContain("*tool*");
+
+    expect(
+      parseInlineMarkdown(
+        "Plasma is the \\*substance\\* or the \\*medium\\*, and MHD is the \\*theory\\* or the \\*tool\\* used to describe the physics of that substance."
+      )
+    ).toEqual([
+      { type: "text", content: "Plasma is the " },
+      { type: "emphasis", content: "substance" },
+      { type: "text", content: " or the " },
+      { type: "emphasis", content: "medium" },
+      { type: "text", content: ", and MHD is the " },
+      { type: "emphasis", content: "theory" },
+      { type: "text", content: " or the " },
+      { type: "emphasis", content: "tool" },
+      { type: "text", content: " used to describe the physics of that substance." }
+    ]);
+
+    expect(
+      parseInlineMarkdown(
+        "Plasma is the \\\\*substance\\\\* or the \\*medium* of the model."
+      )
+    ).toEqual([
+      { type: "text", content: "Plasma is the " },
+      { type: "emphasis", content: "substance" },
+      { type: "text", content: " or the " },
+      { type: "emphasis", content: "medium" },
+      { type: "text", content: " of the model." }
+    ]);
   });
 
   it("renders escaped markdown markers as literal text", () => {
-    expect(parseInlineMarkdown("\\*literal\\* and \\`tick\\` and \\| pipe")).toEqual([
-      { type: "text", content: "*literal* and `tick` and | pipe" }
+    expect(parseInlineMarkdown("literal \\* marker and \\`tick\\` and \\| pipe")).toEqual([
+      { type: "text", content: "literal * marker and `tick` and | pipe" }
     ]);
   });
 
@@ -146,6 +205,21 @@ describe("parseInlineMarkdown", () => {
       { type: "text", content: " " },
       { type: "math", content: [{ type: "text", content: "\u2192" }] },
       { type: "text", content: " next" }
+    ]);
+
+    expect(parseInlineMarkdown("$\\text{Action} (S) = \\int d^4x \\mathcal{L}$")).toEqual([
+      {
+        type: "math",
+        content: [{ type: "text", content: "Action (S) = \u222b d\u2074x \u2112" }]
+      }
+    ]);
+
+    expect(parseInlineMarkdown("The Lagrangian (\\mathcal{L})")).toEqual([
+      { type: "text", content: "The Lagrangian (\u2112)" }
+    ]);
+
+    expect(parseInlineMarkdown("(\\mathcal{E} = -\\frac{d\\Phi_B}{dt})")).toEqual([
+      { type: "text", content: "(\u2130 = -d\u03a6_B/dt)" }
     ]);
   });
 });

@@ -120,10 +120,39 @@ const LATEX_STRONG_COMMANDS = ["\\mathbf{", "\\textbf{"] as const;
 const LATEX_SYMBOLS: Record<string, string> = {
   "\\approx": "\u2248",
   "\\cdot": "\u00b7",
+  "\\int": "\u222b",
   "\\leftarrow": "\u2190",
+  "\\Phi": "\u03a6",
+  "\\phi": "\u03c6",
   "\\rightarrow": "\u2192",
   "\\times": "\u00d7",
   "\\to": "\u2192"
+};
+const LATEX_MATHCAL_SYMBOLS: Record<string, string> = {
+  E: "\u2130",
+  H: "\u210b",
+  I: "\u2110",
+  L: "\u2112",
+  M: "\u2133",
+  R: "\u211b"
+};
+const LATEX_SUPERSCRIPT_SYMBOLS: Record<string, string> = {
+  "0": "\u2070",
+  "1": "\u00b9",
+  "2": "\u00b2",
+  "3": "\u00b3",
+  "4": "\u2074",
+  "5": "\u2075",
+  "6": "\u2076",
+  "7": "\u2077",
+  "8": "\u2078",
+  "9": "\u2079",
+  "+": "\u207a",
+  "-": "\u207b",
+  "=": "\u207c",
+  "(": "\u207d",
+  ")": "\u207e",
+  n: "\u207f"
 };
 
 interface MarkdownListNode {
@@ -620,26 +649,63 @@ function findNextInlineMarker(text: string, from: number) {
       return latexStrong;
     }
 
-    if (char === "*" && !isEscaped(text, index) && text[index - 1] !== "*" && text[index + 1] !== "*") {
-      const end = findUnescaped(text, "*", index + 1);
-      const content = end > index ? text.slice(index + 1, end) : "";
-      if (
-        end > index + 1 &&
-        !content.includes("\n") &&
-        content.trim().length > 0 &&
-        !/^\s|\s$/.test(content)
-      ) {
-        return {
-          type: "emphasis" as const,
-          index,
-          end: end + 1,
-          content
-        };
-      }
+    const emphasis = findEmphasisMarker(text, index);
+    if (emphasis) {
+      return emphasis;
     }
   }
 
   return null;
+}
+
+function findEmphasisMarker(text: string, index: number) {
+  const opener = emphasisDelimiterAt(text, index);
+  if (!opener) return null;
+
+  const closer = findClosingEmphasisDelimiter(text, opener.end);
+  const content = closer ? text.slice(opener.end, closer.index) : "";
+  if (
+    closer &&
+    !content.includes("\n") &&
+    content.trim().length > 0 &&
+    !/^\s|\s$/.test(content)
+  ) {
+    return {
+      type: "emphasis" as const,
+      index,
+      end: closer.end,
+      content
+    };
+  }
+
+  return null;
+}
+
+function findClosingEmphasisDelimiter(text: string, from: number) {
+  for (let index = from; index < text.length; index++) {
+    const delimiter = emphasisDelimiterAt(text, index);
+    if (delimiter) return delimiter;
+  }
+
+  return null;
+}
+
+function emphasisDelimiterAt(text: string, index: number) {
+  const char = text[index];
+
+  if (char === "\\") {
+    let cursor = index;
+    while (text[cursor] === "\\") cursor++;
+
+    if (text[cursor] !== "*" || text[cursor + 1] === "*") return null;
+    return { index, end: cursor + 1 };
+  }
+
+  if (char !== "*") return null;
+  if (isEscaped(text, index)) return null;
+  if (text[index - 1] === "*" || text[index + 1] === "*") return null;
+
+  return { index, end: index + 1 };
 }
 
 function parseInlineMathContent(text: string): InlineTextStylePart[] {
@@ -726,9 +792,36 @@ function unescapeMarkdownText(text: string) {
 }
 
 function normalizeLatexInlineText(text: string) {
-  return text.replace(/\\(?:approx|cdot|leftarrow|rightarrow|times|to)\b/g, (match) => {
-    return LATEX_SYMBOLS[match] ?? match;
+  let normalized = text;
+
+  normalized = normalized.replace(/\\frac\{([^{}\n]+)\}\{([^{}\n]+)\}/g, (_, numerator, denominator) => {
+    return `${normalizeLatexInlineText(numerator)}/${normalizeLatexInlineText(denominator)}`;
   });
+
+  normalized = normalized.replace(/\\(?:text|mathrm)\{([^{}\n]+)\}/g, (_, content) => {
+    return normalizeLatexInlineText(content);
+  });
+
+  normalized = normalized.replace(/\\mathcal\{([^{}\n]+)\}/g, (_, content) => {
+    const trimmed = String(content).trim();
+    if (trimmed.length === 1) {
+      return LATEX_MATHCAL_SYMBOLS[trimmed] ?? trimmed;
+    }
+    return normalizeLatexInlineText(trimmed);
+  });
+
+  normalized = normalized.replace(
+    /\\(?:approx|cdot|int|leftarrow|Phi|phi|rightarrow|times|to)(?![A-Za-z])/g,
+    (match) => LATEX_SYMBOLS[match] ?? match
+  );
+
+  normalized = normalized.replace(/\\(?:left|right)(?=[()[\]{}|.])/g, "");
+  normalized = normalized.replace(/\^\{([^{}\n]+)\}|\^([A-Za-z0-9+\-=()])/g, (_, braced, single) => {
+    const value = braced ?? single;
+    return [...String(value)].map((char) => LATEX_SUPERSCRIPT_SYMBOLS[char] ?? `^${char}`).join("");
+  });
+
+  return normalized;
 }
 
 function findUnescaped(text: string, marker: string, from: number) {
