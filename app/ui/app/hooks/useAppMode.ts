@@ -1,10 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   getDefaultAppMode,
   readBrowserAppMode,
-  writeBrowserAppMode,
   type AppMode
 } from "@/lib/appMode";
 
@@ -17,18 +16,12 @@ export function useAppMode() {
     setReady(true);
   }, []);
 
-  const setMode = useCallback((nextMode: AppMode) => {
-    writeBrowserAppMode(nextMode);
-    setModeState(nextMode);
-  }, []);
-
   return useMemo(
     () => ({
       mode,
       ready,
-      standalone: mode === "standalone",
-      setMode
+      standalone: mode === "standalone"
     }),
-    [mode, ready, setMode]
+    [mode, ready]
   );
 }

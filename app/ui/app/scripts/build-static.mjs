@@ -18,7 +18,19 @@ try {
   await rm(disabledApiDir, { recursive: true, force: true });
   await rm(nextDevDir, { recursive: true, force: true });
   if (await exists(apiDir)) {
-    await rename(apiDir, disabledApiDir);
+    try {
+      await rename(apiDir, disabledApiDir);
+    } catch (error) {
+      if (isPermissionError(error)) {
+        console.error(
+          [
+            "Could not prepare the static export because app/api is locked.",
+            "Stop any running npm run dev or npm run dev:standalone server, then run the build again."
+          ].join("\n")
+        );
+      }
+      throw error;
+    }
     apiDisabled = true;
   }
 
@@ -56,6 +68,10 @@ async function exists(path) {
   } catch {
     return false;
   }
+}
+
+function isPermissionError(error) {
+  return Boolean(error && typeof error === "object" && "code" in error && error.code === "EPERM");
 }
 
 console.log("Static Next.js export copied to dist/");

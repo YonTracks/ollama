@@ -261,21 +261,6 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
     return deletedCount;
   };
 
-  const handleChangeMode = (mode: typeof appMode.mode) => {
-    if (mode === appMode.mode) return;
-    setActiveChatId(null);
-    appMode.setMode(mode);
-    showToast({
-      id: "app-mode",
-      title: mode === "standalone" ? "Standalone mode" : "Desktop app mode",
-      description:
-        mode === "standalone"
-          ? "The UI will use the core Ollama API and browser storage."
-          : "The UI will use the desktop app backend.",
-      tone: "info"
-    });
-  };
-
   const handleToggleSidebar = (sidebarOpen: boolean) => {
     setAllowMobileSidebarOpen(true);
     updateSettings({ sidebarOpen });
@@ -359,7 +344,6 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
         models={modelState.models}
         selectedModel={selectedModel}
         onClose={closeSettings}
-        onChangeMode={handleChangeMode}
         onSelectModel={handleSelectModel}
         onUpdateSettings={updateSettings}
         onRefreshConnection={handleRefreshConnection}

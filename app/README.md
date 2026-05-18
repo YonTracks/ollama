@@ -11,7 +11,7 @@
 
 ```bash
 go generate ./... &&
-go run ./cmd/app
+go run ./app/cmd/app
 ```
 
 ### UI Development
@@ -28,20 +28,37 @@ Use Go 1.26.3 or newer when building the app. Earlier Go 1.26 patch releases inc
 
 #### Develop UI (Development Mode)
 
-1. Start the Next.js development server (with hot-reload):
+Quit the installed taskbar app (if running) before launching `go run ./app/cmd/app -dev` or `ollama serve` so
+the existing-instance guard does not focus the packaged app instead of your dev
+process.
+
+1. Start the core Ollama API:
 
 ```bash
-cd ui/app
-npm install
+ollama serve
+```
+
+For more server detail, use `OLLAMA_DEBUG=1 ollama serve` for DEBUG logs or
+`OLLAMA_DEBUG=2 ollama serve` for TRACE logs. TRACE is more verbose and is most
+useful when diagnosing parser/tool/model-runner behavior.
+
+2. In a second terminal, from the repository root, start the Next.js development server (with hot-reload):
+
+```bash
+cd app/ui/app
+npm install # only needed once
 npm run dev
 ```
 
-2. In a separate terminal, run the Ollama app with the `-dev` flag:
+3. In a third terminal, from the repository root, run the Ollama app with the `-dev` flag:
 
 ```bash
-go generate ./... &&
-OLLAMA_DEBUG=1 go run ./cmd/app -dev
+OLLAMA_DEBUG=1 go run ./app/cmd/app -dev
 ```
+
+Use `OLLAMA_DEBUG=1` for desktop app shell debug logs and WebView dev behavior.
+`OLLAMA_DEBUG=2` is the TRACE level for the core Ollama API and model runners,
+so put it on the `ollama serve` process when you need the extra detail.
 
 The `-dev` flag enables:
 
@@ -50,12 +67,44 @@ The `-dev` flag enables:
 - CORS headers for cross-origin requests
 - Hot-reload support for UI development
 
+Keep these as three separate processes while developing: `ollama serve`, the
+Next.js dev server, and the desktop app shell.
+
+Logs are split by process during development:
+
+- `ollama serve` prints live core server logs in terminal 1.
+- `npm run dev` prints Next.js UI logs in terminal 2.
+- `go run ./app/cmd/app -dev` prints desktop app shell logs in terminal 3.
+
+Debug levels for the core Ollama API are `OLLAMA_DEBUG=1` for DEBUG and
+`OLLAMA_DEBUG=2` for TRACE. Use TRACE sparingly because it is much noisier and
+can include parser, tool, and runner detail that is not normally needed.
+
+When using the installed taskbar app instead of manual terminals, view logs in
+`%LOCALAPPDATA%\Ollama` on Windows or `~/.ollama/logs` on macOS. `app.log`
+contains GUI app logs, `server.log` contains core server logs, and rotated logs
+use suffixes such as `app-1.log` and `server-1.log`.
+
+For desktop hot-reload, use `npm run dev`, not `npm run dev:standalone`.
+Standalone mode is a separate browser/PWA entrypoint that talks directly to the
+core Ollama API and stores chats in browser IndexedDB.
+For standalone browser testing, the core API can come from `ollama serve` or
+from the installed Ollama taskbar app if it is already serving
+`http://127.0.0.1:11434`. Use one core API source at a time, not both.
+Standalone still does not use the desktop app backend for chats, settings, or
+tools.
+
+Run `go generate ./...` from the repository root only when you need to refresh
+generated TypeScript or embedded static UI assets. Stop any running
+`npm run dev` or `npm run dev:standalone` server first; on Windows, Next.js can
+hold `app/ui/app/app/api` open and block the static export step.
+
 #### Desktop tool development
 
 Desktop Agent / Tools settings are hidden by default. To expose read-only local tools during development, launch the desktop app with:
 
 ```bash
-OLLAMA_DESKTOP_TOOLS=1 go run ./cmd/app -dev
+OLLAMA_DESKTOP_TOOLS=1 go run ./app/cmd/app -dev
 ```
 
 The registered desktop tools are `desktop.list_files`, `desktop.read_text_file`, and `desktop.search_files`. They are scoped to the working directory selected in settings, reject path escapes, and skip hidden files plus common generated/dependency folders by default.

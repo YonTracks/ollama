@@ -9,19 +9,56 @@ This directory contains the static Next.js App Router UI embedded by the desktop
 - Set `NEXT_PUBLIC_OLLAMA_API_BASE` to point the UI at a different local app server.
 - `http://localhost:5173` is the UI shell only; the full desktop UI still needs the app backend APIs on `http://127.0.0.1:3001`.
 
-### `ollama serve` only
+Desktop UI hot-reload uses three separate processes:
 
-`ollama serve` usually runs the core model API on `http://127.0.0.1:11434`.
-Use standalone mode to run the browser UI without the desktop app backend:
+1. `ollama serve` for the core model API and live server console logs.
+2. `npm run dev` in this directory for the Next.js UI and UI console logs.
+3. `OLLAMA_DEBUG=1 go run ./app/cmd/app -dev` from the repository root for the desktop shell and app console logs.
+
+Debug levels for the core Ollama API are `OLLAMA_DEBUG=1` for DEBUG and
+`OLLAMA_DEBUG=2` for TRACE. Use `OLLAMA_DEBUG=2 ollama serve` when you need
+very verbose parser, tool, or model-runner detail. The desktop shell itself
+uses `OLLAMA_DEBUG=1` for app debug logs and WebView dev behavior.
+
+When using the installed taskbar app instead of manual terminals, view logs in
+`%LOCALAPPDATA%\Ollama` on Windows or `~/.ollama/logs` on macOS. `app.log`
+contains GUI app logs, `server.log` contains core server logs, and rotated logs
+use suffixes such as `app-1.log` and `server-1.log`.
+
+Use `npm run dev:standalone` only for standalone browser/PWA testing against
+a local core Ollama API. That API can come from `ollama serve` or from the
+installed Ollama taskbar app if it is already serving `http://127.0.0.1:11434`.
+Use one core API source at a time, not both.
+
+### Standalone browser mode
+
+Standalone mode runs the browser UI without the desktop app backend. It talks
+directly to the core Ollama API, usually at `http://127.0.0.1:11434`.
+
+Start one local Ollama process first, either:
+
+- `ollama serve`
+- The installed Ollama taskbar app, if it is already running and serving `http://127.0.0.1:11434`
+
+Use one of those core API sources at a time. If you are using `ollama serve`,
+watch server logs in that terminal, optionally with `OLLAMA_DEBUG=1` or
+`OLLAMA_DEBUG=2` for more detail. If you are using the installed taskbar app,
+watch `server.log` and `app.log` in the local Ollama logs directory.
+
+Then run:
 
 - `npm run dev:standalone` starts Next.js on `http://localhost:5173` with the UI pointed at `http://127.0.0.1:11434`.
 - `npm run build:standalone` exports a standalone static build.
 - `NEXT_PUBLIC_OLLAMA_CORE_API_BASE` can point standalone mode at another local Ollama server.
-- `http://localhost:5173?mode=standalone` persists standalone mode for that browser profile.
+- The desktop taskbar app always runs in desktop mode. It does not switch into standalone browser storage.
 
 Standalone mode uses `/api/version`, `/api/tags`, and `/api/chat`, stores chats
 in IndexedDB, stores standalone settings in local storage, and avoids `/api/v1/*`.
 Desktop-app-only settings are hidden in this mode.
+
+Do not use `go generate ./...` while a Next dev server is running. The generate
+step runs the static export, and on Windows the active dev server can keep
+`app/api` open long enough to block the temporary rename used during export.
 
 ## Context features
 

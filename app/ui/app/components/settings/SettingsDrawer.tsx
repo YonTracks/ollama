@@ -88,7 +88,6 @@ interface SettingsDrawerProps {
   models: OllamaModel[];
   selectedModel: string;
   onClose(): void;
-  onChangeMode(mode: AppMode): void;
   onSelectModel(model: string, options?: ToastOptions): Promise<boolean | void> | boolean | void;
   onUpdateSettings(updates: Partial<LocalSettings>): Promise<boolean | void> | boolean | void;
   onRefreshConnection(options?: ToastOptions): Promise<boolean | void> | boolean | void;
@@ -108,7 +107,6 @@ export function SettingsDrawer({
   models,
   selectedModel,
   onClose,
-  onChangeMode,
   onSelectModel,
   onUpdateSettings,
   onRefreshConnection,
@@ -726,20 +724,6 @@ export function SettingsDrawer({
                 }
               >
                 <ConnectionIndicator connection={connection} />
-                <div className="flex flex-col items-stretch gap-2 rounded-md border border-border bg-panel-strong px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
-                  <label htmlFor="app-mode" className="text-sm font-medium">
-                    Mode
-                  </label>
-                  <select
-                    id="app-mode"
-                    value={appMode}
-                    onChange={(event) => onChangeMode(event.target.value as AppMode)}
-                    className="h-9 min-w-0 rounded-md border border-border bg-background px-2 text-sm focus:focus-ring sm:w-auto"
-                  >
-                    <option value="desktop">Desktop app</option>
-                    <option value="standalone">Standalone</option>
-                  </select>
-                </div>
                 <div className="rounded-md border border-border bg-panel-strong px-3 py-2 text-sm">
                   <div className="mb-1 flex items-center gap-2 text-muted-foreground">
                     <Server className="h-4 w-4" />
@@ -768,7 +752,16 @@ export function SettingsDrawer({
                       Standalone mode uses the core Ollama API and stores chats in this browser.
                     </Notice>
                   </>
-                ) : null}
+                ) : (
+                  <div className="rounded-md border border-border bg-panel-strong px-3 py-3 text-sm leading-6 text-muted-foreground">
+                    Desktop app mode is launched from the taskbar app and uses the desktop backend
+                    for chats and settings. Standalone browser mode is launched separately with
+                    <code className="mx-1 rounded bg-muted px-1 py-0.5 text-xs text-foreground">
+                      npm run dev:standalone
+                    </code>
+                    or a standalone build.
+                  </div>
+                )}
               </SettingsSection>
 
               {!standalone ? (
