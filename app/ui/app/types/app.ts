@@ -2,6 +2,8 @@ export type ConnectionStatus = "checking" | "connected" | "disconnected" | "offl
 
 export type ContextManagementMode = "strict" | "friendly";
 export type RetrievalMemoryScope = "current" | "selected" | "all";
+export type WebSearchProvider = "off" | "brave" | "tavily" | "exa" | "ollama" | "custom";
+export type WebSearchMode = "off" | "manual" | "auto";
 
 export interface LocalSettings {
   selectedModel: string;
@@ -28,7 +30,9 @@ export interface LocalSettings {
   retrievalLimit: number;
   expertMode: boolean;
   expertInstructions: string;
+  webSearchMode: WebSearchMode;
   webSearchEnabled: boolean;
+  webSearchProvider: WebSearchProvider;
   thinkEnabled: boolean;
   thinkLevel: "none" | "low" | "medium" | "high";
   autoUpdateEnabled: boolean;

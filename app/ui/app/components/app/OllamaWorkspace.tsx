@@ -372,9 +372,17 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
 }
 
 function quickSettingsToastDescription(updates: Partial<LocalSettings>) {
-  if ("webSearchEnabled" in updates) {
-    return updates.webSearchEnabled ? "Web search enabled." : "Web search disabled.";
+  if ("webSearchMode" in updates) {
+    if (updates.webSearchMode === "auto") return "Web search auto mode enabled.";
+    if (updates.webSearchMode === "manual") return "Web search manual mode enabled.";
+    return "Web search disabled.";
   }
+  if ("webSearchEnabled" in updates) {
+    return updates.webSearchEnabled
+      ? "Manual web search enabled."
+      : "Manual web search disabled.";
+  }
+  if ("webSearchProvider" in updates) return "Web search provider updated.";
   if ("thinkEnabled" in updates) {
     return updates.thinkEnabled ? "Thinking enabled." : "Thinking disabled.";
   }

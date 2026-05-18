@@ -154,10 +154,23 @@ func TestStore(t *testing.T) {
 	t.Run("create and retrieve chat", func(t *testing.T) {
 		chat := NewChat("test-chat-1")
 		chat.Title = "Test Chat"
+		searched := true
 
 		chat.Messages = append(chat.Messages, NewMessage("user", "Hello", nil))
 		chat.Messages = append(chat.Messages, NewMessage("assistant", "Hi there!", &MessageOptions{
-			Model: "llama4",
+			Model:             "llama4",
+			WebSearchMode:     "auto",
+			WebSearchProvider: "brave",
+			WebSearchResults: []MessageSearchResult{
+				{
+					Title:   "Example result",
+					URL:     "https://example.test/source",
+					Content: "Snippet",
+					Engine:  "brave",
+				},
+			},
+			WebSearchReason:   "freshness or current-info signal",
+			WebSearchSearched: &searched,
 		}))
 
 		if err := s.SetChat(*chat); err != nil {
@@ -183,6 +196,14 @@ func TestStore(t *testing.T) {
 		}
 		if retrieved.Messages[1].Content != "Hi there!" {
 			t.Errorf("expected second message 'Hi there!', got %s", retrieved.Messages[1].Content)
+		}
+		if retrieved.Messages[1].WebSearchMode != "auto" ||
+			retrieved.Messages[1].WebSearchProvider != "brave" ||
+			retrieved.Messages[1].WebSearchSearched == nil ||
+			!*retrieved.Messages[1].WebSearchSearched ||
+			len(retrieved.Messages[1].WebSearchResults) != 1 ||
+			retrieved.Messages[1].WebSearchResults[0].URL != "https://example.test/source" {
+			t.Fatalf("expected web search metadata to persist, got %#v", retrieved.Messages[1])
 		}
 	})
 

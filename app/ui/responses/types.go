@@ -131,31 +131,64 @@ type Attachment struct {
 }
 
 type ChatRequest struct {
-	Model                    string       `json:"model"`
-	Prompt                   string       `json:"prompt"`
-	Index                    *int         `json:"index,omitempty"`
-	Attachments              []Attachment `json:"attachments,omitempty"`
-	Width                    int32        `json:"width,omitempty"`
-	Height                   int32        `json:"height,omitempty"`
-	Steps                    int32        `json:"steps,omitempty"`
-	WebSearch                *bool        `json:"web_search,omitempty"`
-	FileTools                *bool        `json:"file_tools,omitempty"`
-	ForceUpdate              bool         `json:"forceUpdate,omitempty"`
-	Think                    any          `json:"think,omitempty"`
-	ContextMode              string       `json:"contextMode,omitempty"`
-	NumCtx                   *int         `json:"numCtx,omitempty"`
-	NumPredict               *int         `json:"numPredict,omitempty"`
-	ReserveOutputTokens      int          `json:"reserveOutputTokens,omitempty"`
-	NearFullThresholdPercent int          `json:"nearFullThresholdPercent,omitempty"`
-	EnableAutoTrim           *bool        `json:"enableAutoTrim,omitempty"`
-	EnableAutoSummarize      *bool        `json:"enableAutoSummarize,omitempty"`
-	EnableRetrieval          *bool        `json:"enableRetrieval,omitempty"`
-	RetrievalScope           string       `json:"retrievalScope,omitempty"`
-	RetrievalChatIDs         []string     `json:"retrievalChatIds,omitempty"`
-	RetrievalExcludedChatIDs []string     `json:"retrievalExcludedChatIds,omitempty"`
-	RetrievalLimit           int          `json:"retrievalLimit,omitempty"`
-	ExpertMode               *bool        `json:"expertMode,omitempty"`
-	ExpertInstructions       string       `json:"expertInstructions,omitempty"`
+	Model                    string         `json:"model"`
+	Prompt                   string         `json:"prompt"`
+	Index                    *int           `json:"index,omitempty"`
+	Attachments              []Attachment   `json:"attachments,omitempty"`
+	Width                    int32          `json:"width,omitempty"`
+	Height                   int32          `json:"height,omitempty"`
+	Steps                    int32          `json:"steps,omitempty"`
+	WebSearch                *bool          `json:"web_search,omitempty"`
+	FileTools                *bool          `json:"file_tools,omitempty"`
+	ForceUpdate              bool           `json:"forceUpdate,omitempty"`
+	Think                    any            `json:"think,omitempty"`
+	ContextMode              string         `json:"contextMode,omitempty"`
+	NumCtx                   *int           `json:"numCtx,omitempty"`
+	NumPredict               *int           `json:"numPredict,omitempty"`
+	ReserveOutputTokens      int            `json:"reserveOutputTokens,omitempty"`
+	NearFullThresholdPercent int            `json:"nearFullThresholdPercent,omitempty"`
+	EnableAutoTrim           *bool          `json:"enableAutoTrim,omitempty"`
+	EnableAutoSummarize      *bool          `json:"enableAutoSummarize,omitempty"`
+	EnableRetrieval          *bool          `json:"enableRetrieval,omitempty"`
+	RetrievalScope           string         `json:"retrievalScope,omitempty"`
+	RetrievalChatIDs         []string       `json:"retrievalChatIds,omitempty"`
+	RetrievalExcludedChatIDs []string       `json:"retrievalExcludedChatIds,omitempty"`
+	RetrievalLimit           int            `json:"retrievalLimit,omitempty"`
+	ExpertMode               *bool          `json:"expertMode,omitempty"`
+	ExpertInstructions       string         `json:"expertInstructions,omitempty"`
+	WebSearchContext         string         `json:"webSearchContext,omitempty"`
+	WebSearchMode            string         `json:"webSearchMode,omitempty"`
+	WebSearchProvider        string         `json:"webSearchProvider,omitempty"`
+	WebSearchResults         []SearchResult `json:"webSearchResults,omitempty"`
+	WebSearchError           string         `json:"webSearchError,omitempty"`
+	WebSearchReason          string         `json:"webSearchReason,omitempty"`
+	WebSearchSearched        *bool          `json:"webSearchSearched,omitempty"`
+}
+
+type SearchResult struct {
+	Title         string   `json:"title"`
+	URL           string   `json:"url"`
+	Content       string   `json:"content"`
+	Source        string   `json:"source,omitempty"`
+	Engine        string   `json:"engine,omitempty"`
+	Score         *float64 `json:"score,omitempty"`
+	PublishedDate string   `json:"publishedDate,omitempty"`
+}
+
+type SearchResponse struct {
+	Provider string         `json:"provider"`
+	Query    string         `json:"query"`
+	Disabled bool           `json:"disabled"`
+	Results  []SearchResult `json:"results"`
+	Message  string         `json:"message,omitempty"`
+	Error    string         `json:"error,omitempty"`
+}
+
+type SearchHealthResponse struct {
+	Provider   string  `json:"provider"`
+	Configured bool    `json:"configured"`
+	Reachable  bool    `json:"reachable"`
+	Error      *string `json:"error"`
 }
 
 type Error struct {

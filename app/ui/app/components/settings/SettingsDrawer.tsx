@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
+  AlertCircle,
   Bolt,
   BrainCircuit,
   CheckCircle2,
@@ -41,6 +42,7 @@ import {
   SAME_ORIGIN_CORE_API_BASE,
   getCoreApiBase
 } from "@/lib/ollama/standalone";
+import { fetchSearchHealth } from "@/lib/search/client";
 import { cn, formatBytes } from "@/lib/utils";
 import type { useOllamaConnection } from "@/hooks/useOllamaConnection";
 import type { AppMode } from "@/lib/appMode";
@@ -50,6 +52,7 @@ import type {
   OllamaModel,
   OllamaUser
 } from "@/lib/ollama/types";
+import type { SearchHealthResponse } from "@/lib/search/types";
 import type { LocalSettings } from "@/types/app";
 
 const CONTEXT_LENGTH_OPTIONS = [4096, 8192, 16384, 32768, 65536, 131072, 262144];
@@ -130,6 +133,9 @@ export function SettingsDrawer({
   const [activeTab, setActiveTab] = useState<SettingsTabId>("general");
   const [memoryChatSearch, setMemoryChatSearch] = useState("");
   const [excludedMemorySearch, setExcludedMemorySearch] = useState("");
+  const [searchHealth, setSearchHealth] = useState<SearchHealthResponse | null>(null);
+  const [searchHealthLoading, setSearchHealthLoading] = useState(false);
+  const [searchHealthError, setSearchHealthError] = useState<string | null>(null);
 
   const standalone = appMode === "standalone";
   const cloudOverriddenByEnv = cloudStatus?.source === "env" || cloudStatus?.source === "both";
@@ -257,6 +263,29 @@ export function SettingsDrawer({
     return () => controller.abort();
   }, [connection.status, open, standalone]);
 
+  useEffect(() => {
+    if (!open || activeTab !== "chat") return;
+
+    const controller = new AbortController();
+    setSearchHealthLoading(true);
+    setSearchHealthError(null);
+    fetchSearchHealth(settings.webSearchProvider, controller.signal)
+      .then(setSearchHealth)
+      .catch((error) => {
+        if (!controller.signal.aborted) {
+          setSearchHealth(null);
+          setSearchHealthError(
+            error instanceof Error ? error.message : "Provider health check failed."
+          );
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setSearchHealthLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [activeTab, open, settings.webSearchProvider]);
+
   const showSaved = (restart = false) => {
     setSaved(true);
     window.setTimeout(() => setSaved(false), 1500);
@@ -298,6 +327,13 @@ export function SettingsDrawer({
 
   const handleRetrievalScopeUpdate = (retrievalScope: LocalSettings["retrievalScope"]) => {
     handleUpdate({ retrievalScope });
+  };
+
+  const handleWebSearchModeUpdate = (webSearchMode: LocalSettings["webSearchMode"]) => {
+    handleUpdate({
+      webSearchMode,
+      webSearchEnabled: webSearchMode === "manual" ? settings.webSearchEnabled : false
+    });
   };
 
   const handleToggleMemoryChat = (chatId: string, checked: boolean) => {
@@ -453,12 +489,44 @@ export function SettingsDrawer({
     );
   };
 
+  const handleTestSearchProvider = async () => {
+    setSearchHealthLoading(true);
+    setSearchHealthError(null);
+    try {
+      const health = await fetchSearchHealth(settings.webSearchProvider);
+      setSearchHealth(health);
+      showToast({
+        id: "web-search-health",
+        title: "Provider checked",
+        description: searchHealthToastDescription(health),
+        tone: health.configured && !health.error ? "success" : "warning",
+        duration: health.configured && !health.error ? 3000 : 7000
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Provider health check failed.";
+      setSearchHealth(null);
+      setSearchHealthError(message);
+      showToast({
+        id: "web-search-health",
+        title: "Provider check failed",
+        description: message,
+        tone: "danger",
+        duration: 7000
+      });
+    } finally {
+      setSearchHealthLoading(false);
+    }
+  };
+
   const handleResetToDefaults = async () => {
     if (standalone) {
       await handleUpdate({
         selectedModel: "",
         coreApiBase: "",
+        webSearchMode: "off",
         webSearchEnabled: false,
+        webSearchProvider: "off",
         thinkEnabled: true,
         thinkLevel: "none",
         compactMessages: false,
@@ -505,6 +573,9 @@ export function SettingsDrawer({
         retrievalLimit: 4,
         expertMode: false,
         expertInstructions: "",
+        webSearchMode: "off",
+        webSearchEnabled: false,
+        webSearchProvider: "off",
         autoUpdateEnabled: true,
         imageGenerationWidth: 1024,
         imageGenerationHeight: 1024,
@@ -929,13 +1000,43 @@ export function SettingsDrawer({
 
           {activeTab === "chat" ? (
           <SettingsSection title="Chat">
-            {!standalone ? (
-              <ToggleRow
-                icon={<Cloud className="h-4 w-4" />}
-                label="Web search"
-                checked={settings.webSearchEnabled}
-                onChange={(webSearchEnabled) => handleUpdate({ webSearchEnabled })}
-              />
+            <WebSearchModeRow
+              value={settings.webSearchMode}
+              manualEnabled={settings.webSearchEnabled}
+              onChange={handleWebSearchModeUpdate}
+              onManualToggle={(webSearchEnabled) => handleUpdate({ webSearchEnabled })}
+            />
+            {settings.webSearchMode !== "off" ? (
+              <>
+                <div className="flex flex-col items-stretch gap-2 rounded-md border border-border bg-panel-strong px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <label htmlFor="web-search-provider" className="text-sm">
+                    Search provider
+                  </label>
+                  <select
+                    id="web-search-provider"
+                    value={settings.webSearchProvider}
+                    onChange={(event) =>
+                      handleUpdate({
+                        webSearchProvider: event.target.value as LocalSettings["webSearchProvider"]
+                      })
+                    }
+                    className="h-9 min-w-0 rounded-md border border-border bg-background px-2 text-sm focus:focus-ring sm:w-auto"
+                  >
+                    <option value="off">Off</option>
+                    <option value="brave">Brave</option>
+                    <option value="tavily">Tavily</option>
+                    <option value="exa">Exa</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                </div>
+                <SearchProviderStatusRow
+                  health={searchHealth}
+                  loading={searchHealthLoading}
+                  error={searchHealthError}
+                  onTest={handleTestSearchProvider}
+                />
+              </>
             ) : null}
             <ToggleRow
               icon={<Bolt className="h-4 w-4" />}
@@ -1514,6 +1615,176 @@ function DesktopToolModeRow({
   );
 }
 
+function WebSearchModeRow({
+  value,
+  manualEnabled,
+  onChange,
+  onManualToggle
+}: {
+  value: LocalSettings["webSearchMode"];
+  manualEnabled: boolean;
+  onChange(value: LocalSettings["webSearchMode"]): void;
+  onManualToggle(enabled: boolean): void;
+}) {
+  const options: Array<{
+    value: LocalSettings["webSearchMode"];
+    label: string;
+    Icon: LucideIcon;
+  }> = [
+    { value: "off", label: "Off", Icon: Shield },
+    { value: "manual", label: "Manual", Icon: Search },
+    { value: "auto", label: "Auto", Icon: Cloud }
+  ];
+  const description =
+    value === "auto"
+      ? "Searches only when the prompt has a clear freshness, docs, current-info, or lookup signal."
+      : value === "manual"
+        ? "Searches only when the Web button is enabled for a message."
+        : "Never calls the web search provider.";
+
+  return (
+    <div className="rounded-md border border-border bg-panel-strong px-3 py-3">
+      <div className="mb-3 flex items-start gap-3">
+        <span className="mt-0.5 flex h-6 w-6 flex-none items-center justify-center text-accent">
+          <Cloud className="h-4 w-4" />
+        </span>
+        <span className="min-w-0">
+          <span className="block text-sm font-medium">Web search mode</span>
+          <span className="mt-0.5 block text-xs text-muted-foreground">{description}</span>
+        </span>
+      </div>
+      <div className="grid grid-cols-3 gap-1 rounded-md border border-border bg-background p-1">
+        {options.map(({ value: optionValue, label, Icon }) => {
+          const active = optionValue === value;
+          return (
+            <button
+              key={optionValue}
+              type="button"
+              aria-pressed={active}
+              onClick={() => onChange(optionValue)}
+              className={cn(
+                "flex h-9 items-center justify-center gap-2 rounded-sm px-2 text-sm transition focus:focus-ring",
+                active
+                  ? "bg-accent text-accent-foreground"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
+              )}
+            >
+              <Icon className="h-4 w-4 flex-none" />
+              <span className="truncate">{label}</span>
+            </button>
+          );
+        })}
+      </div>
+      {value === "manual" ? (
+        <label className="mt-3 flex items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-2">
+          <span className="text-sm">Manual Web button default</span>
+          <input
+            type="checkbox"
+            checked={manualEnabled}
+            onChange={(event) => onManualToggle(event.target.checked)}
+            className="h-5 w-5 flex-none accent-(--accent) focus:focus-ring"
+          />
+        </label>
+      ) : null}
+    </div>
+  );
+}
+
+function SearchProviderStatusRow({
+  health,
+  loading,
+  error,
+  onTest
+}: {
+  health: SearchHealthResponse | null;
+  loading: boolean;
+  error: string | null;
+  onTest(): void;
+}) {
+  const configStatus = searchConfigStatus(health, error);
+  const reachabilityStatus = searchReachabilityStatus(health, error);
+
+  return (
+    <div className="rounded-md border border-border bg-panel-strong px-3 py-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <div className="text-sm font-medium">Provider status</div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <StatusChip
+              label={configStatus.label}
+              tone={configStatus.tone}
+              Icon={configStatus.Icon}
+            />
+            <StatusChip
+              label={loading ? "Checking" : reachabilityStatus.label}
+              tone={loading ? "info" : reachabilityStatus.tone}
+              Icon={loading ? RefreshCcw : reachabilityStatus.Icon}
+              spin={loading}
+            />
+          </div>
+          {error || health?.error ? (
+            <div className="mt-2 text-xs leading-5 text-warning">
+              {error ?? health?.error}
+            </div>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          onClick={onTest}
+          disabled={loading}
+          className="inline-flex h-9 flex-none items-center justify-center gap-2 rounded-md border border-border px-3 text-sm transition hover:bg-muted focus:focus-ring disabled:opacity-55"
+        >
+          <RefreshCcw className={cn("h-4 w-4", loading && "animate-spin")} />
+          Test provider
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function StatusChip({
+  label,
+  tone,
+  Icon,
+  spin
+}: {
+  label: string;
+  tone: "success" | "warning" | "danger" | "info";
+  Icon: LucideIcon;
+  spin?: boolean;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs",
+        tone === "success" && "border-success/30 bg-success/10 text-success",
+        tone === "warning" && "border-warning/30 bg-warning/10 text-warning",
+        tone === "danger" && "border-danger/30 bg-danger/10 text-danger",
+        tone === "info" && "border-accent/30 bg-accent/10 text-accent"
+      )}
+    >
+      <Icon className={cn("h-3.5 w-3.5", spin && "animate-spin")} />
+      {label}
+    </span>
+  );
+}
+
+function searchConfigStatus(health: SearchHealthResponse | null, error: string | null) {
+  if (error) return { label: "Error", tone: "danger" as const, Icon: AlertCircle };
+  if (!health) return { label: "Configured", tone: "info" as const, Icon: CheckCircle2 };
+  if (!health.configured) {
+    return { label: "Not configured", tone: "warning" as const, Icon: AlertCircle };
+  }
+  return { label: "Configured", tone: "success" as const, Icon: CheckCircle2 };
+}
+
+function searchReachabilityStatus(health: SearchHealthResponse | null, error: string | null) {
+  if (error || health?.error) return { label: "Error", tone: "danger" as const, Icon: AlertCircle };
+  if (!health) return { label: "Reachability unknown", tone: "info" as const, Icon: Wifi };
+  if (health.reachable) return { label: "Reachable", tone: "success" as const, Icon: Wifi };
+  return { label: "Reachability unknown", tone: "info" as const, Icon: Wifi };
+}
+
 function NumericRow({
   label,
   value,
@@ -1699,9 +1970,17 @@ function settingsToastDescription(updates: Partial<LocalSettings>) {
       ? "Automatic update downloads enabled."
       : "Automatic update downloads disabled.";
   }
-  if ("webSearchEnabled" in updates) {
-    return updates.webSearchEnabled ? "Web search enabled." : "Web search disabled.";
+  if ("webSearchMode" in updates) {
+    if (updates.webSearchMode === "auto") return "Web search auto mode enabled.";
+    if (updates.webSearchMode === "manual") return "Web search manual mode enabled.";
+    return "Web search disabled.";
   }
+  if ("webSearchEnabled" in updates) {
+    return updates.webSearchEnabled
+      ? "Manual web search enabled for messages."
+      : "Manual web search disabled for messages.";
+  }
+  if ("webSearchProvider" in updates) return "Web search provider updated.";
   if ("thinkEnabled" in updates) {
     return updates.thinkEnabled ? "Thinking enabled." : "Thinking disabled.";
   }
@@ -1759,6 +2038,13 @@ function desktopToolModeToastDescription(mode: DesktopToolMode) {
   if (mode === "agent") return "Agent mode enabled.";
   if (mode === "tools") return "Tools mode enabled.";
   return "Desktop tools disabled.";
+}
+
+function searchHealthToastDescription(health: SearchHealthResponse) {
+  if (health.error) return health.error;
+  if (!health.configured) return `${health.provider} is not configured.`;
+  if (health.reachable) return `${health.provider} is configured and reachable.`;
+  return `${health.provider} is configured. Reachability was not tested to avoid provider quota.`;
 }
 
 async function selectNativeDirectory(kind: "models" | "working") {

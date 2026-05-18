@@ -1,4 +1,4 @@
-import { cp, rm, stat } from "node:fs/promises";
+import { cp, rename, rm, stat } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,23 +7,53 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const nextBin = join(root, "node_modules", "next", "dist", "bin", "next");
 const outDir = join(root, "out");
 const distDir = join(root, "dist");
+const apiDir = join(root, "app", "api");
+const disabledApiDir = join(root, ".api-disabled-for-static-export");
 
-const result = spawnSync(process.execPath, [nextBin, "build"], {
-  cwd: root,
-  stdio: "inherit",
-  env: process.env
-});
+let apiDisabled = false;
+let exitCode = 0;
 
-if (result.status !== 0) {
-  process.exit(result.status ?? 1);
+try {
+  await rm(disabledApiDir, { recursive: true, force: true });
+  if (await exists(apiDir)) {
+    await rename(apiDir, disabledApiDir);
+    apiDisabled = true;
+  }
+
+  const result = spawnSync(process.execPath, [nextBin, "build"], {
+    cwd: root,
+    stdio: "inherit",
+    env: process.env
+  });
+
+  if (result.status !== 0) {
+    exitCode = result.status ?? 1;
+  } else {
+    await rm(distDir, { recursive: true, force: true });
+    await cp(outDir, distDir, { recursive: true });
+    await rm(outDir, { recursive: true, force: true });
+
+    for (const required of ["index.html", "manifest.webmanifest", "sw.js"]) {
+      await stat(join(distDir, required));
+    }
+  }
+} finally {
+  if (apiDisabled) {
+    await rename(disabledApiDir, apiDir);
+  }
 }
 
-await rm(distDir, { recursive: true, force: true });
-await cp(outDir, distDir, { recursive: true });
-await rm(outDir, { recursive: true, force: true });
+if (exitCode !== 0) {
+  process.exit(exitCode);
+}
 
-for (const required of ["index.html", "manifest.webmanifest", "sw.js"]) {
-  await stat(join(distDir, required));
+async function exists(path) {
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 console.log("Static Next.js export copied to dist/");

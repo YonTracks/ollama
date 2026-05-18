@@ -150,6 +150,34 @@ func TestPrepareContextChatUsesInjectedRetriever(t *testing.T) {
 	}
 }
 
+func TestPrepareContextChatAddsWebSearchContext(t *testing.T) {
+	chat := &store.Chat{
+		ID: "chat",
+		Messages: []store.Message{
+			store.NewMessage("user", "What changed in Ollama?", nil),
+		},
+	}
+
+	prepared, _ := prepareContextChat(chat, contextRequestSettings{
+		Mode:                     "friendly",
+		ReserveOutputTokens:      40,
+		NearFullThresholdPercent: 85,
+		EnableAutoTrim:           true,
+		WebSearchContext:         "Web search results:\n1. Ollama release notes\nURL: https://example.test/ollama\nSnippet: Release details.",
+	})
+
+	if len(prepared.Messages) < 2 || prepared.Messages[0].Role != "system" {
+		t.Fatalf("expected web search system message before user message")
+	}
+	if !strings.Contains(prepared.Messages[0].Content, "Web search results:") ||
+		!strings.Contains(prepared.Messages[0].Content, "https://example.test/ollama") {
+		t.Fatalf("web search context missing from synthetic message: %q", prepared.Messages[0].Content)
+	}
+	if prepared.Messages[1].Content != "What changed in Ollama?" {
+		t.Fatalf("expected original user message to remain clean, got %q", prepared.Messages[1].Content)
+	}
+}
+
 func TestPrepareContextChatBoostsRememberedName(t *testing.T) {
 	chat := &store.Chat{
 		ID: "chat",

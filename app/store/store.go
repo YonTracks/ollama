@@ -32,23 +32,29 @@ type User struct {
 }
 
 type Message struct {
-	Role              string           `json:"role"`
-	Content           string           `json:"content"`
-	Thinking          string           `json:"thinking"`
-	Stream            bool             `json:"stream"`
-	Model             string           `json:"model,omitempty"`
-	Attachments       []File           `json:"attachments,omitempty"`
-	ToolCalls         []ToolCall       `json:"tool_calls,omitempty"`
-	ToolCall          *ToolCall        `json:"tool_call,omitempty"`
-	ToolName          string           `json:"tool_name,omitempty"`
-	ToolResult        *json.RawMessage `json:"tool_result,omitempty"`
-	Stats             *ResponseStats   `json:"stats,omitempty"`
-	ContextNotice     *ContextNotice   `json:"contextNotice,omitempty"`
-	ContextWarnings   []ContextWarning `json:"contextWarnings,omitempty"`
-	CreatedAt         time.Time        `json:"created_at"`
-	UpdatedAt         time.Time        `json:"updated_at"`
-	ThinkingTimeStart *time.Time       `json:"thinkingTimeStart,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
-	ThinkingTimeEnd   *time.Time       `json:"thinkingTimeEnd,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
+	Role              string                `json:"role"`
+	Content           string                `json:"content"`
+	Thinking          string                `json:"thinking"`
+	Stream            bool                  `json:"stream"`
+	Model             string                `json:"model,omitempty"`
+	Attachments       []File                `json:"attachments,omitempty"`
+	ToolCalls         []ToolCall            `json:"tool_calls,omitempty"`
+	ToolCall          *ToolCall             `json:"tool_call,omitempty"`
+	ToolName          string                `json:"tool_name,omitempty"`
+	ToolResult        *json.RawMessage      `json:"tool_result,omitempty"`
+	Stats             *ResponseStats        `json:"stats,omitempty"`
+	ContextNotice     *ContextNotice        `json:"contextNotice,omitempty"`
+	ContextWarnings   []ContextWarning      `json:"contextWarnings,omitempty"`
+	WebSearchMode     string                `json:"webSearchMode,omitempty"`
+	WebSearchProvider string                `json:"webSearchProvider,omitempty"`
+	WebSearchResults  []MessageSearchResult `json:"webSearchResults,omitempty"`
+	WebSearchError    string                `json:"webSearchError,omitempty"`
+	WebSearchReason   string                `json:"webSearchReason,omitempty"`
+	WebSearchSearched *bool                 `json:"webSearchSearched,omitempty"`
+	CreatedAt         time.Time             `json:"created_at"`
+	UpdatedAt         time.Time             `json:"updated_at"`
+	ThinkingTimeStart *time.Time            `json:"thinkingTimeStart,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
+	ThinkingTimeEnd   *time.Time            `json:"thinkingTimeEnd,omitempty" ts_type:"Date | undefined" ts_transform:"__VALUE__ && new Date(__VALUE__)"`
 }
 
 type VectorMemoryItem struct {
@@ -88,6 +94,25 @@ type ResponseStats struct {
 	Raw                   *OllamaUsageMetrics `json:"raw,omitempty"`
 }
 
+type MessageSearchResult struct {
+	Title         string   `json:"title"`
+	URL           string   `json:"url"`
+	Content       string   `json:"content"`
+	Source        string   `json:"source,omitempty"`
+	Engine        string   `json:"engine,omitempty"`
+	Score         *float64 `json:"score,omitempty"`
+	PublishedDate string   `json:"publishedDate,omitempty"`
+}
+
+type WebSearchMetadata struct {
+	Mode     string                `json:"mode,omitempty"`
+	Provider string                `json:"provider,omitempty"`
+	Results  []MessageSearchResult `json:"results,omitempty"`
+	Error    string                `json:"error,omitempty"`
+	Reason   string                `json:"reason,omitempty"`
+	Searched *bool                 `json:"searched,omitempty"`
+}
+
 type ContextNotice struct {
 	Mode                        string `json:"mode"`
 	Action                      string `json:"action"`
@@ -118,6 +143,12 @@ type MessageOptions struct {
 	Stats             *ResponseStats
 	ContextNotice     *ContextNotice
 	ContextWarnings   []ContextWarning
+	WebSearchMode     string
+	WebSearchProvider string
+	WebSearchResults  []MessageSearchResult
+	WebSearchError    string
+	WebSearchReason   string
+	WebSearchSearched *bool
 	ThinkingTimeStart *time.Time
 	ThinkingTimeEnd   *time.Time
 }
@@ -143,6 +174,12 @@ func NewMessage(role, content string, opts *MessageOptions) Message {
 		msg.Stats = opts.Stats
 		msg.ContextNotice = opts.ContextNotice
 		msg.ContextWarnings = opts.ContextWarnings
+		msg.WebSearchMode = opts.WebSearchMode
+		msg.WebSearchProvider = opts.WebSearchProvider
+		msg.WebSearchResults = opts.WebSearchResults
+		msg.WebSearchError = opts.WebSearchError
+		msg.WebSearchReason = opts.WebSearchReason
+		msg.WebSearchSearched = opts.WebSearchSearched
 		msg.ThinkingTimeStart = opts.ThinkingTimeStart
 		msg.ThinkingTimeEnd = opts.ThinkingTimeEnd
 	}

@@ -224,7 +224,7 @@ export function ChatPanel({
         selectedModel={selectedModel}
         settings={settings}
         disabledReason={disabledReason}
-        webSearchAvailable={!standalone}
+        webSearchAvailable
         streaming={chat.streaming}
         onSend={chat.send}
         onStop={() => {

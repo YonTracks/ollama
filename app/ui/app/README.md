@@ -37,6 +37,14 @@ Desktop-app-only settings are hidden in this mode.
 - The desktop embedding model defaults to `nomic-embed-text`; set `OLLAMA_RAG_EMBED_MODEL` to another local embedding model, or `off` to force lexical retrieval.
 - Expert chat mode adds request-only expert instructions; the Models panel can apply an expert template when creating a derived Ollama model.
 
+## Optional web search
+
+- Web search is optional and defaults to Off; local Ollama chat continues without search.
+- Manual mode searches only when the composer Web button is enabled for the message.
+- Auto mode uses a deterministic prompt heuristic and searches only for freshness, docs, current-info, provider, version, price, troubleshooting, or external lookup signals.
+- Settings include a provider health check at `/api/search/health?provider=<provider>`; it verifies configuration without exposing API keys and avoids quota-heavy reachability checks by default.
+- Next dev/server mode uses the App Router `/api/search` routes. Packaged desktop static builds use the matching Go routes.
+
 ## Desktop tools
 
 - Desktop agent/tool controls are hidden unless the desktop shell injects `window.OLLAMA_TOOLS = true`.

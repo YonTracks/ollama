@@ -15,6 +15,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -340,6 +341,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/settings", handle(s.settings))
 	mux.Handle("GET /api/v1/cloud", handle(s.getCloudSetting))
 	mux.Handle("POST /api/v1/cloud", handle(s.cloudSetting))
+	mux.Handle("GET /api/search/health", handle(s.searchHealth))
+	mux.Handle("GET /api/search", handle(s.search))
 
 	// Ollama proxy endpoints
 	ollamaProxy := s.ollamaProxy()
@@ -801,7 +804,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 	if err != nil || req.ForceUpdate {
 		// Create an empty assistant message to store the model information
 		// This will be overwritten when the model responds
-		chat.Messages = append(chat.Messages, store.NewMessage("assistant", "", &store.MessageOptions{Model: req.Model}))
+		chat.Messages = append(chat.Messages, store.NewMessage("assistant", "", withWebSearchMetadata(req, &store.MessageOptions{Model: req.Model})))
 		if err := s.Store.SetChat(*chat); err != nil {
 			cancelLoading()
 			return err
@@ -1225,7 +1228,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 			case EventChat:
 				// Append the new message to the chat history
 				if len(chat.Messages) == 0 || chat.Messages[len(chat.Messages)-1].Role != "assistant" {
-					newMsg := store.NewMessage("assistant", "", &store.MessageOptions{Model: req.Model})
+					newMsg := store.NewMessage("assistant", "", withWebSearchMetadata(req, &store.MessageOptions{Model: req.Model}))
 					chat.Messages = append(chat.Messages, newMsg)
 					// Append new message to database
 					if err := s.Store.AppendMessage(chat.ID, newMsg); err != nil {
@@ -1245,6 +1248,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 
 				// Append token to last assistant message & persist
 				lastMsg := &chat.Messages[len(chat.Messages)-1]
+				applyWebSearchMetadataFromRequest(lastMsg, req)
 				lastMsg.Content += res.Message.Content
 				lastMsg.UpdatedAt = time.Now()
 				// Update thinking time fields
@@ -1265,6 +1269,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 						Model:    req.Model,
 						Thinking: res.Message.Thinking,
 					})
+					applyWebSearchMetadataFromRequest(&newMsg, req)
 					chat.Messages = append(chat.Messages, newMsg)
 					// Append new message to database
 					if err := s.Store.AppendMessage(chat.ID, newMsg); err != nil {
@@ -1283,6 +1288,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 				} else {
 					// Update thinking content of existing message
 					lastMsg := &chat.Messages[len(chat.Messages)-1]
+					applyWebSearchMetadataFromRequest(lastMsg, req)
 					lastMsg.Thinking += res.Message.Thinking
 					lastMsg.UpdatedAt = time.Now()
 					// Update thinking time fields
@@ -1333,6 +1339,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 
 	stats := s.responseStatsFromMetrics(ctx, c, req.Model, finalMetrics, contextSettings.NumCtx)
 	warnings := contextWarnings(stats, contextNotice, contextSettings)
+	if len(chat.Messages) > 0 && chat.Messages[len(chat.Messages)-1].Role == "assistant" {
+		applyWebSearchMetadataFromRequest(&chat.Messages[len(chat.Messages)-1], req)
+	}
 	if err := s.attachContextMetadataToLastAssistant(chat, stats, contextNotice, warnings); err != nil {
 		return err
 	}
@@ -1701,6 +1710,7 @@ type contextRequestSettings struct {
 	RetrievalLimit           int
 	ExpertMode               bool
 	ExpertInstructions       string
+	WebSearchContext         string
 }
 
 const (
@@ -1751,6 +1761,7 @@ func contextSettingsFromRequest(req responses.ChatRequest) contextRequestSetting
 		RetrievalLimit:           clampContextInt(req.RetrievalLimit, 1, contextMaxRetrievalLimit, contextDefaultRetrievalLimit),
 		ExpertMode:               req.ExpertMode != nil && *req.ExpertMode,
 		ExpertInstructions:       strings.TrimSpace(req.ExpertInstructions),
+		WebSearchContext:         strings.TrimSpace(req.WebSearchContext),
 	}
 }
 
@@ -1932,6 +1943,10 @@ func augmentStoreMessagesForContextWithRetriever(messages []store.Message, setti
 		synthetic = append(synthetic, createStoreExpertMessage(settings))
 	}
 
+	if webSearchMessage, ok := createStoreWebSearchMessage(settings); ok {
+		synthetic = append(synthetic, webSearchMessage)
+	}
+
 	if settings.Mode == "friendly" && settings.EnableRetrieval {
 		if retriever == nil {
 			retriever = retrieveRelevantStoreMessages
@@ -1958,6 +1973,14 @@ func createStoreExpertMessage(settings contextRequestSettings) store.Message {
 	}
 
 	return store.NewMessage("system", "Expert mode instructions:\n"+instructions, nil)
+}
+
+func createStoreWebSearchMessage(settings contextRequestSettings) (store.Message, bool) {
+	if settings.WebSearchContext == "" {
+		return store.Message{}, false
+	}
+
+	return store.NewMessage("system", settings.WebSearchContext, nil), true
 }
 
 func retrieveRelevantStoreMessages(messages []store.Message, limit int) []store.Message {
@@ -2511,6 +2534,7 @@ func isSyntheticContextMessage(message store.Message) bool {
 	}
 
 	return strings.HasPrefix(message.Content, "Summary of earlier omitted conversation:") ||
+		strings.HasPrefix(message.Content, "Web search results:") ||
 		strings.HasPrefix(message.Content, "Relevant retrieved conversation memory:") ||
 		strings.HasPrefix(message.Content, "Expert mode instructions:")
 }
@@ -3117,6 +3141,65 @@ func (s *Server) attachContextMetadataToLastAssistant(chat *store.Chat, stats *s
 	return s.Store.UpdateLastMessage(chat.ID, *lastMsg)
 }
 
+func withWebSearchMetadata(req responses.ChatRequest, options *store.MessageOptions) *store.MessageOptions {
+	if !requestHasWebSearchMetadata(req) {
+		return options
+	}
+	if options == nil {
+		options = &store.MessageOptions{}
+	}
+
+	options.WebSearchMode = req.WebSearchMode
+	options.WebSearchProvider = req.WebSearchProvider
+	options.WebSearchResults = storeSearchResults(req.WebSearchResults)
+	options.WebSearchError = req.WebSearchError
+	options.WebSearchReason = req.WebSearchReason
+	options.WebSearchSearched = req.WebSearchSearched
+	return options
+}
+
+func applyWebSearchMetadataFromRequest(message *store.Message, req responses.ChatRequest) {
+	if message == nil || !requestHasWebSearchMetadata(req) {
+		return
+	}
+
+	message.WebSearchMode = req.WebSearchMode
+	message.WebSearchProvider = req.WebSearchProvider
+	message.WebSearchResults = storeSearchResults(req.WebSearchResults)
+	message.WebSearchError = req.WebSearchError
+	message.WebSearchReason = req.WebSearchReason
+	message.WebSearchSearched = req.WebSearchSearched
+}
+
+func requestHasWebSearchMetadata(req responses.ChatRequest) bool {
+	return strings.TrimSpace(req.WebSearchMode) != "" ||
+		strings.TrimSpace(req.WebSearchProvider) != "" ||
+		len(req.WebSearchResults) > 0 ||
+		strings.TrimSpace(req.WebSearchError) != "" ||
+		strings.TrimSpace(req.WebSearchReason) != "" ||
+		req.WebSearchSearched != nil
+}
+
+func storeSearchResults(results []responses.SearchResult) []store.MessageSearchResult {
+	if len(results) == 0 {
+		return nil
+	}
+
+	converted := make([]store.MessageSearchResult, 0, len(results))
+	for _, result := range results {
+		converted = append(converted, store.MessageSearchResult{
+			Title:         result.Title,
+			URL:           result.URL,
+			Content:       result.Content,
+			Source:        result.Source,
+			Engine:        result.Engine,
+			Score:         result.Score,
+			PublishedDate: result.PublishedDate,
+		})
+	}
+	return converted
+}
+
 func chatInfoFromChat(chat store.Chat) responses.ChatInfo {
 	userExcerpt := ""
 	var updatedAt time.Time
@@ -3285,6 +3368,674 @@ func (s *Server) writeCloudStatus(w http.ResponseWriter) error {
 		"disabled": disabled,
 		"source":   source,
 	})
+}
+
+const (
+	searchProviderOff        = "off"
+	searchProviderBrave      = "brave"
+	searchProviderTavily     = "tavily"
+	searchProviderExa        = "exa"
+	searchProviderOllama     = "ollama"
+	searchProviderCustom     = "custom"
+	defaultSearchProvider    = searchProviderOff
+	defaultSearchResultCount = 5
+	maxSearchResultCount     = 20
+	defaultSearchTimeoutMS   = 10000
+)
+
+var (
+	braveSearchEndpoint     = "https://api.search.brave.com/res/v1/web/search"
+	tavilySearchEndpoint    = "https://api.tavily.com/search"
+	exaSearchEndpoint       = "https://api.exa.ai/search"
+	ollamaWebSearchEndpoint = "https://ollama.com/api/web_search"
+)
+
+type searchOptions struct {
+	Query   string
+	Count   int
+	Safe    bool
+	Timeout time.Duration
+}
+
+type braveSearchResponse struct {
+	Web struct {
+		Results []braveSearchResult `json:"results"`
+	} `json:"web"`
+}
+
+type braveSearchResult struct {
+	Title         string   `json:"title"`
+	URL           string   `json:"url"`
+	Description   string   `json:"description"`
+	ExtraSnippets []string `json:"extra_snippets"`
+	Age           string   `json:"age"`
+	PageAge       string   `json:"page_age"`
+	Profile       struct {
+		Name string `json:"name"`
+	} `json:"profile"`
+}
+
+type tavilySearchResponse struct {
+	Results []tavilySearchResult `json:"results"`
+}
+
+type tavilySearchResult struct {
+	Title         string   `json:"title"`
+	URL           string   `json:"url"`
+	Content       string   `json:"content"`
+	Score         *float64 `json:"score"`
+	PublishedDate string   `json:"published_date"`
+}
+
+type exaSearchResponse struct {
+	Results []exaSearchResult `json:"results"`
+}
+
+type exaSearchResult struct {
+	Title         string   `json:"title"`
+	URL           string   `json:"url"`
+	Text          string   `json:"text"`
+	Highlights    []string `json:"highlights"`
+	Score         *float64 `json:"score"`
+	PublishedDate string   `json:"publishedDate"`
+	Author        string   `json:"author"`
+}
+
+type ollamaWebSearchResponse struct {
+	Results []ollamaWebSearchResult `json:"results"`
+}
+
+type ollamaWebSearchResult struct {
+	Title   string `json:"title"`
+	URL     string `json:"url"`
+	Content string `json:"content"`
+}
+
+func (s *Server) search(w http.ResponseWriter, r *http.Request) error {
+	w.Header().Set("Content-Type", "application/json")
+
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return json.NewEncoder(w).Encode(responses.SearchResponse{
+			Provider: searchProviderOff,
+			Query:    query,
+			Results:  []responses.SearchResult{},
+			Error:    "Missing search query.",
+		})
+	}
+
+	provider := configuredSearchProvider(r.URL.Query().Get("provider"))
+	if provider == searchProviderOff {
+		return json.NewEncoder(w).Encode(responses.SearchResponse{
+			Provider: provider,
+			Query:    query,
+			Disabled: true,
+			Results:  []responses.SearchResult{},
+		})
+	}
+
+	results, err := s.searchProvider(r.Context(), provider, searchOptions{
+		Query:   query,
+		Count:   searchResultCount(r.URL.Query().Get("count")),
+		Safe:    searchSafeMode(r.URL.Query().Get("safe")),
+		Timeout: searchTimeout(),
+	})
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, errSearchConfiguration) {
+			status = http.StatusBadRequest
+		} else if errors.Is(err, errSearchTimeout) {
+			status = http.StatusGatewayTimeout
+		}
+		w.WriteHeader(status)
+		return json.NewEncoder(w).Encode(responses.SearchResponse{
+			Provider: provider,
+			Query:    query,
+			Results:  []responses.SearchResult{},
+			Error:    searchErrorMessage(err),
+		})
+	}
+
+	return json.NewEncoder(w).Encode(responses.SearchResponse{
+		Provider: provider,
+		Query:    query,
+		Results:  results,
+	})
+}
+
+func (s *Server) searchHealth(w http.ResponseWriter, r *http.Request) error {
+	w.Header().Set("Content-Type", "application/json")
+
+	provider := configuredSearchProvider(r.URL.Query().Get("provider"))
+	return json.NewEncoder(w).Encode(searchProviderHealth(provider))
+}
+
+func configuredSearchProvider(requested string) string {
+	value := strings.TrimSpace(strings.ToLower(requested))
+	if value == "" {
+		value = strings.TrimSpace(strings.ToLower(os.Getenv("SEARCH_PROVIDER")))
+	}
+	if value == "" || value == "off" || value == "false" || value == "0" {
+		return defaultSearchProvider
+	}
+	switch value {
+	case searchProviderBrave, searchProviderTavily, searchProviderExa, searchProviderOllama, searchProviderCustom:
+		return value
+	default:
+		return searchProviderCustom
+	}
+}
+
+func searchProviderHealth(provider string) responses.SearchHealthResponse {
+	if provider == searchProviderOff {
+		return responses.SearchHealthResponse{
+			Provider:   provider,
+			Configured: true,
+			Reachable:  true,
+			Error:      nil,
+		}
+	}
+
+	envName := searchProviderEnvName(provider)
+	if envName == "" {
+		message := fmt.Sprintf("Unsupported search provider %q.", provider)
+		return responses.SearchHealthResponse{
+			Provider:   provider,
+			Configured: false,
+			Reachable:  false,
+			Error:      &message,
+		}
+	}
+
+	value := strings.TrimSpace(os.Getenv(envName))
+	if value == "" {
+		message := fmt.Sprintf("Web search provider %s is not configured. Set %s.", provider, envName)
+		return responses.SearchHealthResponse{
+			Provider:   provider,
+			Configured: false,
+			Reachable:  false,
+			Error:      &message,
+		}
+	}
+
+	if provider == searchProviderCustom {
+		if _, err := url.ParseRequestURI(value); err != nil {
+			message := "CUSTOM_SEARCH_ENDPOINT is invalid."
+			return responses.SearchHealthResponse{
+				Provider:   provider,
+				Configured: false,
+				Reachable:  false,
+				Error:      &message,
+			}
+		}
+	}
+
+	return responses.SearchHealthResponse{
+		Provider:   provider,
+		Configured: true,
+		Reachable:  false,
+		Error:      nil,
+	}
+}
+
+func searchProviderEnvName(provider string) string {
+	switch provider {
+	case searchProviderBrave:
+		return "BRAVE_SEARCH_API_KEY"
+	case searchProviderTavily:
+		return "TAVILY_API_KEY"
+	case searchProviderExa:
+		return "EXA_API_KEY"
+	case searchProviderOllama:
+		return "OLLAMA_WEB_SEARCH_API_KEY"
+	case searchProviderCustom:
+		return "CUSTOM_SEARCH_ENDPOINT"
+	default:
+		return ""
+	}
+}
+
+var (
+	errSearchConfiguration = errors.New("search provider configuration error")
+	errSearchTimeout       = errors.New("Web search timed out.")
+)
+
+func searchConfigurationError(message string) error {
+	return fmt.Errorf("%w: %s", errSearchConfiguration, message)
+}
+
+func searchErrorMessage(err error) string {
+	if errors.Is(err, errSearchConfiguration) {
+		return strings.TrimPrefix(err.Error(), errSearchConfiguration.Error()+": ")
+	}
+	return err.Error()
+}
+
+func (s *Server) searchProvider(ctx context.Context, provider string, options searchOptions) ([]responses.SearchResult, error) {
+	switch provider {
+	case searchProviderBrave:
+		return s.searchBrave(ctx, options)
+	case searchProviderTavily:
+		return s.searchTavily(ctx, options)
+	case searchProviderExa:
+		return s.searchExa(ctx, options)
+	case searchProviderOllama:
+		return s.searchOllamaWeb(ctx, options)
+	case searchProviderCustom:
+		return s.searchCustom(ctx, options)
+	default:
+		return nil, fmt.Errorf("%w: unsupported search provider %q", errSearchConfiguration, provider)
+	}
+}
+
+func (s *Server) searchBrave(ctx context.Context, options searchOptions) ([]responses.SearchResult, error) {
+	apiKey := strings.TrimSpace(os.Getenv("BRAVE_SEARCH_API_KEY"))
+	if apiKey == "" {
+		return nil, searchConfigurationError("Web search is enabled, but BRAVE_SEARCH_API_KEY is missing.")
+	}
+
+	endpoint, _ := url.Parse(braveSearchEndpoint)
+	params := endpoint.Query()
+	params.Set("q", options.Query)
+	params.Set("count", strconv.Itoa(options.Count))
+	if options.Safe {
+		params.Set("safesearch", "moderate")
+	} else {
+		params.Set("safesearch", "off")
+	}
+	endpoint.RawQuery = params.Encode()
+
+	var payload braveSearchResponse
+	if err := s.fetchSearchJSON(ctx, options.Timeout, http.MethodGet, endpoint.String(), nil, map[string]string{
+		"X-Subscription-Token": apiKey,
+	}, &payload); err != nil {
+		return nil, err
+	}
+
+	return normalizeBraveSearchResults(payload.Web.Results, options.Count), nil
+}
+
+func (s *Server) searchTavily(ctx context.Context, options searchOptions) ([]responses.SearchResult, error) {
+	apiKey := strings.TrimSpace(os.Getenv("TAVILY_API_KEY"))
+	if apiKey == "" {
+		return nil, searchConfigurationError("Web search is enabled, but TAVILY_API_KEY is missing.")
+	}
+
+	body := map[string]any{
+		"query":               options.Query,
+		"max_results":         options.Count,
+		"search_depth":        "basic",
+		"include_answer":      false,
+		"include_raw_content": false,
+		"include_images":      false,
+		"safe_search":         options.Safe,
+	}
+	var payload tavilySearchResponse
+	if err := s.fetchSearchJSON(ctx, options.Timeout, http.MethodPost, tavilySearchEndpoint, body, map[string]string{
+		"Authorization": "Bearer " + apiKey,
+	}, &payload); err != nil {
+		return nil, err
+	}
+
+	return normalizeTavilySearchResults(payload.Results, options.Count), nil
+}
+
+func (s *Server) searchExa(ctx context.Context, options searchOptions) ([]responses.SearchResult, error) {
+	apiKey := strings.TrimSpace(os.Getenv("EXA_API_KEY"))
+	if apiKey == "" {
+		return nil, searchConfigurationError("Web search is enabled, but EXA_API_KEY is missing.")
+	}
+
+	body := map[string]any{
+		"query":      options.Query,
+		"numResults": options.Count,
+		"type":       "auto",
+		"contents": map[string]any{
+			"highlights": true,
+		},
+	}
+	var payload exaSearchResponse
+	if err := s.fetchSearchJSON(ctx, options.Timeout, http.MethodPost, exaSearchEndpoint, body, map[string]string{
+		"x-api-key": apiKey,
+	}, &payload); err != nil {
+		return nil, err
+	}
+
+	return normalizeExaSearchResults(payload.Results, options.Count), nil
+}
+
+func (s *Server) searchOllamaWeb(ctx context.Context, options searchOptions) ([]responses.SearchResult, error) {
+	apiKey := strings.TrimSpace(os.Getenv("OLLAMA_WEB_SEARCH_API_KEY"))
+	if apiKey == "" {
+		return nil, searchConfigurationError("Web search is enabled, but OLLAMA_WEB_SEARCH_API_KEY is missing.")
+	}
+
+	body := map[string]any{
+		"query":       options.Query,
+		"max_results": min(options.Count, 10),
+	}
+	var payload ollamaWebSearchResponse
+	if err := s.fetchSearchJSON(ctx, options.Timeout, http.MethodPost, ollamaWebSearchEndpoint, body, map[string]string{
+		"Authorization": "Bearer " + apiKey,
+	}, &payload); err != nil {
+		return nil, err
+	}
+
+	return normalizeOllamaWebSearchResults(payload.Results, options.Count), nil
+}
+
+func (s *Server) searchCustom(ctx context.Context, options searchOptions) ([]responses.SearchResult, error) {
+	endpointValue := strings.TrimSpace(os.Getenv("CUSTOM_SEARCH_ENDPOINT"))
+	if endpointValue == "" {
+		return nil, searchConfigurationError("Web search is enabled, but CUSTOM_SEARCH_ENDPOINT is missing.")
+	}
+	endpoint, err := url.Parse(endpointValue)
+	if err != nil {
+		return nil, searchConfigurationError("CUSTOM_SEARCH_ENDPOINT is invalid.")
+	}
+	params := endpoint.Query()
+	params.Set("q", options.Query)
+	params.Set("count", strconv.Itoa(options.Count))
+	params.Set("safe", strconv.FormatBool(options.Safe))
+	endpoint.RawQuery = params.Encode()
+
+	var payload json.RawMessage
+	if err := s.fetchSearchJSON(ctx, options.Timeout, http.MethodGet, endpoint.String(), nil, nil, &payload); err != nil {
+		return nil, err
+	}
+
+	return normalizeCustomSearchResults(payload, options.Count), nil
+}
+
+func (s *Server) fetchSearchJSON(ctx context.Context, timeout time.Duration, method, endpoint string, body any, headers map[string]string, target any) error {
+	searchCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var bodyReader *strings.Reader
+	if body != nil {
+		bodyBytes, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		bodyReader = strings.NewReader(string(bodyBytes))
+	} else {
+		bodyReader = strings.NewReader("")
+	}
+
+	req, err := http.NewRequestWithContext(searchCtx, method, endpoint, bodyReader)
+	if err != nil {
+		return fmt.Errorf("failed to create search request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+
+	client := userAgentHTTPClient(timeout)
+	resp, err := client.Do(req)
+	if err != nil {
+		if searchCtx.Err() != nil {
+			return errSearchTimeout
+		}
+		return errors.New("Web search provider is unreachable. Check your connection and provider settings.")
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("web search provider returned HTTP %d", resp.StatusCode)
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+		return errors.New("web search provider returned invalid JSON")
+	}
+
+	return nil
+}
+
+func normalizeBraveSearchResults(raw []braveSearchResult, limit int) []responses.SearchResult {
+	limit = clampContextInt(limit, 1, maxSearchResultCount, defaultSearchResultCount)
+	results := make([]responses.SearchResult, 0, min(len(raw), limit))
+	seen := make(map[string]bool, len(raw))
+
+	for _, item := range raw {
+		resultURL := strings.TrimSpace(item.URL)
+		if resultURL == "" || seen[resultURL] {
+			continue
+		}
+		contentParts := []string{strings.TrimSpace(item.Description)}
+		for _, snippet := range item.ExtraSnippets {
+			if snippet = strings.TrimSpace(snippet); snippet != "" {
+				contentParts = append(contentParts, snippet)
+			}
+		}
+		results = append(results, responses.SearchResult{
+			Title:         firstNonEmpty(item.Title, resultURL),
+			URL:           resultURL,
+			Content:       strings.Join(nonEmptyStrings(contentParts), "\n"),
+			Source:        firstNonEmpty(item.Profile.Name, "Brave Search"),
+			Engine:        searchProviderBrave,
+			PublishedDate: firstNonEmpty(item.PageAge, item.Age),
+		})
+		seen[resultURL] = true
+		if len(results) >= limit {
+			break
+		}
+	}
+
+	return results
+}
+
+func normalizeTavilySearchResults(raw []tavilySearchResult, limit int) []responses.SearchResult {
+	limit = clampContextInt(limit, 1, maxSearchResultCount, defaultSearchResultCount)
+	results := make([]responses.SearchResult, 0, min(len(raw), limit))
+	seen := make(map[string]bool, len(raw))
+
+	for _, item := range raw {
+		resultURL := strings.TrimSpace(item.URL)
+		if resultURL == "" || seen[resultURL] {
+			continue
+		}
+		results = append(results, responses.SearchResult{
+			Title:         firstNonEmpty(item.Title, resultURL),
+			URL:           resultURL,
+			Content:       strings.TrimSpace(item.Content),
+			Source:        "Tavily",
+			Engine:        searchProviderTavily,
+			Score:         item.Score,
+			PublishedDate: strings.TrimSpace(item.PublishedDate),
+		})
+		seen[resultURL] = true
+		if len(results) >= limit {
+			break
+		}
+	}
+
+	return results
+}
+
+func normalizeExaSearchResults(raw []exaSearchResult, limit int) []responses.SearchResult {
+	limit = clampContextInt(limit, 1, maxSearchResultCount, defaultSearchResultCount)
+	results := make([]responses.SearchResult, 0, min(len(raw), limit))
+	seen := make(map[string]bool, len(raw))
+
+	for _, item := range raw {
+		resultURL := strings.TrimSpace(item.URL)
+		if resultURL == "" || seen[resultURL] {
+			continue
+		}
+		content := strings.Join(nonEmptyStrings(item.Highlights), "\n")
+		if content == "" {
+			content = strings.TrimSpace(item.Text)
+		}
+		results = append(results, responses.SearchResult{
+			Title:         firstNonEmpty(item.Title, resultURL),
+			URL:           resultURL,
+			Content:       content,
+			Source:        firstNonEmpty(item.Author, "Exa"),
+			Engine:        searchProviderExa,
+			Score:         item.Score,
+			PublishedDate: strings.TrimSpace(item.PublishedDate),
+		})
+		seen[resultURL] = true
+		if len(results) >= limit {
+			break
+		}
+	}
+
+	return results
+}
+
+func normalizeOllamaWebSearchResults(raw []ollamaWebSearchResult, limit int) []responses.SearchResult {
+	limit = clampContextInt(limit, 1, maxSearchResultCount, defaultSearchResultCount)
+	results := make([]responses.SearchResult, 0, min(len(raw), limit))
+	seen := make(map[string]bool, len(raw))
+
+	for _, item := range raw {
+		resultURL := strings.TrimSpace(item.URL)
+		if resultURL == "" || seen[resultURL] {
+			continue
+		}
+
+		results = append(results, responses.SearchResult{
+			Title:   firstNonEmpty(item.Title, resultURL),
+			URL:     resultURL,
+			Content: strings.TrimSpace(item.Content),
+			Source:  "Ollama web search",
+			Engine:  searchProviderOllama,
+		})
+		seen[resultURL] = true
+		if len(results) >= limit {
+			break
+		}
+	}
+
+	return results
+}
+
+func normalizeCustomSearchResults(payload json.RawMessage, limit int) []responses.SearchResult {
+	var envelope struct {
+		Results []map[string]any `json:"results"`
+	}
+	var raw []map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			return nil
+		}
+		raw = envelope.Results
+	}
+
+	limit = clampContextInt(limit, 1, maxSearchResultCount, defaultSearchResultCount)
+	results := make([]responses.SearchResult, 0, min(len(raw), limit))
+	seen := make(map[string]bool, len(raw))
+	for _, item := range raw {
+		resultURL := firstStringFromMap(item, "url", "link", "href")
+		if resultURL == "" || seen[resultURL] {
+			continue
+		}
+		results = append(results, responses.SearchResult{
+			Title:         firstNonEmpty(firstStringFromMap(item, "title", "name"), resultURL),
+			URL:           resultURL,
+			Content:       firstStringFromMap(item, "content", "snippet", "description", "text", "summary"),
+			Source:        firstStringFromMap(item, "source", "site"),
+			Engine:        firstNonEmpty(firstStringFromMap(item, "engine"), searchProviderCustom),
+			Score:         floatPtrFromMap(item, "score"),
+			PublishedDate: firstStringFromMap(item, "publishedDate", "published_date", "date"),
+		})
+		seen[resultURL] = true
+		if len(results) >= limit {
+			break
+		}
+	}
+	return results
+}
+
+func searchResultCount(value string) int {
+	if value = strings.TrimSpace(value); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			return clampContextInt(parsed, 1, maxSearchResultCount, defaultSearchResultCount)
+		}
+	}
+	if value = strings.TrimSpace(os.Getenv("SEARCH_RESULT_COUNT")); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			return clampContextInt(parsed, 1, maxSearchResultCount, defaultSearchResultCount)
+		}
+	}
+	return defaultSearchResultCount
+}
+
+func searchSafeMode(value string) bool {
+	if value = strings.TrimSpace(value); value != "" {
+		value = strings.ToLower(value)
+		return value != "false" && value != "0" && value != "off"
+	}
+	if value = strings.TrimSpace(os.Getenv("SEARCH_SAFE_MODE")); value != "" {
+		value = strings.ToLower(value)
+		return value != "false" && value != "0" && value != "off"
+	}
+	return true
+}
+
+func searchTimeout() time.Duration {
+	value := strings.TrimSpace(os.Getenv("SEARCH_TIMEOUT_MS"))
+	if value == "" {
+		return time.Duration(defaultSearchTimeoutMS) * time.Millisecond
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return time.Duration(defaultSearchTimeoutMS) * time.Millisecond
+	}
+	return time.Duration(parsed) * time.Millisecond
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func nonEmptyStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func firstStringFromMap(item map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := item[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func floatPtrFromMap(item map[string]any, key string) *float64 {
+	value, ok := item[key]
+	if !ok {
+		return nil
+	}
+	switch v := value.(type) {
+	case float64:
+		return &v
+	case float32:
+		f := float64(v)
+		return &f
+	case int:
+		f := float64(v)
+		return &f
+	default:
+		return nil
+	}
 }
 
 func (s *Server) getInferenceCompute(w http.ResponseWriter, r *http.Request) error {
@@ -3580,14 +4331,16 @@ func (s *Server) generateChat(ctx context.Context, w http.ResponseWriter, flushe
 
 	ensureAssistantMessage := func(options *store.MessageOptions) (*store.Message, error) {
 		if len(chat.Messages) == 0 || chat.Messages[len(chat.Messages)-1].Role != "assistant" {
-			newMsg := store.NewMessage("assistant", "", options)
+			newMsg := store.NewMessage("assistant", "", withWebSearchMetadata(req, options))
 			chat.Messages = append(chat.Messages, newMsg)
 			if err := s.Store.AppendMessage(chat.ID, newMsg); err != nil {
 				return nil, err
 			}
 		}
 
-		return &chat.Messages[len(chat.Messages)-1], nil
+		lastMsg := &chat.Messages[len(chat.Messages)-1]
+		applyWebSearchMetadataFromRequest(lastMsg, req)
+		return lastMsg, nil
 	}
 
 	err = c.Generate(ctx, generateReq, func(res api.GenerateResponse) error {

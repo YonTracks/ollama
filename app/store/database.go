@@ -17,7 +17,7 @@ import (
 
 // currentSchemaVersion defines the current database schema version.
 // Increment this when making schema changes that require migrations.
-const currentSchemaVersion = 20
+const currentSchemaVersion = 21
 
 // database wraps the SQLite connection.
 // SQLite handles its own locking for concurrent access:
@@ -122,6 +122,7 @@ func (db *database) init() error {
 		stats TEXT,
 		context_notice TEXT,
 		context_warnings TEXT,
+		web_search_metadata TEXT,
 		FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
 	);
 
@@ -314,6 +315,11 @@ func (db *database) migrate() error {
 				return fmt.Errorf("migrate v19 to v20: %w", err)
 			}
 			version = 20
+		case 20:
+			if err := db.migrateV20ToV21(); err != nil {
+				return fmt.Errorf("migrate v20 to v21: %w", err)
+			}
+			version = 21
 		default:
 			// If we have a version we don't recognize, just set it to current
 			// This might happen during development
@@ -892,6 +898,21 @@ func (db *database) deleteChat(id string) error {
 	return nil
 }
 
+// migrateV20ToV21 adds web search metadata to assistant messages.
+func (db *database) migrateV20ToV21() error {
+	_, err := db.conn.Exec(`ALTER TABLE messages ADD COLUMN web_search_metadata TEXT`)
+	if err != nil && !duplicateColumnError(err) {
+		return fmt.Errorf("add web_search_metadata column: %w", err)
+	}
+
+	_, err = db.conn.Exec(`UPDATE settings SET schema_version = 21`)
+	if err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+
+	return nil
+}
+
 func (db *database) updateLastMessage(chatID string, msg Message) error {
 	tx, err := db.conn.Begin()
 	if err != nil {
@@ -910,7 +931,7 @@ func (db *database) updateLastMessage(chatID string, msg Message) error {
 
 	query := `
 		UPDATE messages 
-		SET content = ?, thinking = ?, model_name = ?, updated_at = ?, thinking_time_start = ?, thinking_time_end = ?, tool_result = ?, stats = ?, context_notice = ?, context_warnings = ?
+		SET content = ?, thinking = ?, model_name = ?, updated_at = ?, thinking_time_start = ?, thinking_time_end = ?, tool_result = ?, stats = ?, context_notice = ?, context_warnings = ?, web_search_metadata = ?
 		WHERE id = ?
 	`
 
@@ -948,6 +969,10 @@ func (db *database) updateLastMessage(chatID string, msg Message) error {
 	if err != nil {
 		return err
 	}
+	webSearchMetadataJSON, err := messageWebSearchMetadataSQL(msg)
+	if err != nil {
+		return err
+	}
 
 	result, err := tx.Exec(query,
 		msg.Content,
@@ -960,6 +985,7 @@ func (db *database) updateLastMessage(chatID string, msg Message) error {
 		statsJSON,
 		contextNoticeJSON,
 		contextWarningsJSON,
+		webSearchMetadataJSON,
 		messageID,
 	)
 	if err != nil {
@@ -1024,7 +1050,7 @@ func (db *database) appendMessage(chatID string, msg Message) error {
 
 func (db *database) getMessages(chatID string, loadAttachmentData bool) ([]Message, error) {
 	query := `
-		SELECT id, role, content, thinking, stream, model_name, created_at, updated_at, thinking_time_start, thinking_time_end, tool_result, stats, context_notice, context_warnings
+		SELECT id, role, content, thinking, stream, model_name, created_at, updated_at, thinking_time_start, thinking_time_end, tool_result, stats, context_notice, context_warnings, web_search_metadata
 		FROM messages
 		WHERE chat_id = ?
 		ORDER BY id ASC
@@ -1046,6 +1072,7 @@ func (db *database) getMessages(chatID string, loadAttachmentData bool) ([]Messa
 		var stats sql.NullString
 		var contextNotice sql.NullString
 		var contextWarnings sql.NullString
+		var webSearchMetadata sql.NullString
 
 		err := rows.Scan(
 			&messageID,
@@ -1062,6 +1089,7 @@ func (db *database) getMessages(chatID string, loadAttachmentData bool) ([]Messa
 			&stats,
 			&contextNotice,
 			&contextWarnings,
+			&webSearchMetadata,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
@@ -1104,6 +1132,17 @@ func (db *database) getMessages(chatID string, loadAttachmentData bool) ([]Messa
 			var warnings []ContextWarning
 			if err := json.Unmarshal([]byte(contextWarnings.String), &warnings); err == nil {
 				msg.ContextWarnings = warnings
+			}
+		}
+		if webSearchMetadata.Valid && webSearchMetadata.String != "" {
+			var metadata WebSearchMetadata
+			if err := json.Unmarshal([]byte(webSearchMetadata.String), &metadata); err == nil {
+				msg.WebSearchMode = metadata.Mode
+				msg.WebSearchProvider = metadata.Provider
+				msg.WebSearchResults = metadata.Results
+				msg.WebSearchError = metadata.Error
+				msg.WebSearchReason = metadata.Reason
+				msg.WebSearchSearched = metadata.Searched
 			}
 		}
 
@@ -1387,8 +1426,8 @@ func (db *database) upsertMessageEmbedding(chatID, model, contentHash string, em
 
 func (db *database) insertMessage(tx *sql.Tx, chatID string, msg Message) (int64, error) {
 	query := `
-		INSERT INTO messages (chat_id, role, content, thinking, stream, model_name, created_at, updated_at, thinking_time_start, thinking_time_end, tool_result, stats, context_notice, context_warnings)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO messages (chat_id, role, content, thinking, stream, model_name, created_at, updated_at, thinking_time_start, thinking_time_end, tool_result, stats, context_notice, context_warnings, web_search_metadata)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	var thinkingTimeStart, thinkingTimeEnd sql.NullTime
@@ -1425,6 +1464,10 @@ func (db *database) insertMessage(tx *sql.Tx, chatID string, msg Message) (int64
 	if err != nil {
 		return 0, err
 	}
+	webSearchMetadataJSON, err := messageWebSearchMetadataSQL(msg)
+	if err != nil {
+		return 0, err
+	}
 
 	result, err := tx.Exec(query,
 		chatID,
@@ -1441,6 +1484,7 @@ func (db *database) insertMessage(tx *sql.Tx, chatID string, msg Message) (int64
 		statsJSON,
 		contextNoticeJSON,
 		contextWarningsJSON,
+		webSearchMetadataJSON,
 	)
 	if err != nil {
 		return 0, err
@@ -1498,6 +1542,32 @@ func messageContextWarningsSQL(warnings []ContextWarning) (sql.NullString, error
 	}
 
 	return sql.NullString{String: string(warningBytes), Valid: true}, nil
+}
+
+func messageWebSearchMetadataSQL(msg Message) (sql.NullString, error) {
+	metadata := WebSearchMetadata{
+		Mode:     strings.TrimSpace(msg.WebSearchMode),
+		Provider: strings.TrimSpace(msg.WebSearchProvider),
+		Results:  msg.WebSearchResults,
+		Error:    strings.TrimSpace(msg.WebSearchError),
+		Reason:   strings.TrimSpace(msg.WebSearchReason),
+		Searched: msg.WebSearchSearched,
+	}
+	if metadata.Mode == "" &&
+		metadata.Provider == "" &&
+		len(metadata.Results) == 0 &&
+		metadata.Error == "" &&
+		metadata.Reason == "" &&
+		metadata.Searched == nil {
+		return sql.NullString{}, nil
+	}
+
+	metadataBytes, err := json.Marshal(metadata)
+	if err != nil {
+		return sql.NullString{}, fmt.Errorf("marshal web search metadata: %w", err)
+	}
+
+	return sql.NullString{String: string(metadataBytes), Valid: true}, nil
 }
 
 func encodeFloat32Vector(vector []float32) ([]byte, error) {

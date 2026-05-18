@@ -1,3 +1,5 @@
+import type { SearchProvider, SearchResult, WebSearchMode } from "@/lib/search/types";
+
 export interface OllamaVersion {
   version: string;
 }
@@ -96,6 +98,7 @@ export interface OllamaContextSettings {
   retrievalLimit: number;
   expertMode: boolean;
   expertInstructions: string;
+  webSearchContext?: string;
 }
 
 export interface ContextNotice {
@@ -140,6 +143,12 @@ export interface ChatMessage {
   stats?: ResponseStats;
   contextNotice?: ContextNotice;
   contextWarnings?: ContextWarning[];
+  webSearchProvider?: SearchProvider;
+  webSearchResults?: SearchResult[];
+  webSearchError?: string;
+  webSearchMode?: WebSearchMode;
+  webSearchReason?: string;
+  webSearchSearched?: boolean;
 }
 
 export interface Chat {
@@ -183,6 +192,13 @@ export interface ChatRequest {
   retrievalLimit?: number;
   expertMode?: boolean;
   expertInstructions?: string;
+  webSearchContext?: string;
+  webSearchMode?: WebSearchMode;
+  webSearchProvider?: SearchProvider;
+  webSearchResults?: SearchResult[];
+  webSearchError?: string;
+  webSearchReason?: string;
+  webSearchSearched?: boolean;
   estimatedPromptTokens?: number;
 }
 

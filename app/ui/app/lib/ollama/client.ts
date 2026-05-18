@@ -36,6 +36,12 @@ interface RawChatMessage {
   stats?: unknown;
   contextNotice?: unknown;
   contextWarnings?: unknown;
+  webSearchProvider?: string;
+  webSearchResults?: unknown;
+  webSearchError?: string;
+  webSearchMode?: string;
+  webSearchReason?: string;
+  webSearchSearched?: boolean;
   created_at?: string;
   updated_at?: string;
 }
@@ -323,10 +329,46 @@ function normalizeMessage(message: RawChatMessage, index: number): ChatMessage {
     stats: normalizeResponseStats(message.stats),
     contextNotice: normalizeContextNotice(message.contextNotice),
     contextWarnings: normalizeContextWarnings(message.contextWarnings),
+    webSearchProvider: normalizeSearchProvider(message.webSearchProvider),
+    webSearchResults: normalizeSearchResults(message.webSearchResults),
+    webSearchError: message.webSearchError,
+    webSearchMode: normalizeSearchMode(message.webSearchMode),
+    webSearchReason: message.webSearchReason,
+    webSearchSearched: message.webSearchSearched,
     createdAt: message.created_at,
     updatedAt: message.updated_at,
     status: message.stream ? "streaming" : "complete"
   };
+}
+
+function normalizeSearchProvider(provider?: string) {
+  if (
+    provider === "off" ||
+    provider === "brave" ||
+    provider === "tavily" ||
+    provider === "exa" ||
+    provider === "ollama" ||
+    provider === "custom"
+  ) {
+    return provider;
+  }
+  return undefined;
+}
+
+function normalizeSearchMode(mode?: string) {
+  if (mode === "off" || mode === "manual" || mode === "auto") {
+    return mode;
+  }
+  return undefined;
+}
+
+function normalizeSearchResults(results: unknown) {
+  if (!Array.isArray(results)) return undefined;
+  return results.filter((result) => {
+    if (!result || typeof result !== "object") return false;
+    const item = result as { url?: unknown; title?: unknown; content?: unknown };
+    return typeof item.url === "string" && typeof item.title === "string" && typeof item.content === "string";
+  }) as ChatMessage["webSearchResults"];
 }
 
 function normalizeResponseStats(stats: unknown) {

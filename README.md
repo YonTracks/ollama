@@ -104,6 +104,21 @@ curl http://localhost:11434/api/chat -d '{
 
 See the [API documentation](https://docs.ollama.com/api) for all endpoints.
 
+## Optional Web Search
+
+The app UI can optionally ground chat prompts with server-side web search results. This is disabled by default, does not affect local/offline Ollama chat, and never exposes provider API keys to browser components.
+
+```shell
+SEARCH_PROVIDER=off
+SEARCH_RESULT_COUNT=5
+SEARCH_SAFE_MODE=true
+SEARCH_TIMEOUT_MS=10000
+```
+
+Supported providers are `off`, `brave`, `tavily`, `exa`, `ollama`, and `custom`. The UI supports Web Search modes: Off, Manual, and Auto. Auto mode only searches when the prompt has a clear freshness, docs, current-info, provider, version, price, or external lookup signal. Settings also include a provider health check that verifies configuration without exposing API keys.
+
+Brave Search API is the recommended general provider for regular Windows users; Tavily is recommended for AI/RAG workflows. Packaged desktop builds use the Go `/api/search` routes, while Next dev/server mode uses the Next App Router routes. See [Optional Web Search Providers](docs/web-search-providers.md) for setup and troubleshooting.
+
 ### Python
 
 ```

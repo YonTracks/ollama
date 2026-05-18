@@ -376,7 +376,7 @@ export function PromptComposer({
               </div>
             ) : null}
 
-            {webSearchAvailable && !imageGeneration ? (
+            {webSearchAvailable && !imageGeneration && settings.webSearchMode === "manual" ? (
               <button
                 type="button"
                 aria-pressed={settings.webSearchEnabled}
@@ -393,6 +393,16 @@ export function PromptComposer({
                 <Globe2 className="h-4 w-4" />
                 <span className="hidden sm:inline">Web</span>
               </button>
+            ) : null}
+
+            {webSearchAvailable && !imageGeneration && settings.webSearchMode === "auto" ? (
+              <span
+                title="Web search auto mode"
+                className="flex h-9 items-center gap-2 rounded-md border border-accent/35 bg-accent/10 px-3 text-sm text-accent"
+              >
+                <Globe2 className="h-4 w-4" />
+                <span className="hidden sm:inline">Auto</span>
+              </span>
             ) : null}
 
             {!imageGeneration ? (

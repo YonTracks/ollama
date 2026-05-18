@@ -65,6 +65,23 @@ describe("context budget utilities", () => {
     expect(prepared.messages).not.toContain(messages[1]);
   });
 
+  it("injects web search context as a synthetic system message", () => {
+    const prepared = prepareContextMessages({
+      messages: [message("user", "What changed in Ollama?")],
+      settings: {
+        ...baseSettings,
+        webSearchContext:
+          "Web search results:\n1. Ollama release notes\nURL: https://example.test/ollama\nSnippet: Release details."
+      }
+    });
+
+    expect(prepared.messages[0]).toMatchObject({
+      role: "system",
+      content: expect.stringContaining("Web search results:")
+    });
+    expect(prepared.messages[0].content).toContain("https://example.test/ollama");
+  });
+
   it("friendly trimming drops oldest non-system messages first", () => {
     const messages = [
       message("system", "System prompt."),

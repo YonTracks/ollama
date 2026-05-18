@@ -38,7 +38,9 @@ const DEFAULT_SETTINGS: LocalSettings = {
   retrievalLimit: 4,
   expertMode: false,
   expertInstructions: "",
+  webSearchMode: "off",
   webSearchEnabled: false,
+  webSearchProvider: "off",
   thinkEnabled: true,
   thinkLevel: "none",
   autoUpdateEnabled: true,
@@ -70,28 +72,35 @@ function readLocalSettings(mode: AppMode) {
     const defaults = getDefaultSettings();
     if (!raw) return defaults;
 
+    const parsed = JSON.parse(raw) as Partial<LocalSettings>;
     return normalizeLocalSettings(
       migrateLocalSettings({
         ...defaults,
-        ...(JSON.parse(raw) as Partial<LocalSettings>)
-      })
+        ...parsed
+      }, parsed)
     );
   } catch {
     return getDefaultSettings();
   }
 }
 
-function migrateLocalSettings(settings: LocalSettings): LocalSettings {
-  if ((settings.contextDefaultsVersion ?? 0) >= CONTEXT_DEFAULTS_VERSION) {
-    return settings;
+function migrateLocalSettings(
+  settings: LocalSettings,
+  rawSettings: Partial<LocalSettings> = settings
+): LocalSettings {
+  const migrated: LocalSettings = { ...settings };
+
+  if (!("webSearchMode" in rawSettings)) {
+    migrated.webSearchMode = rawSettings.webSearchEnabled ? "manual" : "off";
   }
 
-  return {
-    ...settings,
-    enableAutoSummarize: true,
-    enableRetrieval: true,
-    contextDefaultsVersion: CONTEXT_DEFAULTS_VERSION
-  };
+  if ((settings.contextDefaultsVersion ?? 0) < CONTEXT_DEFAULTS_VERSION) {
+    migrated.enableAutoSummarize = true;
+    migrated.enableRetrieval = true;
+    migrated.contextDefaultsVersion = CONTEXT_DEFAULTS_VERSION;
+  }
+
+  return migrated;
 }
 
 function toLocalSettings(serverSettings?: Settings, current = getDefaultSettings()): LocalSettings {
@@ -108,7 +117,8 @@ function toLocalSettings(serverSettings?: Settings, current = getDefaultSettings
     tools: serverSettings.Tools ?? current.tools,
     workingDir: serverSettings.WorkingDir ?? current.workingDir,
     contextLength: serverSettings.ContextLength ?? current.contextLength,
-    webSearchEnabled: serverSettings.WebSearchEnabled ?? current.webSearchEnabled,
+    webSearchMode: current.webSearchMode,
+    webSearchEnabled: current.webSearchEnabled,
     thinkEnabled: serverSettings.ThinkEnabled ?? current.thinkEnabled,
     thinkLevel:
       serverSettings.ThinkLevel === "low" ||
@@ -134,22 +144,44 @@ function toServerSettings(settings: LocalSettings, serverSettings?: Settings): S
     AutoUpdateEnabled: normalized.autoUpdateEnabled,
     SelectedModel: normalized.selectedModel,
     SidebarOpen: normalized.sidebarOpen,
-    WebSearchEnabled: normalized.webSearchEnabled,
+    WebSearchEnabled: normalized.webSearchMode !== "off",
     ThinkEnabled: normalized.thinkEnabled,
     ThinkLevel: normalized.thinkLevel
   };
 }
 
 function normalizeLocalSettings(settings: LocalSettings): LocalSettings {
+  const webSearchMode = normalizeWebSearchMode(settings.webSearchMode);
   return normalizeToolMode({
     ...settings,
+    webSearchMode,
+    webSearchEnabled: webSearchMode === "manual" ? Boolean(settings.webSearchEnabled) : false,
     retrievalScope:
       settings.retrievalScope === "selected" || settings.retrievalScope === "all"
         ? settings.retrievalScope
         : "current",
+    webSearchProvider: normalizeWebSearchProvider(settings.webSearchProvider),
     retrievalChatIds: uniqueStrings(settings.retrievalChatIds),
     retrievalExcludedChatIds: uniqueStrings(settings.retrievalExcludedChatIds)
   });
+}
+
+function normalizeWebSearchMode(value: LocalSettings["webSearchMode"]) {
+  if (value === "manual" || value === "auto") return value;
+  return "off";
+}
+
+function normalizeWebSearchProvider(value: LocalSettings["webSearchProvider"]) {
+  if (
+    value === "brave" ||
+    value === "tavily" ||
+    value === "exa" ||
+    value === "ollama" ||
+    value === "custom"
+  ) {
+    return value;
+  }
+  return "off";
 }
 
 function normalizeToolMode(settings: LocalSettings): LocalSettings {

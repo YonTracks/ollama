@@ -51,6 +51,26 @@ export class Time {
 
     }
 }
+export class MessageSearchResult {
+    title: string;
+    url: string;
+    content: string;
+    source?: string;
+    engine?: string;
+    score?: number;
+    publishedDate?: string;
+
+    constructor(source: any = {}) {
+        if ('string' === typeof source) source = JSON.parse(source);
+        this.title = source["title"];
+        this.url = source["url"];
+        this.content = source["content"];
+        this.source = source["source"];
+        this.engine = source["engine"];
+        this.score = source["score"];
+        this.publishedDate = source["publishedDate"];
+    }
+}
 export class ContextWarning {
     kind: string;
     message: string;
@@ -217,6 +237,12 @@ export class Message {
     stats?: ResponseStats;
     contextNotice?: ContextNotice;
     contextWarnings?: ContextWarning[];
+    webSearchMode?: string;
+    webSearchProvider?: string;
+    webSearchResults?: MessageSearchResult[];
+    webSearchError?: string;
+    webSearchReason?: string;
+    webSearchSearched?: boolean;
     created_at: Time;
     updated_at: Time;
     thinkingTimeStart?: Date | undefined;
@@ -237,6 +263,12 @@ export class Message {
         this.stats = this.convertValues(source["stats"], ResponseStats);
         this.contextNotice = this.convertValues(source["contextNotice"], ContextNotice);
         this.contextWarnings = this.convertValues(source["contextWarnings"], ContextWarning);
+        this.webSearchMode = source["webSearchMode"];
+        this.webSearchProvider = source["webSearchProvider"];
+        this.webSearchResults = this.convertValues(source["webSearchResults"], MessageSearchResult);
+        this.webSearchError = source["webSearchError"];
+        this.webSearchReason = source["webSearchReason"];
+        this.webSearchSearched = source["webSearchSearched"];
         this.created_at = this.convertValues(source["created_at"], Time);
         this.updated_at = this.convertValues(source["updated_at"], Time);
         this.thinkingTimeStart = source["thinkingTimeStart"] && new Date(source["thinkingTimeStart"]);
@@ -638,6 +670,26 @@ export class Attachment {
         this.data = source["data"];
     }
 }
+export class SearchResult {
+    title: string;
+    url: string;
+    content: string;
+    source?: string;
+    engine?: string;
+    score?: number;
+    publishedDate?: string;
+
+    constructor(source: any = {}) {
+        if ('string' === typeof source) source = JSON.parse(source);
+        this.title = source["title"];
+        this.url = source["url"];
+        this.content = source["content"];
+        this.source = source["source"];
+        this.engine = source["engine"];
+        this.score = source["score"];
+        this.publishedDate = source["publishedDate"];
+    }
+}
 export class ChatRequest {
     model: string;
     prompt: string;
@@ -664,6 +716,13 @@ export class ChatRequest {
     retrievalLimit?: number;
     expertMode?: boolean;
     expertInstructions?: string;
+    webSearchContext?: string;
+    webSearchMode?: string;
+    webSearchProvider?: string;
+    webSearchResults?: SearchResult[];
+    webSearchError?: string;
+    webSearchReason?: string;
+    webSearchSearched?: boolean;
 
     constructor(source: any = {}) {
         if ('string' === typeof source) source = JSON.parse(source);
@@ -692,6 +751,13 @@ export class ChatRequest {
         this.retrievalLimit = source["retrievalLimit"];
         this.expertMode = source["expertMode"];
         this.expertInstructions = source["expertInstructions"];
+        this.webSearchContext = source["webSearchContext"];
+        this.webSearchMode = source["webSearchMode"];
+        this.webSearchProvider = source["webSearchProvider"];
+        this.webSearchResults = this.convertValues(source["webSearchResults"], SearchResult);
+        this.webSearchError = source["webSearchError"];
+        this.webSearchReason = source["webSearchReason"];
+        this.webSearchSearched = source["webSearchSearched"];
     }
 
 	convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -711,6 +777,57 @@ export class ChatRequest {
 	    }
 	    return a;
 	}
+}
+
+export class SearchResponse {
+    provider: string;
+    query: string;
+    disabled: boolean;
+    results: SearchResult[];
+    message?: string;
+    error?: string;
+
+    constructor(source: any = {}) {
+        if ('string' === typeof source) source = JSON.parse(source);
+        this.provider = source["provider"];
+        this.query = source["query"];
+        this.disabled = source["disabled"];
+        this.results = this.convertValues(source["results"], SearchResult);
+        this.message = source["message"];
+        this.error = source["error"];
+    }
+
+	convertValues(a: any, classs: any, asMap: boolean = false): any {
+	    if (!a) {
+	        return a;
+	    }
+	    if (Array.isArray(a)) {
+	        return (a as any[]).map(elem => this.convertValues(elem, classs));
+	    } else if ("object" === typeof a) {
+	        if (asMap) {
+	            for (const key of Object.keys(a)) {
+	                a[key] = new classs(a[key]);
+	            }
+	            return a;
+	        }
+	        return new classs(a);
+	    }
+	    return a;
+	}
+}
+export class SearchHealthResponse {
+    provider: string;
+    configured: boolean;
+    reachable: boolean;
+    error?: string;
+
+    constructor(source: any = {}) {
+        if ('string' === typeof source) source = JSON.parse(source);
+        this.provider = source["provider"];
+        this.configured = source["configured"];
+        this.reachable = source["reachable"];
+        this.error = source["error"];
+    }
 }
 export class Error {
     error: string;

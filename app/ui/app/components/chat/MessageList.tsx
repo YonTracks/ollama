@@ -5,10 +5,12 @@ import {
   Bot,
   Cpu,
   Download,
+  ExternalLink,
   File as FileIcon,
   FileText,
   Image as ImageIcon,
   Loader2,
+  Search,
   User,
   X
 } from "lucide-react";
@@ -93,6 +95,9 @@ export function MessageList({ messages, compact }: MessageListProps) {
                       Streaming
                     </span>
                   ) : null}
+                  {message.role === "assistant" && message.webSearchMode ? (
+                    <WebSearchStatusPill message={message} />
+                  ) : null}
                 </div>
 
                 {message.thinking ? (
@@ -141,6 +146,13 @@ export function MessageList({ messages, compact }: MessageListProps) {
                     <span className="ml-1 inline-block h-4 w-2 animate-pulse rounded-sm bg-accent align-text-bottom" />
                   ) : null}
                 </div>
+                {message.role === "assistant" && message.webSearchResults?.length ? (
+                  <WebSearchSourceLinks message={message} />
+                ) : null}
+                {message.role === "assistant" &&
+                (message.webSearchResults?.length || message.webSearchError) ? (
+                  <WebSearchResultsPanel message={message} />
+                ) : null}
                 {message.role === "assistant" &&
                 (message.stats || message.contextWarnings?.length) ? (
                   <MessageStatsFooter
@@ -159,6 +171,126 @@ export function MessageList({ messages, compact }: MessageListProps) {
       ) : null}
     </>
   );
+}
+
+function WebSearchResultsPanel({ message }: { message: ChatMessage }) {
+  const results = message.webSearchResults ?? [];
+
+  return (
+    <details className="mt-2 rounded-md border border-border bg-panel px-3 py-2 text-sm">
+      <summary className="flex cursor-pointer items-center gap-2 text-xs font-medium text-foreground">
+        <Search className="h-3.5 w-3.5 text-accent" />
+        Web search
+        {message.webSearchProvider ? (
+          <span className="text-muted-foreground">({message.webSearchProvider})</span>
+        ) : null}
+      </summary>
+      {message.webSearchError ? (
+        <div className="mt-2 rounded-md border border-warning/25 bg-warning/10 px-2 py-1 text-xs leading-5 text-warning">
+          {message.webSearchError}
+        </div>
+      ) : null}
+      {results.length ? (
+        <ol className="mt-2 space-y-2">
+          {results.map((result, index) => (
+            <li key={`${result.url}-${index}`} className="min-w-0">
+              <a
+                href={result.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex max-w-full items-center gap-1 text-sm font-medium text-accent hover:underline"
+              >
+                <span className="truncate">{result.title || result.url}</span>
+                <ExternalLink className="h-3 w-3 flex-none" />
+              </a>
+              <div className="mt-0.5 wrap-break-word text-xs leading-5 text-muted-foreground">
+                {result.url}
+              </div>
+              {result.content ? (
+                <div className="mt-1 text-xs leading-5 text-foreground/80">
+                  {result.content}
+                </div>
+              ) : null}
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </details>
+  );
+}
+
+function WebSearchSourceLinks({ message }: { message: ChatMessage }) {
+  const results = message.webSearchResults ?? [];
+  if (results.length === 0) return null;
+
+  return (
+    <div className="mt-2 flex max-w-full flex-wrap items-center gap-2 text-xs">
+      <span className="flex-none text-muted-foreground">Sources</span>
+      {results.map((result, index) => {
+        const label = result.title || result.url;
+        return (
+          <a
+            key={`${result.url}-source-${index}`}
+            href={result.url}
+            target="_blank"
+            rel="noreferrer"
+            title={`${label} - ${result.url}`}
+            className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border border-border bg-panel px-2 py-1 text-accent transition hover:border-accent/45 hover:bg-accent/10 focus:focus-ring sm:max-w-64"
+          >
+            <span className="flex-none font-medium">[{index + 1}]</span>
+            <span className="truncate">{label}</span>
+            <ExternalLink className="h-3 w-3 flex-none" />
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
+function WebSearchStatusPill({ message }: { message: ChatMessage }) {
+  const label = webSearchStatusLabel(message);
+  const failed = Boolean(message.webSearchError);
+  const searched = Boolean(message.webSearchSearched);
+  const skipped = !searched && message.webSearchMode !== "manual";
+
+  return (
+    <span
+      title={label}
+      className={cn(
+        "inline-flex max-w-full items-center gap-1 rounded-full px-2 py-0.5",
+        failed && "bg-warning/10 text-warning",
+        !failed && searched && "bg-accent/10 text-accent",
+        !failed && skipped && "bg-muted text-muted-foreground",
+        !failed && !searched && !skipped && "bg-muted text-muted-foreground"
+      )}
+    >
+      <Search className="h-3 w-3 flex-none" />
+      <span className="truncate">{label}</span>
+    </span>
+  );
+}
+
+function webSearchStatusLabel(message: ChatMessage) {
+  if (message.webSearchError) {
+    return `Web search failed: ${message.webSearchError}`;
+  }
+
+  if (message.webSearchMode === "off") {
+    return "Web search off";
+  }
+
+  if (message.webSearchMode === "manual") {
+    return "Web search manual";
+  }
+
+  if (message.webSearchMode === "auto") {
+    const reason = message.webSearchReason || "heuristic decision";
+    return message.webSearchSearched
+      ? `Web search auto: searched because ${reason}`
+      : `Web search auto: skipped because ${reason}`;
+  }
+
+  return "Web search";
 }
 
 function MessageStatsFooter({

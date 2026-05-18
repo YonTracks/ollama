@@ -19,6 +19,10 @@ import {
 import { sendStandaloneChat } from "@/lib/ollama/standalone";
 import { buildContextWarnings, strictContextWarning } from "@/lib/ollama/context";
 import { isImageGenerationModel } from "@/lib/ollama/models";
+import { buildWebSearchContext, fetchSearchResults } from "@/lib/search/client";
+import { resolveWebSearchDecision } from "@/lib/search/mode";
+import { webSearchQueryForPrompt } from "@/lib/search/query";
+import type { SearchProvider, SearchResult, WebSearchMode } from "@/lib/search/types";
 import type {
   Chat,
   ChatAttachment,
@@ -134,7 +138,8 @@ function mergeAttachments(
 function createPendingAssistantMessage(
   model: string,
   contextNotice?: ContextNotice,
-  contextWarnings?: ContextWarning[]
+  contextWarnings?: ContextWarning[],
+  webSearch?: WebSearchState
 ): ChatMessage {
   return {
     id: createClientId("assistant"),
@@ -143,7 +148,13 @@ function createPendingAssistantMessage(
     model,
     status: "sending",
     contextNotice,
-    contextWarnings
+    contextWarnings,
+    webSearchMode: webSearch?.mode,
+    webSearchProvider: webSearch?.provider,
+    webSearchResults: webSearch?.results.length ? webSearch.results : undefined,
+    webSearchError: webSearch?.error,
+    webSearchReason: webSearch?.reason,
+    webSearchSearched: webSearch?.searched
   };
 }
 
@@ -257,7 +268,20 @@ function toImageGenerationOptions(settings: LocalSettings) {
   };
 }
 
-function toContextSettings(settings: LocalSettings): OllamaContextSettings {
+interface WebSearchState {
+  mode: WebSearchMode;
+  provider: SearchProvider;
+  results: SearchResult[];
+  context: string;
+  reason: string;
+  searched: boolean;
+  error?: string;
+}
+
+function toContextSettings(
+  settings: LocalSettings,
+  webSearchContext = ""
+): OllamaContextSettings {
   return {
     mode: settings.contextMode,
     numCtx: settings.contextLength > 0 ? settings.contextLength : null,
@@ -272,7 +296,8 @@ function toContextSettings(settings: LocalSettings): OllamaContextSettings {
     retrievalExcludedChatIds: settings.retrievalExcludedChatIds,
     retrievalLimit: settings.retrievalLimit,
     expertMode: settings.expertMode,
-    expertInstructions: settings.expertInstructions
+    expertInstructions: settings.expertInstructions,
+    webSearchContext
   };
 }
 
@@ -283,6 +308,103 @@ function contextErrorMessage(errorMessage: string, settings: LocalSettings) {
     message: warning?.message ?? errorMessage,
     warnings: warning ? [warning] : undefined
   };
+}
+
+async function resolveWebSearchContext(
+  prompt: string,
+  settings: LocalSettings,
+  history: ChatMessage[] = [],
+  signal?: AbortSignal
+): Promise<WebSearchState | null> {
+  if (!prompt.trim()) return null;
+
+  const decision = resolveWebSearchDecision(prompt, {
+    mode: settings.webSearchMode,
+    manualEnabled: settings.webSearchEnabled
+  });
+  if (!decision.shouldSearch) {
+    return {
+      mode: decision.mode,
+      provider: settings.webSearchProvider,
+      results: [],
+      context: "",
+      reason: decision.reason,
+      searched: false
+    };
+  }
+
+  try {
+    const searchQuery = webSearchQueryForPrompt(prompt, history);
+    const response = await fetchSearchResults(searchQuery, {
+      provider: settings.webSearchProvider,
+      signal
+    });
+    if (response.disabled) {
+      return {
+        mode: decision.mode,
+        provider: response.provider,
+        results: [],
+        context: "",
+        reason: decision.reason,
+        searched: false,
+        error: "Web search is enabled, but the selected provider is off."
+      };
+    }
+    if (response.error) {
+      return {
+        mode: decision.mode,
+        provider: response.provider,
+        results: [],
+        context: "",
+        reason: decision.reason,
+        searched: false,
+        error: response.error
+      };
+    }
+    return {
+      mode: decision.mode,
+      provider: response.provider,
+      results: response.results,
+      context: buildWebSearchContext(response.results),
+      reason: decision.reason,
+      searched: true
+    };
+  } catch (error) {
+    return {
+      mode: decision.mode,
+      provider: settings.webSearchProvider,
+      results: [],
+      context: "",
+      reason: decision.reason,
+      searched: false,
+      error: error instanceof Error ? error.message : "Web search failed."
+    };
+  }
+}
+
+function attachWebSearchToLastAssistant(
+  messages: ChatMessage[],
+  webSearch: WebSearchState | null
+) {
+  if (!webSearch) return messages;
+
+  const index = [...messages].reverse().findIndex((message) => message.role === "assistant");
+  if (index < 0) return messages;
+  const messageIndex = messages.length - 1 - index;
+
+  return messages.map((message, currentIndex) =>
+    currentIndex === messageIndex
+      ? {
+          ...message,
+          webSearchMode: webSearch.mode,
+          webSearchProvider: webSearch.provider,
+          webSearchResults: webSearch.results.length ? webSearch.results : undefined,
+          webSearchError: webSearch.error,
+          webSearchReason: webSearch.reason,
+          webSearchSearched: webSearch.searched
+        }
+      : message
+  );
 }
 
 function createChatTitle(prompt: string, attachments: ChatAttachment[] = []) {
@@ -466,7 +588,6 @@ export function useChatSession({
         const now = new Date().toISOString();
         const targetChatId = chatId ?? createClientId("chat");
         const controller = new AbortController();
-        const contextSettings = toContextSettings(settings);
         const userMessage: ChatMessage = {
           id: createClientId("user"),
           role: "user",
@@ -505,6 +626,16 @@ export function useChatSession({
           await saveStandaloneChat(currentChat);
           if (!chatId) onChatCreated(targetChatId);
           onRefreshNeeded();
+
+          const webSearch = await resolveWebSearchContext(
+            trimmed,
+            settings,
+            messages,
+            controller.signal
+          );
+          workingMessages = attachWebSearchToLastAssistant(workingMessages, webSearch);
+          setMessages(workingMessages);
+          const contextSettings = toContextSettings(settings, webSearch?.context ?? "");
 
           for await (const event of sendStandaloneChat(
             coreApiBase,
@@ -615,13 +746,20 @@ export function useChatSession({
       ]);
 
       try {
-        const contextSettings = toContextSettings(settings);
+        const webSearch = await resolveWebSearchContext(
+          trimmed,
+          settings,
+          messages,
+          controller.signal
+        );
+        setMessages((current) => attachWebSearchToLastAssistant(current, webSearch));
+        const contextSettings = toContextSettings(settings, webSearch?.context ?? "");
         const request: ChatRequest = {
           model: selectedModel,
           prompt: trimmed,
           attachments,
           ...toImageGenerationOptions(settings),
-          web_search: settings.webSearchEnabled,
+          web_search: false,
           file_tools: false,
           think: toThinkRequest(settings, selectedModel),
           contextMode: contextSettings.mode,
@@ -637,7 +775,14 @@ export function useChatSession({
           retrievalExcludedChatIds: contextSettings.retrievalExcludedChatIds,
           retrievalLimit: contextSettings.retrievalLimit,
           expertMode: contextSettings.expertMode,
-          expertInstructions: contextSettings.expertInstructions
+          expertInstructions: contextSettings.expertInstructions,
+          webSearchContext: contextSettings.webSearchContext,
+          webSearchMode: webSearch?.mode,
+          webSearchProvider: webSearch?.provider,
+          webSearchResults: webSearch?.results.length ? webSearch.results : undefined,
+          webSearchError: webSearch?.error,
+          webSearchReason: webSearch?.reason,
+          webSearchSearched: webSearch?.searched
         };
 
         for await (const event of sendChat(targetChatId, request, controller.signal)) {

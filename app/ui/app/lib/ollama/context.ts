@@ -14,6 +14,7 @@ const POSSIBLE_TRUNCATION_MIN_GAP = 512;
 const SUMMARY_MESSAGE_ID = "context-summary";
 const RETRIEVAL_MESSAGE_ID = "context-retrieval";
 const EXPERT_MESSAGE_ID = "context-expert";
+const WEB_SEARCH_MESSAGE_ID = "context-web-search";
 const SUMMARY_MIN_TOKENS = 24;
 const SUMMARY_MAX_TOKENS = 512;
 const RETRIEVAL_MAX_TOKENS = 640;
@@ -104,7 +105,8 @@ export function normalizeContextSettings(
       MAX_RETRIEVAL_LIMIT
     ),
     expertMode: Boolean(settings.expertMode),
-    expertInstructions: settings.expertInstructions?.trim() ?? ""
+    expertInstructions: settings.expertInstructions?.trim() ?? "",
+    webSearchContext: settings.webSearchContext?.trim() ?? ""
   };
 }
 
@@ -321,8 +323,10 @@ function augmentContextMessages(messages: ChatMessage[], settings: OllamaContext
     : [];
   const retrievalMessage = createRetrievalMessage(retrievedMessages);
   const expertMessage = createExpertMessage(settings);
+  const webSearchMessage = createWebSearchMessage(settings);
 
   if (expertMessage) syntheticMessages.push(expertMessage);
+  if (webSearchMessage) syntheticMessages.push(webSearchMessage);
   if (retrievalMessage) syntheticMessages.push(retrievalMessage);
 
   return {
@@ -333,6 +337,18 @@ function augmentContextMessages(messages: ChatMessage[], settings: OllamaContext
     retrievedMessages,
     estimatedRetrievedTokens: retrievalMessage ? estimateMessageTokens(retrievalMessage) : 0,
     expertMode: Boolean(expertMessage)
+  };
+}
+
+function createWebSearchMessage(settings: OllamaContextSettings): ChatMessage | null {
+  const content = settings.webSearchContext?.trim();
+  if (!content) return null;
+
+  return {
+    id: WEB_SEARCH_MESSAGE_ID,
+    role: "system",
+    content,
+    status: "complete"
   };
 }
 
@@ -417,6 +433,7 @@ function insertSyntheticSystemMessages(
   const withoutSynthetic = messages.filter(
     (message) =>
       message.id !== EXPERT_MESSAGE_ID &&
+      message.id !== WEB_SEARCH_MESSAGE_ID &&
       message.id !== RETRIEVAL_MESSAGE_ID &&
       message.id !== SUMMARY_MESSAGE_ID
   );
