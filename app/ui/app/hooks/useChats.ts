@@ -3,14 +3,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClientId } from "@/lib/utils";
 import {
+  branchChat,
   deleteChat,
+  deleteChatMessage,
   getChat,
   getChats,
   renameChat,
   sendChat
 } from "@/lib/ollama/client";
 import {
+  branchStandaloneChat,
   deleteStandaloneChat,
+  deleteStandaloneChatMessage,
   getStandaloneChat,
   listStandaloneChats,
   renameStandaloneChat,
@@ -48,6 +52,10 @@ interface UseChatOptions {
   enabled: boolean;
   onChatCreated(chatId: string): void;
   onRefreshNeeded(): void;
+}
+
+interface SendOptions {
+  replaceFromIndex?: number;
 }
 
 function appendAssistantDelta(
@@ -421,6 +429,13 @@ function createChatTitle(prompt: string, attachments: ChatAttachment[] = []) {
   return title.length > 64 ? `${title.slice(0, 61)}...` : title;
 }
 
+function findPreviousUserIndex(messages: ChatMessage[], startIndex: number) {
+  for (let index = startIndex; index >= 0; index--) {
+    if (messages[index]?.role === "user") return index;
+  }
+  return -1;
+}
+
 function completeChat(chat: Chat, messages: ChatMessage[]): Chat {
   return {
     ...chat,
@@ -580,9 +595,19 @@ export function useChatSession({
   }, [mode]);
 
   const send = useCallback(
-    async (prompt: string, attachments: ChatAttachment[] = []) => {
+    async (
+      prompt: string,
+      attachments: ChatAttachment[] = [],
+      options: SendOptions = {}
+    ) => {
       const trimmed = prompt.trim();
       if ((!trimmed && attachments.length === 0) || !selectedModel || streaming) return;
+      const replaceFromIndex =
+        typeof options.replaceFromIndex === "number" && options.replaceFromIndex >= 0
+          ? options.replaceFromIndex
+          : undefined;
+      const baseMessages =
+        replaceFromIndex === undefined ? messages : messages.slice(0, replaceFromIndex);
 
       if (mode === "standalone") {
         const now = new Date().toISOString();
@@ -598,7 +623,7 @@ export function useChatSession({
           status: "complete"
         };
         let workingMessages = [
-          ...messages,
+          ...baseMessages,
           userMessage,
           createPendingAssistantMessage(selectedModel)
         ];
@@ -630,7 +655,7 @@ export function useChatSession({
           const webSearch = await resolveWebSearchContext(
             trimmed,
             settings,
-            messages,
+            baseMessages,
             controller.signal
           );
           workingMessages = attachWebSearchToLastAssistant(workingMessages, webSearch);
@@ -734,7 +759,7 @@ export function useChatSession({
       setStreaming(true);
 
       setMessages((current) => [
-        ...current,
+        ...(replaceFromIndex === undefined ? current : current.slice(0, replaceFromIndex)),
         {
           id: createClientId("user"),
           role: "user",
@@ -749,7 +774,7 @@ export function useChatSession({
         const webSearch = await resolveWebSearchContext(
           trimmed,
           settings,
-          messages,
+          baseMessages,
           controller.signal
         );
         setMessages((current) => attachWebSearchToLastAssistant(current, webSearch));
@@ -757,6 +782,7 @@ export function useChatSession({
         const request: ChatRequest = {
           model: selectedModel,
           prompt: trimmed,
+          index: replaceFromIndex,
           attachments,
           ...toImageGenerationOptions(settings),
           web_search: false,
@@ -872,6 +898,76 @@ export function useChatSession({
     ]
   );
 
+  const retryFromMessage = useCallback(
+    async (messageId: string) => {
+      if (streaming) return false;
+      const messageIndex = messages.findIndex((message) => message.id === messageId);
+      if (messageIndex < 0) {
+        throw new Error("Message was not found.");
+      }
+
+      const userIndex = findPreviousUserIndex(messages, messageIndex);
+      if (userIndex < 0) {
+        throw new Error("No user prompt was found to retry.");
+      }
+
+      const userMessage = messages[userIndex];
+      await send(userMessage.content, userMessage.attachments ?? [], {
+        replaceFromIndex: userIndex
+      });
+      return true;
+    },
+    [messages, send, streaming]
+  );
+
+  const deleteMessage = useCallback(
+    async (messageId: string) => {
+      if (streaming) return false;
+      const messageIndex = messages.findIndex((message) => message.id === messageId);
+      if (messageIndex < 0) {
+        throw new Error("Message was not found.");
+      }
+
+      if (!chatId) {
+        setMessages((current) => current.filter((message) => message.id !== messageId));
+        return true;
+      }
+
+      const response =
+        mode === "standalone"
+          ? await deleteStandaloneChatMessage(chatId, messageIndex)
+          : await deleteChatMessage(chatId, messageIndex);
+      chatRef.current = response.chat;
+      setMessages(response.chat.messages);
+      onRefreshNeeded();
+      return true;
+    },
+    [chatId, messages, mode, onRefreshNeeded, streaming]
+  );
+
+  const branchFromMessage = useCallback(
+    async (messageId: string) => {
+      if (streaming) return null;
+      if (!chatId) {
+        throw new Error("Save the conversation before branching it.");
+      }
+
+      const messageIndex = messages.findIndex((message) => message.id === messageId);
+      if (messageIndex < 0) {
+        throw new Error("Message was not found.");
+      }
+
+      const response =
+        mode === "standalone"
+          ? await branchStandaloneChat(chatId, messageIndex)
+          : await branchChat(chatId, messageIndex);
+      onChatCreated(response.chat.id);
+      onRefreshNeeded();
+      return response.chat.id;
+    },
+    [chatId, messages, mode, onChatCreated, onRefreshNeeded, streaming]
+  );
+
   return useMemo(
     () => ({
       messages,
@@ -883,6 +979,9 @@ export function useChatSession({
       download,
       reload: loadChat,
       send,
+      retryFromMessage,
+      deleteMessage,
+      branchFromMessage,
       stop
     }),
     [
@@ -894,6 +993,9 @@ export function useChatSession({
       modelLoading,
       modelLoadingName,
       send,
+      retryFromMessage,
+      deleteMessage,
+      branchFromMessage,
       stop,
       streaming
     ]

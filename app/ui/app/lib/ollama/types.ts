@@ -170,6 +170,7 @@ export interface ChatResponse {
 export interface ChatRequest {
   model: string;
   prompt: string;
+  index?: number;
   attachments?: ChatAttachment[];
   width?: number;
   height?: number;

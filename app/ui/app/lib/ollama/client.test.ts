@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  branchChat,
   deleteAllChats,
   deleteChat,
+  deleteChatMessage,
   fetchConnectUrl,
   fetchUser,
   listModels,
@@ -127,6 +129,45 @@ describe("Ollama client", () => {
     );
 
     await expect(deleteChat("chat-id")).resolves.toBeUndefined();
+  });
+
+  it("branches chats and deletes individual messages through app routes", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            chat: {
+              id: "branch-id",
+              title: "Branch",
+              messages: [{ role: "user", content: "hello" }]
+            }
+          }),
+          { status: 200 }
+        )
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(branchChat("chat-id", 2)).resolves.toMatchObject({
+      chat: { id: "branch-id", title: "Branch" }
+    });
+    await expect(deleteChatMessage("chat-id", 1)).resolves.toMatchObject({
+      chat: { id: "branch-id", messages: [{ role: "user", content: "hello" }] }
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("/api/v1/chat/chat-id/branch"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ messageIndex: 2 })
+      })
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining("/api/v1/chat/chat-id/message/1"),
+      expect.objectContaining({ method: "DELETE" })
+    );
   });
 
   it("reads account state from the non-failing app user endpoint", async () => {

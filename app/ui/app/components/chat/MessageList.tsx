@@ -1,20 +1,30 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 import {
   Bot,
+  Check,
+  Clipboard,
   Cpu,
   Download,
   ExternalLink,
   File as FileIcon,
   FileText,
+  GitBranch,
   Image as ImageIcon,
   Loader2,
+  MoreHorizontal,
+  RotateCcw,
   Search,
+  Share2,
+  Trash2,
   User,
+  Volume2,
+  VolumeX,
   X
 } from "lucide-react";
 import { MarkdownContent } from "@/components/chat/MarkdownContent";
+import { useToast } from "@/components/ui/ToastProvider";
 import { imageAttachmentDataUrl } from "@/lib/ollama/attachments";
 import { isImageGenerationModel } from "@/lib/ollama/models";
 import { sanitizeSearchResults } from "@/lib/search/sanitize";
@@ -29,10 +39,196 @@ import type {
 interface MessageListProps {
   messages: ChatMessage[];
   compact: boolean;
+  actionsDisabled?: boolean;
+  onRetryMessage?(messageId: string): Promise<boolean | void> | boolean | void;
+  onDeleteMessage?(messageId: string): Promise<boolean | void> | boolean | void;
+  onBranchMessage?(messageId: string): Promise<string | null | void> | string | null | void;
 }
 
-export function MessageList({ messages, compact }: MessageListProps) {
+export function MessageList({
+  messages,
+  compact,
+  actionsDisabled = false,
+  onRetryMessage,
+  onDeleteMessage,
+  onBranchMessage
+}: MessageListProps) {
+  const { showToast } = useToast();
   const [selectedImage, setSelectedImage] = useState<ChatAttachment | null>(null);
+  const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!openActionMenuId) return;
+    if (!messages.some((message) => message.id === openActionMenuId)) {
+      setOpenActionMenuId(null);
+    }
+  }, [messages, openActionMenuId]);
+
+  useEffect(() => {
+    return () => {
+      window.speechSynthesis?.cancel();
+    };
+  }, []);
+
+  const handleCopy = async (message: ChatMessage) => {
+    const text = messageActionText(message);
+    if (!text) return;
+
+    try {
+      await copyText(text);
+      setCopiedMessageId(message.id);
+      window.setTimeout(() => setCopiedMessageId(null), 1400);
+      showToast({
+        id: "message-copy",
+        title: "Message copied",
+        tone: "success",
+        duration: 2200
+      });
+    } catch (error) {
+      showToast({
+        id: "message-copy",
+        title: "Could not copy message",
+        description: error instanceof Error ? error.message : "Clipboard access failed.",
+        tone: "danger",
+        duration: 7000
+      });
+    }
+  };
+
+  const handleShare = async (message: ChatMessage) => {
+    const text = messageActionText(message);
+    if (!text) return;
+
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: `${messageRoleLabel(message)} message`,
+          text
+        });
+      } else {
+        await copyText(text);
+        showToast({
+          id: "message-share",
+          title: "Share text copied",
+          description: "This browser does not expose a share sheet here.",
+          tone: "success",
+          duration: 3200
+        });
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      showToast({
+        id: "message-share",
+        title: "Could not share message",
+        description: error instanceof Error ? error.message : "Sharing is not available.",
+        tone: "danger",
+        duration: 7000
+      });
+    }
+  };
+
+  const handleReadAloud = (message: ChatMessage) => {
+    const text = readAloudText(message);
+    if (!text) {
+      showToast({
+        id: "message-read-aloud",
+        title: "Nothing to read",
+        tone: "warning",
+        duration: 2600
+      });
+      return;
+    }
+
+    if (!("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") {
+      showToast({
+        id: "message-read-aloud",
+        title: "Read aloud is not available",
+        description: "This browser does not expose speech synthesis here.",
+        tone: "warning",
+        duration: 4200
+      });
+      return;
+    }
+
+    if (speakingMessageId === message.id && window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel();
+      setSpeakingMessageId(null);
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.onend = () => setSpeakingMessageId(null);
+    utterance.onerror = () => setSpeakingMessageId(null);
+    setSpeakingMessageId(message.id);
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const handleRetry = async (message: ChatMessage) => {
+    try {
+      showToast({
+        id: "message-retry",
+        title: "Trying again",
+        description: "The conversation was rewound to that prompt.",
+        tone: "info",
+        duration: 2600
+      });
+      await onRetryMessage?.(message.id);
+    } catch (error) {
+      showToast({
+        id: "message-retry",
+        title: "Could not try again",
+        description: error instanceof Error ? error.message : "Retry failed.",
+        tone: "danger",
+        duration: 7000
+      });
+    }
+  };
+
+  const handleDelete = async (message: ChatMessage) => {
+    if (!window.confirm("Delete this message from the conversation?")) return;
+
+    try {
+      await onDeleteMessage?.(message.id);
+      showToast({
+        id: "message-delete",
+        title: "Message deleted",
+        tone: "success",
+        duration: 2400
+      });
+    } catch (error) {
+      showToast({
+        id: "message-delete",
+        title: "Could not delete message",
+        description: error instanceof Error ? error.message : "Delete failed.",
+        tone: "danger",
+        duration: 7000
+      });
+    }
+  };
+
+  const handleBranch = async (message: ChatMessage) => {
+    try {
+      await onBranchMessage?.(message.id);
+      showToast({
+        id: "message-branch",
+        title: "Branched into a new chat",
+        description: "The new conversation includes messages through that turn.",
+        tone: "success",
+        duration: 3200
+      });
+    } catch (error) {
+      showToast({
+        id: "message-branch",
+        title: "Could not branch chat",
+        description: error instanceof Error ? error.message : "Branching failed.",
+        tone: "danger",
+        duration: 7000
+      });
+    }
+  };
 
   return (
     <>
@@ -68,7 +264,7 @@ export function MessageList({ messages, compact }: MessageListProps) {
             >
               <div
                 className={cn(
-                  "flex h-9 w-9 items-center justify-center rounded-md border",
+                  "flex h-9 w-9 items-center justify-center rounded-lg border",
                   message.role === "user" && "border-accent/35 bg-accent/15 text-accent",
                   message.role === "assistant" &&
                     "border-border bg-panel-strong text-foreground",
@@ -86,23 +282,48 @@ export function MessageList({ messages, compact }: MessageListProps) {
               </div>
 
               <div className="min-w-0">
-                <div className="mb-1 flex min-h-5 items-center gap-2 text-xs text-muted-foreground">
-                  <span className="font-medium capitalize text-foreground/90">
-                    {message.role === "tool" ? message.toolName || "Tool" : message.role}
-                  </span>
-                  {message.model ? <span>{message.model}</span> : null}
-                  {message.status === "streaming" ? (
-                    <span className="rounded-full bg-accent/10 px-2 py-0.5 text-accent">
-                      Streaming
+                <div className="mb-1 flex min-h-8 items-start justify-between gap-2">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                    <span className="font-medium capitalize text-foreground/90">
+                      {message.role === "tool" ? message.toolName || "Tool" : message.role}
                     </span>
-                  ) : null}
-                  {message.role === "assistant" && message.webSearchMode ? (
-                    <WebSearchStatusPill message={message} />
-                  ) : null}
+                    {message.model ? <span>{message.model}</span> : null}
+                    {message.status === "streaming" ? (
+                      <span className="rounded-full bg-accent/10 px-2 py-0.5 text-accent">
+                        Streaming
+                      </span>
+                    ) : null}
+                    {message.role === "assistant" && message.webSearchMode ? (
+                      <WebSearchStatusPill message={message} />
+                    ) : null}
+                  </div>
+                  <MessageActions
+                    message={message}
+                    copied={copiedMessageId === message.id}
+                    speaking={speakingMessageId === message.id}
+                    menuOpen={openActionMenuId === message.id}
+                    disabled={message.id === "model-loading"}
+                    mutationsDisabled={actionsDisabled}
+                    canRetry={Boolean(onRetryMessage && message.role === "assistant")}
+                    canDelete={Boolean(onDeleteMessage)}
+                    canBranch={Boolean(onBranchMessage)}
+                    onCopy={() => void handleCopy(message)}
+                    onShare={() => void handleShare(message)}
+                    onRetry={() => void handleRetry(message)}
+                    onReadAloud={() => handleReadAloud(message)}
+                    onDelete={() => void handleDelete(message)}
+                    onBranch={() => void handleBranch(message)}
+                    onToggleMenu={() =>
+                      setOpenActionMenuId((current) =>
+                        current === message.id ? null : message.id
+                      )
+                    }
+                    onCloseMenu={() => setOpenActionMenuId(null)}
+                  />
                 </div>
 
                 {message.thinking ? (
-                  <details className="mb-3 rounded-md border border-border bg-panel px-3 py-2 text-sm text-muted-foreground">
+                  <details className="mb-3 rounded-lg border border-border bg-panel px-3 py-2 text-sm text-muted-foreground">
                     <summary
                       className={cn(
                         "cursor-pointer text-xs font-medium text-foreground",
@@ -122,9 +343,9 @@ export function MessageList({ messages, compact }: MessageListProps) {
                   className={cn(
                     "wrap-break-word text-[15px] leading-7",
                     message.role === "user" &&
-                      "rounded-md border border-accent/20 bg-accent/10 px-4 py-3",
+                      "rounded-lg border border-accent/20 bg-accent/10 px-4 py-3",
                     message.role === "tool" &&
-                      "rounded-md border border-warning/20 bg-warning/10 px-4 py-3 text-sm text-muted-foreground",
+                      "rounded-lg border border-warning/20 bg-warning/10 px-4 py-3 text-sm text-muted-foreground",
                     message.status === "error" && "text-danger"
                   )}
                 >
@@ -174,11 +395,253 @@ export function MessageList({ messages, compact }: MessageListProps) {
   );
 }
 
+function MessageActions({
+  message,
+  copied,
+  speaking,
+  menuOpen,
+  disabled,
+  mutationsDisabled,
+  canRetry,
+  canDelete,
+  canBranch,
+  onCopy,
+  onShare,
+  onRetry,
+  onReadAloud,
+  onDelete,
+  onBranch,
+  onToggleMenu,
+  onCloseMenu
+}: {
+  message: ChatMessage;
+  copied: boolean;
+  speaking: boolean;
+  menuOpen: boolean;
+  disabled: boolean;
+  mutationsDisabled: boolean;
+  canRetry: boolean;
+  canDelete: boolean;
+  canBranch: boolean;
+  onCopy(): void;
+  onShare(): void;
+  onRetry(): void;
+  onReadAloud(): void;
+  onDelete(): void;
+  onBranch(): void;
+  onToggleMenu(): void;
+  onCloseMenu(): void;
+}) {
+  const pending = message.status === "sending" || message.status === "streaming";
+  const structuralDisabled = disabled || mutationsDisabled || pending;
+  const textAvailable = messageActionText(message).length > 0;
+  const readable = readAloudText(message).length > 0;
+
+  const runMenuAction = (action: () => void) => {
+    onCloseMenu();
+    action();
+  };
+
+  return (
+    <div className="relative flex flex-none items-center gap-1 opacity-100 transition sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+      <ActionIconButton
+        label={copied ? "Copied" : "Copy message"}
+        disabled={disabled || !textAvailable}
+        onClick={onCopy}
+      >
+        {copied ? <Check className="h-3.5 w-3.5" /> : <Clipboard className="h-3.5 w-3.5" />}
+      </ActionIconButton>
+
+      <ActionIconButton
+        label="Share message"
+        disabled={disabled || !textAvailable}
+        onClick={onShare}
+      >
+        <Share2 className="h-3.5 w-3.5" />
+      </ActionIconButton>
+
+      {canRetry ? (
+        <ActionIconButton
+          label="Try again"
+          disabled={structuralDisabled}
+          onClick={onRetry}
+        >
+          <RotateCcw className="h-3.5 w-3.5" />
+        </ActionIconButton>
+      ) : null}
+
+      <ActionIconButton
+        label="More actions"
+        disabled={disabled || (!textAvailable && !canDelete && !canBranch)}
+        onClick={onToggleMenu}
+        aria-expanded={menuOpen}
+      >
+        <MoreHorizontal className="h-3.5 w-3.5" />
+      </ActionIconButton>
+
+      {menuOpen ? (
+        <div
+          className="absolute right-0 top-9 z-30 w-52 overflow-hidden rounded-lg border border-border bg-panel-strong p-1 text-sm shadow-panel"
+          onKeyDown={(event) => {
+            if (event.key === "Escape") onCloseMenu();
+          }}
+        >
+          <MenuAction
+            label={speaking ? "Stop reading" : "Read aloud"}
+            disabled={!readable}
+            tone={speaking ? "warning" : "normal"}
+            onClick={() => runMenuAction(onReadAloud)}
+            icon={speaking ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+          />
+          {canBranch ? (
+            <MenuAction
+              label="Branch in new chat"
+              disabled={structuralDisabled}
+              onClick={() => runMenuAction(onBranch)}
+              icon={<GitBranch className="h-4 w-4" />}
+            />
+          ) : null}
+          {canDelete ? (
+            <MenuAction
+              label="Delete message"
+              disabled={structuralDisabled}
+              tone="danger"
+              onClick={() => runMenuAction(onDelete)}
+              icon={<Trash2 className="h-4 w-4" />}
+            />
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ActionIconButton({
+  label,
+  children,
+  ...props
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-transparent text-muted-foreground transition hover:border-border hover:bg-muted hover:text-foreground focus:focus-ring disabled:cursor-not-allowed disabled:opacity-35"
+      {...props}
+    >
+      {children}
+    </button>
+  );
+}
+
+function MenuAction({
+  label,
+  icon,
+  tone = "normal",
+  disabled,
+  onClick
+}: {
+  label: string;
+  icon: ReactNode;
+  tone?: "normal" | "warning" | "danger";
+  disabled?: boolean;
+  onClick(): void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "flex h-9 w-full items-center gap-2 rounded-md px-2 text-left transition focus:focus-ring disabled:cursor-not-allowed disabled:opacity-40",
+        tone === "normal" && "text-foreground hover:bg-muted",
+        tone === "warning" && "text-warning hover:bg-warning/10",
+        tone === "danger" && "text-danger hover:bg-danger/10"
+      )}
+    >
+      {icon}
+      <span className="min-w-0 truncate">{label}</span>
+    </button>
+  );
+}
+
+function messageActionText(message: ChatMessage) {
+  const sections: string[] = [];
+  const content = message.content.trim();
+  if (content) sections.push(content);
+
+  if (message.attachments?.length) {
+    sections.push(
+      message.attachments
+        .map((attachment) => `Attachment: ${attachment.name}`)
+        .join("\n")
+    );
+  }
+
+  const sources = sanitizeSearchResults(message.webSearchResults ?? []);
+  if (sources.length) {
+    sections.push(
+      [
+        "Sources:",
+        ...sources.map(
+          (source, index) =>
+            `[${index + 1}] ${source.title || source.url}\n${source.url}`
+        )
+      ].join("\n")
+    );
+  }
+
+  return sections.join("\n\n").trim();
+}
+
+function readAloudText(message: ChatMessage) {
+  return stripMarkdownForSpeech(message.content).trim();
+}
+
+function messageRoleLabel(message: ChatMessage) {
+  if (message.role === "tool") return message.toolName || "Tool";
+  return message.role.charAt(0).toUpperCase() + message.role.slice(1);
+}
+
+function stripMarkdownForSpeech(input: string) {
+  return input
+    .replace(/```[\s\S]*?```/g, " code block ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/[*_~#>]+/g, "")
+    .replace(/\s+/g, " ");
+}
+
+async function copyText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+
+  try {
+    document.execCommand("copy");
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
 function WebSearchResultsPanel({ message }: { message: ChatMessage }) {
   const results = sanitizeSearchResults(message.webSearchResults ?? []);
 
   return (
-    <details className="mt-2 rounded-md border border-border bg-panel px-3 py-2 text-sm">
+    <details className="mt-2 rounded-lg border border-border bg-panel px-3 py-2 text-sm">
       <summary className="flex cursor-pointer items-center gap-2 text-xs font-medium text-foreground">
         <Search className="h-3.5 w-3.5 text-accent" />
         Web search
@@ -342,7 +805,7 @@ function ModelLoadingIndicator({ model }: { model?: string }) {
     <div
       role="status"
       aria-live="polite"
-      className="inline-flex max-w-full items-center gap-2 rounded-md border border-border bg-panel-strong px-3 py-2 text-sm text-muted-foreground"
+      className="inline-flex max-w-full items-center gap-2 rounded-lg border border-border bg-panel-strong px-3 py-2 text-sm text-muted-foreground"
     >
       <Loader2 className="h-4 w-4 flex-none animate-spin text-accent" />
       <span className="min-w-0 truncate">
@@ -358,7 +821,7 @@ function ImageGenerationPlaceholder() {
       role="status"
       aria-live="polite"
       aria-label="Generating image"
-      className="relative flex aspect-square w-full max-w-2xl overflow-hidden rounded-md border border-border bg-panel-strong"
+      className="relative flex aspect-square w-full max-w-2xl overflow-hidden rounded-lg border border-border bg-panel-strong"
     >
       <div className="absolute inset-0 animate-pulse bg-muted" />
       <div className="absolute inset-6 rounded-md border border-border/70 bg-background/25 animate-pulse" />
@@ -394,7 +857,7 @@ function MessageAttachments({
             title={`${attachment.name} - open fullscreen`}
             onClick={() => onSelectImage(attachment)}
             className={cn(
-              "relative overflow-hidden rounded-md border border-border bg-panel-strong text-left transition hover:border-accent/45 focus:focus-ring",
+              "relative overflow-hidden rounded-lg border border-border bg-panel-strong text-left transition hover:border-accent/45 focus:focus-ring",
               generated ? "w-full max-w-2xl" : "h-28 w-28"
             )}
           >
@@ -418,7 +881,7 @@ function MessageAttachments({
         ) : (
           <div
             key={attachment.id}
-            className="flex max-w-full items-center gap-2 rounded-md border border-border bg-panel-strong px-2.5 py-2 text-xs"
+            className="flex max-w-full items-center gap-2 rounded-lg border border-border bg-panel-strong px-2.5 py-2 text-xs"
             title={attachment.name}
           >
             {attachment.kind === "text" ? (

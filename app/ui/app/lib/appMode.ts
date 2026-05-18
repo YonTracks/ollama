@@ -34,10 +34,20 @@ export function readBrowserAppMode(): AppMode {
     return queryMode;
   }
 
+  const configuredMode = parseMode(process.env.NEXT_PUBLIC_OLLAMA_UI_MODE);
+  if (configuredMode) {
+    try {
+      window.localStorage.setItem(MODE_STORAGE_KEY, configuredMode);
+    } catch {
+      // Mode still applies for this session.
+    }
+    return configuredMode;
+  }
+
   try {
-    return parseMode(window.localStorage.getItem(MODE_STORAGE_KEY)) ?? getDefaultAppMode();
+    return parseMode(window.localStorage.getItem(MODE_STORAGE_KEY)) ?? "desktop";
   } catch {
-    return getDefaultAppMode();
+    return "desktop";
   }
 }
 

@@ -7,6 +7,8 @@ import {
   Globe2,
   Image as ImageIcon,
   Lightbulb,
+  Mic,
+  MicOff,
   Paperclip,
   Send,
   Square,
@@ -97,6 +99,44 @@ const TEXT_MIME_TYPES = new Set([
   "application/x-yaml"
 ]);
 
+interface AppSpeechRecognitionAlternative {
+  transcript: string;
+}
+
+interface AppSpeechRecognitionResult {
+  isFinal: boolean;
+  [index: number]: AppSpeechRecognitionAlternative | undefined;
+}
+
+interface AppSpeechRecognitionResultList {
+  length: number;
+  [index: number]: AppSpeechRecognitionResult | undefined;
+}
+
+interface AppSpeechRecognitionEvent extends Event {
+  resultIndex: number;
+  results: AppSpeechRecognitionResultList;
+}
+
+interface AppSpeechRecognitionErrorEvent extends Event {
+  error: string;
+  message?: string;
+}
+
+interface AppSpeechRecognition {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: AppSpeechRecognitionEvent) => void) | null;
+  onerror: ((event: AppSpeechRecognitionErrorEvent) => void) | null;
+  onend: (() => void) | null;
+  start(): void;
+  stop(): void;
+  abort(): void;
+}
+
+type AppSpeechRecognitionConstructor = new () => AppSpeechRecognition;
+
 export function PromptComposer({
   selectedModel,
   settings,
@@ -112,8 +152,13 @@ export function PromptComposer({
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [dictating, setDictating] = useState(false);
+  const [dictationSupported, setDictationSupported] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const recognitionRef = useRef<AppSpeechRecognition | null>(null);
+  const dictationBasePromptRef = useRef("");
+  const finalTranscriptRef = useRef("");
   const disabled = Boolean(disabledReason);
   const hasDraft = prompt.trim().length > 0 || attachments.length > 0;
   const imageGeneration = isImageGenerationModel(selectedModel);
@@ -130,6 +175,101 @@ export function PromptComposer({
     textarea.style.height = "0px";
     textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`;
   }, [prompt]);
+
+  useEffect(() => {
+    setDictationSupported(Boolean(getSpeechRecognitionConstructor()));
+    return () => recognitionRef.current?.abort();
+  }, []);
+
+  const stopDictation = () => {
+    recognitionRef.current?.stop();
+    recognitionRef.current = null;
+    setDictating(false);
+  };
+
+  const startDictation = () => {
+    const Recognition = getSpeechRecognitionConstructor();
+    if (!Recognition) {
+      showToast({
+        id: "dictation-unavailable",
+        title: "Dictation is not available",
+        description: "Use a browser that supports speech recognition, then allow microphone access for this app.",
+        tone: "warning",
+        duration: 5200
+      });
+      return;
+    }
+
+    const recognition = new Recognition();
+    dictationBasePromptRef.current = prompt.trimEnd();
+    finalTranscriptRef.current = "";
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = navigator.language || "en-US";
+    recognition.onresult = (event) => {
+      let interimTranscript = "";
+      for (let index = event.resultIndex; index < event.results.length; index++) {
+        const result = event.results[index];
+        const transcript = result?.[0]?.transcript ?? "";
+        if (!transcript) continue;
+        if (result?.isFinal) {
+          finalTranscriptRef.current = `${finalTranscriptRef.current}${transcript} `;
+        } else {
+          interimTranscript = `${interimTranscript}${transcript}`;
+        }
+      }
+
+      const spokenText = `${finalTranscriptRef.current}${interimTranscript}`.trim();
+      setPrompt(joinPromptText(dictationBasePromptRef.current, spokenText));
+    };
+    recognition.onerror = (event) => {
+      setDictating(false);
+      recognitionRef.current = null;
+      showToast({
+        id: "dictation-error",
+        title: "Dictation stopped",
+        description: dictationErrorMessage(event),
+        tone: "warning",
+        duration: 5200
+      });
+    };
+    recognition.onend = () => {
+      setDictating(false);
+      recognitionRef.current = null;
+    };
+
+    try {
+      recognitionRef.current?.abort();
+      recognitionRef.current = recognition;
+      recognition.start();
+      setDictating(true);
+      showToast({
+        id: "dictation-started",
+        title: "Dictation started",
+        description: "Speak naturally; text will appear in the composer.",
+        tone: "info",
+        duration: 2600
+      });
+    } catch (error) {
+      recognitionRef.current = null;
+      setDictating(false);
+      showToast({
+        id: "dictation-error",
+        title: "Could not start dictation",
+        description: error instanceof Error ? error.message : "Microphone access failed.",
+        tone: "danger",
+        duration: 7000
+      });
+    }
+  };
+
+  const toggleDictation = () => {
+    if (dictating) {
+      stopDictation();
+      return;
+    }
+    startDictation();
+  };
 
   const addFiles = async (fileList: FileList | File[]) => {
     if (disabled || streaming) return;
@@ -223,6 +363,7 @@ export function PromptComposer({
 
   const submit = () => {
     if (!hasDraft || disabled || streaming) return;
+    if (dictating) stopDictation();
     onSend(prompt, attachments);
     setPrompt("");
     setAttachments([]);
@@ -244,7 +385,7 @@ export function PromptComposer({
       <div className="mx-auto max-w-4xl">
         <div
           className={cn(
-            "relative rounded-md border bg-panel shadow-panel transition",
+            "relative rounded-lg border bg-panel shadow-panel transition",
             disabled ? "border-border opacity-75" : "border-border focus-within:border-accent/50",
             dragActive && "border-accent/60 bg-accent/5"
           )}
@@ -261,7 +402,7 @@ export function PromptComposer({
             className="hidden"
           />
           {dragActive ? (
-            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-md border border-accent/70 bg-background/80 text-sm font-medium text-accent backdrop-blur-sm">
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg border border-accent/70 bg-background/80 text-sm font-medium text-accent backdrop-blur-sm">
               Drop files to attach
             </div>
           ) : null}
@@ -442,6 +583,24 @@ export function PromptComposer({
             ) : null}
 
             {!imageGeneration ? <div className="min-w-0 flex-1" /> : null}
+
+            <IconButton
+              label={
+                dictationSupported
+                  ? dictating
+                    ? "Stop dictation"
+                    : "Dictate message"
+                  : "Dictation unavailable"
+              }
+              onClick={toggleDictation}
+              disabled={disabled || streaming || !dictationSupported}
+              className={cn(
+                dictating &&
+                  "border-warning/45 bg-warning/10 text-warning hover:bg-warning/15 hover:text-warning"
+              )}
+            >
+              {dictating ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+            </IconButton>
 
             <IconButton
               label="Attach files"
@@ -639,4 +798,32 @@ function readAsText(file: Blob) {
     reader.onerror = () => reject(reader.error ?? new Error("Failed to read file."));
     reader.readAsText(file);
   });
+}
+
+function getSpeechRecognitionConstructor(): AppSpeechRecognitionConstructor | null {
+  if (typeof window === "undefined") return null;
+  const speechWindow = window as Window & {
+    SpeechRecognition?: AppSpeechRecognitionConstructor;
+    webkitSpeechRecognition?: AppSpeechRecognitionConstructor;
+  };
+  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null;
+}
+
+function joinPromptText(base: string, spokenText: string) {
+  if (!base) return spokenText;
+  if (!spokenText) return base;
+  return `${base} ${spokenText}`;
+}
+
+function dictationErrorMessage(event: AppSpeechRecognitionErrorEvent) {
+  if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+    return "Microphone permission was blocked. Enable microphone access for this site in your browser settings.";
+  }
+  if (event.error === "no-speech") {
+    return "No speech was detected.";
+  }
+  if (event.error === "audio-capture") {
+    return "No microphone was detected.";
+  }
+  return event.message || "Speech recognition stopped unexpectedly.";
 }

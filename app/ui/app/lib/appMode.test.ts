@@ -14,6 +14,14 @@ describe("app mode detection", () => {
     expect(storage.get("ollama.app.mode.v1")).toBe("standalone");
   });
 
+  it("uses explicit build mode before stale browser storage", () => {
+    process.env.NEXT_PUBLIC_OLLAMA_UI_MODE = "standalone";
+    const storage = stubWindow("http://localhost:5173/", "desktop");
+
+    expect(readBrowserAppMode()).toBe("standalone");
+    expect(storage.get("ollama.app.mode.v1")).toBe("standalone");
+  });
+
   it("forces desktop mode inside the native shell even if standalone was stored", () => {
     const storage = stubWindow("http://127.0.0.1:3001/", "standalone", true);
 

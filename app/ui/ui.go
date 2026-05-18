@@ -339,6 +339,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/chat/{id}", handle(s.getChat))
 	mux.Handle("POST /api/v1/chat/{id}", handle(s.chat))
 	mux.Handle("DELETE /api/v1/chat/{id}", handle(s.deleteChat))
+	mux.Handle("DELETE /api/v1/chat/{id}/message/{index}", handle(s.deleteChatMessage))
+	mux.Handle("POST /api/v1/chat/{id}/branch", handle(s.branchChat))
 	mux.Handle("POST /api/v1/create-chat", handle(s.createChat))
 	mux.Handle("PUT /api/v1/chat/{id}/rename", handle(s.renameChat))
 
@@ -1515,6 +1517,87 @@ func (s *Server) deleteChat(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	w.WriteHeader(http.StatusOK)
+	return nil
+}
+
+func (s *Server) deleteChatMessage(w http.ResponseWriter, r *http.Request) error {
+	cid := r.PathValue("id")
+	if cid == "" {
+		return fmt.Errorf("chat ID is required")
+	}
+
+	messageIndex, err := strconv.Atoi(r.PathValue("index"))
+	if err != nil || messageIndex < 0 {
+		return fmt.Errorf("valid message index is required")
+	}
+
+	chat, err := s.Store.ChatWithOptions(cid, true)
+	if err != nil {
+		return fmt.Errorf("chat not found: %w", err)
+	}
+	if messageIndex >= len(chat.Messages) {
+		return fmt.Errorf("message not found")
+	}
+
+	chat.Messages = append(chat.Messages[:messageIndex], chat.Messages[messageIndex+1:]...)
+	if err := s.Store.SetChat(*chat); err != nil {
+		return fmt.Errorf("failed to delete message: %w", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(responses.ChatResponse{Chat: *chat})
+	return nil
+}
+
+func (s *Server) branchChat(w http.ResponseWriter, r *http.Request) error {
+	cid := r.PathValue("id")
+	if cid == "" {
+		return fmt.Errorf("chat ID is required")
+	}
+
+	var req struct {
+		MessageIndex int `json:"messageIndex"`
+	}
+	if err := decodeLimitedJSON(w, r, &req, maxSmallJSONBytes); err != nil {
+		return fmt.Errorf("invalid request body: %w", err)
+	}
+	if req.MessageIndex < 0 {
+		return fmt.Errorf("valid message index is required")
+	}
+
+	chat, err := s.Store.ChatWithOptions(cid, true)
+	if err != nil {
+		return fmt.Errorf("chat not found: %w", err)
+	}
+	if req.MessageIndex >= len(chat.Messages) {
+		return fmt.Errorf("message not found")
+	}
+
+	id, err := uuid.NewV7()
+	if err != nil {
+		return fmt.Errorf("failed to generate branch chat ID: %w", err)
+	}
+
+	now := time.Now()
+	messages := make([]store.Message, req.MessageIndex+1)
+	copy(messages, chat.Messages[:req.MessageIndex+1])
+	for i := range messages {
+		messages[i].Stream = false
+		messages[i].UpdatedAt = now
+	}
+
+	branch := store.Chat{
+		ID:        id.String(),
+		Title:     branchChatTitle(chatTitle(*chat)),
+		CreatedAt: now,
+		Messages:  messages,
+	}
+	if err := s.Store.SetChat(branch); err != nil {
+		return fmt.Errorf("failed to branch chat: %w", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(responses.ChatResponse{Chat: branch})
 	return nil
 }
 
@@ -3308,6 +3391,24 @@ func chatTitle(chat store.Chat) string {
 	}
 
 	return "New chat"
+}
+
+func branchChatTitle(title string) string {
+	base := strings.TrimSpace(title)
+	if base == "" {
+		base = "New chat"
+	}
+	if strings.HasSuffix(strings.ToLower(base), " branch") {
+		return base
+	}
+
+	const suffix = " branch"
+	baseRunes := []rune(base)
+	limit := 64 - len([]rune(suffix))
+	if len(baseRunes) > limit {
+		base = string(baseRunes[:max(0, limit-3)]) + "..."
+	}
+	return base + suffix
 }
 
 func titleFromUserMessage(msg store.Message) string {

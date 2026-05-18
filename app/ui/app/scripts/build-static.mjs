@@ -7,6 +7,7 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const nextBin = join(root, "node_modules", "next", "dist", "bin", "next");
 const outDir = join(root, "out");
 const distDir = join(root, "dist");
+const nextDevDir = join(root, ".next", "dev");
 const apiDir = join(root, "app", "api");
 const disabledApiDir = join(root, ".api-disabled-for-static-export");
 
@@ -15,6 +16,7 @@ let exitCode = 0;
 
 try {
   await rm(disabledApiDir, { recursive: true, force: true });
+  await rm(nextDevDir, { recursive: true, force: true });
   if (await exists(apiDir)) {
     await rename(apiDir, disabledApiDir);
     apiDisabled = true;

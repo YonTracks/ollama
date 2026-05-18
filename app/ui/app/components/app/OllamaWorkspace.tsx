@@ -339,7 +339,6 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
           <ChatPanel
             activeChatId={activeChatId}
             connection={connection}
-            standalone={appMode.standalone}
             selectedModel={selectedModel}
             settings={settings}
             chat={chatSession}

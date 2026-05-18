@@ -477,6 +477,37 @@ export async function deleteChat(chatId: string) {
   });
 }
 
+export async function deleteChatMessage(
+  chatId: string,
+  messageIndex: number
+): Promise<ChatResponse> {
+  const data = await fetchJson<RawChatResponse>(
+    `/api/v1/chat/${encodeURIComponent(chatId)}/message/${messageIndex}`,
+    {
+      method: "DELETE"
+    }
+  );
+  return {
+    chat: normalizeChat(data.chat)
+  };
+}
+
+export async function branchChat(
+  chatId: string,
+  messageIndex: number
+): Promise<ChatResponse> {
+  const data = await fetchJson<RawChatResponse>(
+    `/api/v1/chat/${encodeURIComponent(chatId)}/branch`,
+    {
+      method: "POST",
+      body: JSON.stringify({ messageIndex })
+    }
+  );
+  return {
+    chat: normalizeChat(data.chat)
+  };
+}
+
 export async function deleteAllChats(): Promise<number> {
   const response = await getChats();
   await Promise.all(response.chatInfos.map((chat) => deleteChat(chat.id)));

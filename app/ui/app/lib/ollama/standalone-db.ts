@@ -180,8 +180,67 @@ export async function deleteStandaloneChat(chatId: string): Promise<void> {
   await withChatStore<undefined>("readwrite", (store) => store.delete(chatId));
 }
 
+export async function deleteStandaloneChatMessage(
+  chatId: string,
+  messageIndex: number
+): Promise<ChatResponse> {
+  const response = await getStandaloneChat(chatId);
+  if (messageIndex < 0 || messageIndex >= response.chat.messages.length) {
+    throw new Error("Message was not found in this chat.");
+  }
+
+  const nextChat: Chat = {
+    ...response.chat,
+    messages: response.chat.messages.filter((_, index) => index !== messageIndex),
+    updatedAt: nowIso()
+  };
+  await saveStandaloneChat(nextChat);
+  return { chat: nextChat };
+}
+
+export async function branchStandaloneChat(
+  chatId: string,
+  messageIndex: number
+): Promise<ChatResponse> {
+  const response = await getStandaloneChat(chatId);
+  if (messageIndex < 0 || messageIndex >= response.chat.messages.length) {
+    throw new Error("Message was not found in this chat.");
+  }
+
+  const timestamp = nowIso();
+  const branch: Chat = {
+    id: createStandaloneChatId(),
+    title: branchTitle(response.chat.title || titleFromMessages(response.chat.messages)),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    messages: response.chat.messages.slice(0, messageIndex + 1).map((message) => ({
+      ...message,
+      status: message.status === "streaming" || message.status === "sending" ? "complete" : message.status,
+      updatedAt: timestamp
+    }))
+  };
+
+  await saveStandaloneChat(branch);
+  return { chat: branch };
+}
+
 export async function deleteAllStandaloneChats(): Promise<number> {
   const records = await withChatStore<StandaloneChatRecord[]>("readonly", (store) => store.getAll());
   await withChatStore<undefined>("readwrite", (store) => store.clear());
   return records.length;
+}
+
+function createStandaloneChatId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `chat-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function branchTitle(title: string) {
+  const base = title.trim() || "New chat";
+  const suffix = " branch";
+  if (base.toLowerCase().endsWith(suffix)) return base;
+  const limit = 64 - suffix.length;
+  return `${base.length > limit ? `${base.slice(0, Math.max(0, limit - 3))}...` : base}${suffix}`;
 }

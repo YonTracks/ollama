@@ -21,7 +21,6 @@ import type { LocalSettings } from "@/types/app";
 interface ChatPanelProps {
   activeChatId: string | null;
   connection: ReturnType<typeof useOllamaConnection>;
-  standalone?: boolean;
   selectedModel: string;
   settings: LocalSettings;
   chat: ReturnType<typeof useChatSession>;
@@ -31,7 +30,6 @@ interface ChatPanelProps {
 export function ChatPanel({
   activeChatId,
   connection,
-  standalone = false,
   selectedModel,
   settings,
   chat,
@@ -175,7 +173,14 @@ export function ChatPanel({
               body="Pick a model and start locally."
             />
           ) : (
-            <MessageList messages={visibleMessages} compact={settings.compactMessages} />
+            <MessageList
+              messages={visibleMessages}
+              compact={settings.compactMessages}
+              actionsDisabled={chat.streaming}
+              onRetryMessage={chat.retryFromMessage}
+              onDeleteMessage={chat.deleteMessage}
+              onBranchMessage={chat.branchFromMessage}
+            />
           )}
         </div>
 
@@ -285,10 +290,10 @@ function StatePanel({
     <div className="flex min-h-full items-center justify-center px-4 py-10">
       <div
         className={cn(
-        "w-full max-w-[calc(100vw-2rem)] rounded-md border border-border bg-panel/80 p-6 text-center shadow-panel sm:max-w-md"
+        "w-full max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-panel/80 p-6 text-center shadow-panel sm:max-w-md"
         )}
       >
-        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-md border border-border bg-panel-strong text-accent">
+        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg border border-border bg-panel-strong text-accent">
           {icon}
         </div>
         <h1 className="text-lg font-semibold">{title}</h1>
