@@ -16,13 +16,14 @@ describe("service worker cache policy", () => {
 
     expect(source).toContain('"/favicon.svg"');
     expect(source).toContain("cache.put(request, copy)");
+    expect(source).toContain('caches.match("/")');
     expect(source).not.toContain('cache.put("/", copy)');
   });
 
   it("uses a new cache version for app shell updates", () => {
     const source = readFileSync(join(process.cwd(), "public", "sw.js"), "utf8");
 
-    expect(source).toContain('const CACHE_VERSION = "ollama-app-shell-v4"');
+    expect(source).toContain('const CACHE_VERSION = "ollama-app-shell-v5"');
   });
 
   it("registers service worker updates without stale browser cache", () => {

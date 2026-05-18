@@ -22,12 +22,6 @@ export function useOllamaConnection(mode: AppMode, coreApiBase?: string, enabled
         return false;
       }
 
-      if (!online) {
-        setStatus("offline");
-        setError("You are offline.");
-        return false;
-      }
-
       setStatus((current) => (current === "connected" ? current : "checking"));
 
       try {
@@ -43,8 +37,12 @@ export function useOllamaConnection(mode: AppMode, coreApiBase?: string, enabled
         const message =
           checkError instanceof Error ? checkError.message : "Ollama is not reachable.";
         setVersion(null);
-        setStatus("disconnected");
-        setError(message);
+        setStatus(online ? "disconnected" : "offline");
+        setError(
+          online
+            ? message
+            : "No internet connection, and the local Ollama API is not reachable."
+        );
         return false;
       }
     },

@@ -44,13 +44,13 @@ export function ChatPanel({
   const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
   const [showScrollButton, setShowScrollButton] = useState(false);
 
-  const disabledReason = !connection.online
-    ? "Offline"
-    : connection.status !== "connected"
-      ? "Disconnected"
-      : !selectedModel
-        ? "Select a model"
-        : null;
+  const disabledReason = connection.status !== "connected"
+    ? connection.status === "offline"
+      ? "Local Ollama unavailable"
+      : "Disconnected"
+    : !selectedModel
+      ? "Select a model"
+      : null;
 
   const visibleMessages = useMemo(
     () => withModelLoadingMessage(chat.messages, chat.modelLoadingName ?? selectedModel, chat.modelLoading),
@@ -153,8 +153,8 @@ export function ChatPanel({
           {connection.status === "offline" && visibleMessages.length === 0 ? (
             <StatePanel
               icon={<WifiOff className="h-6 w-6" />}
-              title="Offline"
-              body="The app shell is available. Ollama requests will resume when the connection returns."
+              title="Local Ollama unavailable"
+              body="The app shell is available offline. Chat will resume when the local Ollama API is reachable."
             />
           ) : connection.status === "disconnected" && visibleMessages.length === 0 ? (
             <StatePanel

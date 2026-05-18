@@ -63,7 +63,7 @@ export function TopBar({
       {!connection.online ? (
         <div className="flex h-9 items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 text-sm text-warning md:hidden">
           <WifiOff className="h-4 w-4" />
-          Offline
+          {connection.status === "connected" ? "Local only" : "Offline"}
         </div>
       ) : null}
 

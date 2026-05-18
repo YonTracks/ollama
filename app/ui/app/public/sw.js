@@ -1,4 +1,4 @@
-const CACHE_VERSION = "ollama-app-shell-v4";
+const CACHE_VERSION = "ollama-app-shell-v5";
 const STATIC_CACHE = `${CACHE_VERSION}:static`;
 const APP_SHELL = [
   "/",
@@ -77,7 +77,7 @@ self.addEventListener("fetch", (event) => {
           return response;
         })
         .catch(async () => {
-          return (await caches.match(request)) || (await caches.match("/offline/")) || caches.match("/");
+          return (await caches.match(request)) || (await caches.match("/")) || caches.match("/offline/");
         })
     );
     return;
