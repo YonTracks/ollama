@@ -69,6 +69,11 @@ interface RawChatResponse {
   chat?: RawChat;
 }
 
+interface UserStatusResponse {
+  user?: OllamaUser | null;
+  signin_url?: string;
+}
+
 export class OllamaClientError extends Error {
   readonly status?: number;
   readonly code: "http" | "unreachable" | "parse" | "unknown";
@@ -510,17 +515,14 @@ export async function updateCloudSetting(enabled: boolean): Promise<CloudStatusR
 
 export async function fetchUser(signal?: AbortSignal): Promise<OllamaUser | null> {
   try {
-    const response = await fetch(apiUrl("/api/me"), {
-      method: "POST",
+    const response = await fetch(apiUrl("/api/v1/user"), {
+      method: "GET",
       cache: "no-store",
       headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json"
+        Accept: "application/json"
       },
       signal
     });
-
-    if (response.status === 401 || response.status === 403) return null;
 
     if (!response.ok) {
       throw new OllamaClientError(await readError(response), {
@@ -529,7 +531,8 @@ export async function fetchUser(signal?: AbortSignal): Promise<OllamaUser | null
       });
     }
 
-    return normalizeUser((await response.json()) as OllamaUser);
+    const data = (await response.json()) as UserStatusResponse;
+    return data.user ? normalizeUser(data.user) : null;
   } catch (error) {
     throw toClientError(error);
   }
@@ -537,26 +540,23 @@ export async function fetchUser(signal?: AbortSignal): Promise<OllamaUser | null
 
 export async function fetchConnectUrl(): Promise<string> {
   try {
-    const response = await fetch(apiUrl("/api/me"), {
-      method: "POST",
+    const response = await fetch(apiUrl("/api/v1/user"), {
+      method: "GET",
       cache: "no-store",
       headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json"
+        Accept: "application/json"
       }
     });
 
-    if (response.status === 401) {
-      const data = (await response.json()) as { signin_url?: string };
-      if (data.signin_url) return data.signin_url;
+    if (!response.ok) {
+      throw new OllamaClientError(await readError(response), {
+        status: response.status,
+        code: "http"
+      });
     }
 
-    if (response.ok) return "";
-
-    throw new OllamaClientError(await readError(response), {
-      status: response.status,
-      code: "http"
-    });
+    const data = (await response.json()) as UserStatusResponse;
+    return data.signin_url ?? "";
   } catch (error) {
     throw toClientError(error);
   }

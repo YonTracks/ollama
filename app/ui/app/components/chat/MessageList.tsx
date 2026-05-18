@@ -17,6 +17,7 @@ import {
 import { MarkdownContent } from "@/components/chat/MarkdownContent";
 import { imageAttachmentDataUrl } from "@/lib/ollama/attachments";
 import { isImageGenerationModel } from "@/lib/ollama/models";
+import { sanitizeSearchResults } from "@/lib/search/sanitize";
 import { cn, formatBytes } from "@/lib/utils";
 import type {
   ChatAttachment,
@@ -174,7 +175,7 @@ export function MessageList({ messages, compact }: MessageListProps) {
 }
 
 function WebSearchResultsPanel({ message }: { message: ChatMessage }) {
-  const results = message.webSearchResults ?? [];
+  const results = sanitizeSearchResults(message.webSearchResults ?? []);
 
   return (
     <details className="mt-2 rounded-md border border-border bg-panel px-3 py-2 text-sm">
@@ -197,7 +198,7 @@ function WebSearchResultsPanel({ message }: { message: ChatMessage }) {
               <a
                 href={result.url}
                 target="_blank"
-                rel="noreferrer"
+                rel="noopener noreferrer"
                 className="inline-flex max-w-full items-center gap-1 text-sm font-medium text-accent hover:underline"
               >
                 <span className="truncate">{result.title || result.url}</span>
@@ -220,7 +221,7 @@ function WebSearchResultsPanel({ message }: { message: ChatMessage }) {
 }
 
 function WebSearchSourceLinks({ message }: { message: ChatMessage }) {
-  const results = message.webSearchResults ?? [];
+  const results = sanitizeSearchResults(message.webSearchResults ?? []);
   if (results.length === 0) return null;
 
   return (
@@ -233,7 +234,7 @@ function WebSearchSourceLinks({ message }: { message: ChatMessage }) {
             key={`${result.url}-source-${index}`}
             href={result.url}
             target="_blank"
-            rel="noreferrer"
+            rel="noopener noreferrer"
             title={`${label} - ${result.url}`}
             className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-md border border-border bg-panel px-2 py-1 text-accent transition hover:border-accent/45 hover:bg-accent/10 focus:focus-ring sm:max-w-64"
           >

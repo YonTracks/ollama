@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   deleteAllChats,
   deleteChat,
+  fetchConnectUrl,
+  fetchUser,
   listModels,
   sendChat,
   OllamaClientError
@@ -125,6 +127,25 @@ describe("Ollama client", () => {
     );
 
     await expect(deleteChat("chat-id")).resolves.toBeUndefined();
+  });
+
+  it("reads account state from the non-failing app user endpoint", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ user: null, signin_url: "https://ollama.com/connect" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        })
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchUser()).resolves.toBeNull();
+    await expect(fetchConnectUrl()).resolves.toBe("https://ollama.com/connect");
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/v1/user"),
+      expect.objectContaining({ method: "GET" })
+    );
   });
 
   it("deletes every chat returned by the chat list", async () => {

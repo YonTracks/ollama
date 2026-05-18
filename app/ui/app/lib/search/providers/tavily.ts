@@ -1,4 +1,5 @@
 import { SearchProviderError, type ProviderSearchOptions, type SearchResult } from "../types";
+import { normalizeSearchResultUrl } from "../sanitize";
 
 const TAVILY_ENDPOINT = "https://api.tavily.com/search";
 
@@ -58,7 +59,7 @@ export function normalizeTavilyResults(payload: unknown, count: number): SearchR
   const seen = new Set<string>();
 
   for (const raw of data.results as TavilyResult[]) {
-    const url = stringValue(raw.url);
+    const url = normalizeSearchResultUrl(raw.url);
     if (!url || seen.has(url)) continue;
 
     const title = stringValue(raw.title) || url;

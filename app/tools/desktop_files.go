@@ -103,12 +103,12 @@ func (t *ListFilesTool) Schema() map[string]any {
 			},
 			"include_hidden": map[string]any{
 				"type":        "boolean",
-				"description": "Include dot-prefixed files and folders. Defaults to false.",
+				"description": "Include dot-prefixed files and folders. Defaults to false and requires OLLAMA_DESKTOP_TOOLS_SENSITIVE=1.",
 				"default":     false,
 			},
 			"include_generated": map[string]any{
 				"type":        "boolean",
-				"description": "Include common generated/dependency folders such as node_modules, dist, build, .next, target, and .git. Defaults to false.",
+				"description": "Include common generated/dependency folders such as node_modules, dist, build, .next, target, and .git. Defaults to false and requires OLLAMA_DESKTOP_TOOLS_SENSITIVE=1.",
 				"default":     false,
 			},
 		},
@@ -138,6 +138,9 @@ func (t *ListFilesTool) Execute(ctx context.Context, args map[string]any) (any, 
 
 	includeHidden := boolArg(args, "include_hidden", false)
 	includeGenerated := boolArg(args, "include_generated", false)
+	if err := validateSensitiveDesktopToolOptions(includeHidden, includeGenerated); err != nil {
+		return nil, "", err
+	}
 	if err := validateAllowedRelativePath(rel, includeHidden, includeGenerated); err != nil {
 		return nil, "", err
 	}
@@ -255,12 +258,12 @@ func (t *ReadTextFileTool) Schema() map[string]any {
 			},
 			"include_hidden": map[string]any{
 				"type":        "boolean",
-				"description": "Allow reading dot-prefixed files and folders. Defaults to false.",
+				"description": "Allow reading dot-prefixed files and folders. Defaults to false and requires OLLAMA_DESKTOP_TOOLS_SENSITIVE=1.",
 				"default":     false,
 			},
 			"include_generated": map[string]any{
 				"type":        "boolean",
-				"description": "Allow reading files inside common generated/dependency folders such as node_modules, dist, build, .next, target, and .git. Defaults to false.",
+				"description": "Allow reading files inside common generated/dependency folders such as node_modules, dist, build, .next, target, and .git. Defaults to false and requires OLLAMA_DESKTOP_TOOLS_SENSITIVE=1.",
 				"default":     false,
 			},
 		},
@@ -290,6 +293,9 @@ func (t *ReadTextFileTool) Execute(ctx context.Context, args map[string]any) (an
 	}
 	includeHidden := boolArg(args, "include_hidden", false)
 	includeGenerated := boolArg(args, "include_generated", false)
+	if err := validateSensitiveDesktopToolOptions(includeHidden, includeGenerated); err != nil {
+		return nil, "", err
+	}
 	if err := validateAllowedRelativePath(rel, includeHidden, includeGenerated); err != nil {
 		return nil, "", err
 	}
@@ -377,12 +383,12 @@ func (t *SearchFilesTool) Schema() map[string]any {
 			},
 			"include_hidden": map[string]any{
 				"type":        "boolean",
-				"description": "Include dot-prefixed files and folders. Defaults to false.",
+				"description": "Include dot-prefixed files and folders. Defaults to false and requires OLLAMA_DESKTOP_TOOLS_SENSITIVE=1.",
 				"default":     false,
 			},
 			"include_generated": map[string]any{
 				"type":        "boolean",
-				"description": "Include common generated/dependency folders such as node_modules, dist, build, .next, target, and .git. Defaults to false.",
+				"description": "Include common generated/dependency folders such as node_modules, dist, build, .next, target, and .git. Defaults to false and requires OLLAMA_DESKTOP_TOOLS_SENSITIVE=1.",
 				"default":     false,
 			},
 			"extensions": map[string]any{
@@ -437,6 +443,9 @@ func (t *SearchFilesTool) Execute(ctx context.Context, args map[string]any) (any
 	}
 	if !options.caseSensitive {
 		options.normalizedQuery = strings.ToLower(query)
+	}
+	if err := validateSensitiveDesktopToolOptions(options.includeHidden, options.includeGenerated); err != nil {
+		return nil, "", err
 	}
 	if err := validateAllowedRelativePath(rel, options.includeHidden, options.includeGenerated); err != nil {
 		return nil, "", err
@@ -723,6 +732,18 @@ func validateAllowedRelativePath(rel string, includeHidden, includeGenerated boo
 		}
 	}
 	return nil
+}
+
+func validateSensitiveDesktopToolOptions(includeHidden, includeGenerated bool) error {
+	if (!includeHidden && !includeGenerated) || sensitiveDesktopToolAccessAllowed() {
+		return nil
+	}
+	return fmt.Errorf("hidden and generated path access is disabled; set OLLAMA_DESKTOP_TOOLS_SENSITIVE=1 only when you trust the active chat")
+}
+
+func sensitiveDesktopToolAccessAllowed() bool {
+	value := strings.TrimSpace(os.Getenv("OLLAMA_DESKTOP_TOOLS_SENSITIVE"))
+	return value == "1" || strings.EqualFold(value, "true")
 }
 
 func relativePathParts(rel string) []string {

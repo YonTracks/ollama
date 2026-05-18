@@ -32,6 +32,15 @@ describe("GET /api/search", () => {
     });
   });
 
+  it("returns 400 for an overly long query", async () => {
+    const query = "x".repeat(501);
+    const response = await GET(new Request(`http://app.test/api/search?q=${query}`));
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.error).toBe("Search query is too long.");
+  });
+
   it("proxies and normalizes Brave results without exposing the API key", async () => {
     vi.stubEnv("BRAVE_SEARCH_API_KEY", "secret-brave-key");
     vi.stubGlobal(

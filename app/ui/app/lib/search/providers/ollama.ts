@@ -1,4 +1,5 @@
 import { SearchProviderError, type ProviderSearchOptions, type SearchResult } from "../types";
+import { normalizeSearchResultUrl } from "../sanitize";
 
 const OLLAMA_WEB_SEARCH_ENDPOINT = "https://ollama.com/api/web_search";
 
@@ -51,7 +52,7 @@ export function normalizeOllamaResults(payload: unknown, count: number): SearchR
   const seen = new Set<string>();
 
   for (const raw of data.results as OllamaSearchResult[]) {
-    const url = stringValue(raw.url);
+    const url = normalizeSearchResultUrl(raw.url);
     if (!url || seen.has(url)) continue;
 
     results.push({

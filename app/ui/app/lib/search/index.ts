@@ -11,6 +11,7 @@ import {
   type SearchRequestOptions,
   type SearchResponse
 } from "./types";
+import { sanitizeSearchResults } from "./sanitize";
 export { SearchProviderError };
 
 const DEFAULT_PROVIDER: SearchProvider = "off";
@@ -51,7 +52,7 @@ export async function search(options: SearchRequestOptions): Promise<SearchRespo
       signal
     };
 
-    const results = await searchWithProvider(providerOptions);
+    const results = sanitizeSearchResults(await searchWithProvider(providerOptions), count);
     return {
       provider,
       query,
@@ -87,7 +88,15 @@ export function searchProviderHealth(provider = configuredProvider()): SearchHea
 
   if (provider === "custom") {
     try {
-      new URL(value);
+      const endpoint = new URL(value);
+      if (endpoint.protocol !== "http:" && endpoint.protocol !== "https:") {
+        return {
+          provider,
+          configured: false,
+          reachable: false,
+          error: "CUSTOM_SEARCH_ENDPOINT must use http or https."
+        };
+      }
     } catch {
       return {
         provider,

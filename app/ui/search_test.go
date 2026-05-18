@@ -52,6 +52,26 @@ func TestSearchDisabledProvider(t *testing.T) {
 	}
 }
 
+func TestSearchRejectsLongQuery(t *testing.T) {
+	query := strings.Repeat("x", maxSearchQueryChars+1)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q="+query, nil)
+	(&Server{Dev: true}).Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rr.Code)
+	}
+
+	var got responses.SearchResponse
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Error != "Search query is too long." {
+		t.Fatalf("unexpected long query error: %#v", got)
+	}
+}
+
 func TestSearchBraveProxy(t *testing.T) {
 	brave := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/res/v1/web/search" {
@@ -76,6 +96,11 @@ func TestSearchBraveProxy(t *testing.T) {
 						"url":         "https://ollama.com/",
 						"description": "Run local models.",
 						"profile":     map[string]any{"name": "Ollama"},
+					},
+					{
+						"title":       "Bad",
+						"url":         "javascript:alert(1)",
+						"description": "Bad URL.",
 					},
 				},
 			},

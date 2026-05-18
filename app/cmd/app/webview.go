@@ -61,6 +61,7 @@ func (w *Webview) Run(path string) unsafe.Pointer {
 		// on the first page load, ideally in an interstitial page like `/token`
 		// that exists only to set the cookie and redirect to /
 		// wv.Init(fmt.Sprintf(`document.cookie = "token=%s; path=/"`, w.token))
+		tokenJSON, _ := json.Marshal(w.token)
 		init := `
 		// Disable reload
 		document.addEventListener('keydown', function(e) {
@@ -84,7 +85,8 @@ func (w *Webview) Run(path string) unsafe.Pointer {
 		});
 
 		// Set token cookie
-		document.cookie = "token=` + w.token + `; path=/";
+		const ollamaToken = ` + string(tokenJSON) + `;
+		document.cookie = "token=" + encodeURIComponent(ollamaToken) + "; path=/; SameSite=Strict";
 	`
 		// Windows-specific scrollbar styling
 		if runtime.GOOS == "windows" {

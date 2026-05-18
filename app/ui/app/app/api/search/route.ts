@@ -10,6 +10,8 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const MAX_SEARCH_QUERY_LENGTH = 500;
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const query = url.searchParams.get("q")?.trim() ?? "";
@@ -23,6 +25,19 @@ export async function GET(request: Request) {
         query,
         results: [],
         error: "Missing search query."
+      },
+      { status: 400 }
+    );
+  }
+
+  if (query.length > MAX_SEARCH_QUERY_LENGTH) {
+    return NextResponse.json(
+      {
+        provider: "off",
+        disabled: false,
+        query: query.slice(0, MAX_SEARCH_QUERY_LENGTH),
+        results: [],
+        error: "Search query is too long."
       },
       { status: 400 }
     );

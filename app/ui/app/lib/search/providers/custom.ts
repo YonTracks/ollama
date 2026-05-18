@@ -1,4 +1,5 @@
 import { SearchProviderError, type ProviderSearchOptions, type SearchResult } from "../types";
+import { normalizeSearchResultUrl } from "../sanitize";
 
 type CustomResponse = {
   results?: unknown;
@@ -15,12 +16,15 @@ export async function searchCustom(options: ProviderSearchOptions) {
     );
   }
 
-  const url = new URL(endpoint);
-  url.searchParams.set("q", options.query);
-  url.searchParams.set("count", String(options.count));
-  url.searchParams.set("safe", String(options.safe));
+  const searchUrl = new URL(endpoint);
+  if (searchUrl.protocol !== "http:" && searchUrl.protocol !== "https:") {
+    throw new SearchProviderError("CUSTOM_SEARCH_ENDPOINT must use http or https.", 400);
+  }
+  searchUrl.searchParams.set("q", options.query);
+  searchUrl.searchParams.set("count", String(options.count));
+  searchUrl.searchParams.set("safe", String(options.safe));
 
-  const response = await fetch(url, {
+  const response = await fetch(searchUrl, {
     headers: {
       Accept: "application/json"
     },
@@ -46,7 +50,7 @@ export function normalizeCustomResults(payload: unknown, count: number): SearchR
   const seen = new Set<string>();
 
   for (const raw of rawResults as CustomResult[]) {
-    const url = firstString(raw.url, raw.link, raw.href);
+    const url = normalizeSearchResultUrl(firstString(raw.url, raw.link, raw.href));
     if (!url || seen.has(url)) continue;
 
     const title = firstString(raw.title, raw.name) || url;

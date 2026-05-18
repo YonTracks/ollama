@@ -24,6 +24,8 @@ Install required tools:
 go install github.com/tkrajina/typescriptify-golang-structs/tscriptify@latest
 ```
 
+Use Go 1.26.3 or newer when building the app. Earlier Go 1.26 patch releases include standard-library vulnerabilities reported by `govulncheck`.
+
 #### Develop UI (Development Mode)
 
 1. Start the Next.js development server (with hot-reload):
@@ -57,6 +59,8 @@ OLLAMA_DESKTOP_TOOLS=1 go run ./cmd/app -dev
 ```
 
 The registered desktop tools are `desktop.list_files`, `desktop.read_text_file`, and `desktop.search_files`. They are scoped to the working directory selected in settings, reject path escapes, and skip hidden files plus common generated/dependency folders by default.
+
+Hidden files and generated/dependency folders remain blocked even if a model requests them. To allow that access for a trusted development chat, set `OLLAMA_DESKTOP_TOOLS_SENSITIVE=1` before launching the app.
 
 #### Vector retrieval memory
 

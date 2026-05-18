@@ -36,6 +36,8 @@ Auto mode defaults to not searching for local code editing, creative writing, pr
 
 When search is used, the app injects a labeled `Web search results` block with visible URLs and tells the model to cite URLs inline only when it uses those results.
 
+Search snippets are treated as untrusted external content in the model prompt. The app filters search result links to `http` and `https`, trims oversized titles/snippets, and tells the model not to follow instructions embedded inside search results.
+
 ## Shared settings
 
 ```shell
@@ -134,6 +136,8 @@ or:
 ```
 
 Each result is normalized as best as possible from fields like `title`, `name`, `url`, `link`, `content`, `snippet`, `description`, `source`, `engine`, and `score`.
+
+Custom endpoints must use `http` or `https`. Returned result URLs using other schemes are ignored before they are shown, stored, or injected into chat context.
 
 ## Why SearXNG Is Not The Main Windows Path
 

@@ -616,13 +616,14 @@ export function SettingsDrawer({
     }
   };
 
+  if (!open) return null;
+
   return (
     <div
       className={cn(
         "modal-safe-padding fixed inset-0 z-40 flex items-center justify-center transition",
         open ? "pointer-events-auto" : "pointer-events-none"
       )}
-      aria-hidden={!open}
     >
       <div
         className={cn(

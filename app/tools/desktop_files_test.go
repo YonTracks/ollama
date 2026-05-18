@@ -72,6 +72,12 @@ func TestListFilesSkipsHiddenByDefault(t *testing.T) {
 		t.Fatalf("expected only visible.txt, got %#v", listResult.Entries)
 	}
 
+	_, _, err = tool.Execute(t.Context(), map[string]any{"include_hidden": true})
+	if err == nil || !strings.Contains(err.Error(), "OLLAMA_DESKTOP_TOOLS_SENSITIVE") {
+		t.Fatalf("expected sensitive hidden access error, got %v", err)
+	}
+
+	t.Setenv("OLLAMA_DESKTOP_TOOLS_SENSITIVE", "1")
 	result, _, err = tool.Execute(t.Context(), map[string]any{"include_hidden": true})
 	if err != nil {
 		t.Fatalf("list_files include_hidden failed: %v", err)
@@ -109,6 +115,16 @@ func TestSearchFilesSkipsGeneratedByDefault(t *testing.T) {
 		t.Fatalf("expected only src/main.go by default, got %#v", searchResult.Matches)
 	}
 
+	_, _, err = tool.Execute(t.Context(), map[string]any{
+		"query":             "needle",
+		"extensions":        []any{".go"},
+		"include_generated": true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "OLLAMA_DESKTOP_TOOLS_SENSITIVE") {
+		t.Fatalf("expected sensitive generated access error, got %v", err)
+	}
+
+	t.Setenv("OLLAMA_DESKTOP_TOOLS_SENSITIVE", "1")
 	result, _, err = tool.Execute(t.Context(), map[string]any{
 		"query":             "needle",
 		"extensions":        []any{".go"},

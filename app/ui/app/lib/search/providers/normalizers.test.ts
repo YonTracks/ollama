@@ -85,4 +85,24 @@ describe("search result normalizers", () => {
       }
     ]);
   });
+
+  it("drops non-http search result URLs", () => {
+    expect(
+      normalizeCustomResults(
+        [
+          { title: "Bad", url: "javascript:alert(1)", snippet: "Nope" },
+          { title: "Good", url: "https://example.test/good", snippet: "Yep" }
+        ],
+        5
+      )
+    ).toEqual([
+      {
+        title: "Good",
+        url: "https://example.test/good",
+        content: "Yep",
+        source: "",
+        engine: "custom"
+      }
+    ]);
+  });
 });

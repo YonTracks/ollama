@@ -43,6 +43,7 @@ Desktop-app-only settings are hidden in this mode.
 - Manual mode searches only when the composer Web button is enabled for the message.
 - Auto mode uses a deterministic prompt heuristic and searches only for freshness, docs, current-info, provider, version, price, troubleshooting, or external lookup signals.
 - Settings include a provider health check at `/api/search/health?provider=<provider>`; it verifies configuration without exposing API keys and avoids quota-heavy reachability checks by default.
+- Search snippets are treated as untrusted external content. Result URLs are filtered to `http` and `https` before they are displayed, persisted, or injected into chat context.
 - Next dev/server mode uses the App Router `/api/search` routes. Packaged desktop static builds use the matching Go routes.
 
 ## Desktop tools
@@ -53,6 +54,7 @@ Desktop-app-only settings are hidden in this mode.
 - Registered desktop tools are read-only: `desktop.list_files`, `desktop.read_text_file`, and `desktop.search_files`.
 - Desktop tools are scoped to the configured working directory. Paths outside that directory, including symlink escapes, are rejected.
 - File reads and searches are bounded; hidden files and common generated/dependency folders are skipped by default.
+- Model-requested access to hidden files or generated/dependency folders also requires `OLLAMA_DESKTOP_TOOLS_SENSITIVE=1`.
 - Tools mode exposes registered tools for one tool-use pass, then asks the model to answer from the result. Agent mode keeps tools available for multiple passes, capped by the backend.
 - Standalone mode never exposes desktop tools because it talks directly to the core Ollama API.
 

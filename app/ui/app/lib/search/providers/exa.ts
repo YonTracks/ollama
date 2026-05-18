@@ -1,4 +1,5 @@
 import { SearchProviderError, type ProviderSearchOptions, type SearchResult } from "../types";
+import { normalizeSearchResultUrl } from "../sanitize";
 
 const EXA_ENDPOINT = "https://api.exa.ai/search";
 
@@ -56,7 +57,7 @@ export function normalizeExaResults(payload: unknown, count: number): SearchResu
   const seen = new Set<string>();
 
   for (const raw of data.results as ExaResult[]) {
-    const url = stringValue(raw.url);
+    const url = normalizeSearchResultUrl(raw.url);
     if (!url || seen.has(url)) continue;
 
     const highlights = Array.isArray(raw.highlights)

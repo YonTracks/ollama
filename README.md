@@ -117,7 +117,7 @@ SEARCH_TIMEOUT_MS=10000
 
 Supported providers are `off`, `brave`, `tavily`, `exa`, `ollama`, and `custom`. The UI supports Web Search modes: Off, Manual, and Auto. Auto mode only searches when the prompt has a clear freshness, docs, current-info, provider, version, price, or external lookup signal. Settings also include a provider health check that verifies configuration without exposing API keys.
 
-Brave Search API is the recommended general provider for regular Windows users; Tavily is recommended for AI/RAG workflows. Packaged desktop builds use the Go `/api/search` routes, while Next dev/server mode uses the Next App Router routes. See [Optional Web Search Providers](docs/web-search-providers.md) for setup and troubleshooting.
+Brave Search API is the recommended general provider for regular Windows users; Tavily is recommended for AI/RAG workflows. Search snippets are treated as untrusted external content, and result links are filtered to `http` and `https` before display or prompt injection. Packaged desktop builds use the Go `/api/search` routes, while Next dev/server mode uses the Next App Router routes. See [Optional Web Search Providers](docs/web-search-providers.md) for setup and troubleshooting.
 
 ### Python
 

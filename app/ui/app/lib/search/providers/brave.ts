@@ -1,4 +1,5 @@
 import { SearchProviderError, type ProviderSearchOptions, type SearchResult } from "../types";
+import { normalizeSearchResultUrl } from "../sanitize";
 
 const BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
 
@@ -57,7 +58,7 @@ export function normalizeBraveResults(payload: unknown, count: number): SearchRe
   const seen = new Set<string>();
 
   for (const raw of data.web.results as BraveResult[]) {
-    const url = stringValue(raw.url);
+    const url = normalizeSearchResultUrl(raw.url);
     if (!url || seen.has(url)) continue;
 
     const snippets = Array.isArray(raw.extra_snippets)
