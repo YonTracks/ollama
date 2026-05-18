@@ -127,6 +127,8 @@ describe("context budget utilities", () => {
     );
 
     expect(prepared.contextNotice.action).toBe("summarized");
+    expect(prepared.contextNotice.summary).toContain("old user topic");
+    expect(prepared.contextNotice.summary).toContain("old assistant answer");
     expect(summary?.content).toContain("old user topic");
     expect(summary?.content).toContain("old assistant answer");
     expect(prepared.messages).toContain(messages[0]);
@@ -160,6 +162,9 @@ describe("context budget utilities", () => {
     );
 
     expect(prepared.contextNotice.retrievedMemoryCount).toBeGreaterThan(0);
+    expect(prepared.contextNotice.retrievedMessages?.[0]?.content).toContain(
+      "gold accounts"
+    );
     expect(memory?.content).toContain("gold accounts");
     expect(memory?.content).not.toContain("dashboard colors");
     expect(

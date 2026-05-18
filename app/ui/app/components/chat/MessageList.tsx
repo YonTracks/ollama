@@ -3,6 +3,7 @@
 import { useEffect, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 import {
   Bot,
+  ChevronDown,
   Check,
   Clipboard,
   Cpu,
@@ -32,6 +33,7 @@ import { cn, formatBytes } from "@/lib/utils";
 import type {
   ChatAttachment,
   ChatMessage,
+  ContextNotice,
   ContextWarning,
   ResponseStats
 } from "@/lib/ollama/types";
@@ -376,10 +378,13 @@ export function MessageList({
                   <WebSearchResultsPanel message={message} />
                 ) : null}
                 {message.role === "assistant" &&
-                (message.stats || message.contextWarnings?.length) ? (
+                (message.stats ||
+                  message.contextWarnings?.length ||
+                  hasContextNoticeDetails(message.contextNotice)) ? (
                   <MessageStatsFooter
                     stats={message.stats}
                     warnings={message.contextWarnings}
+                    notice={message.contextNotice}
                   />
                 ) : null}
               </div>
@@ -759,13 +764,16 @@ function webSearchStatusLabel(message: ChatMessage) {
 
 function MessageStatsFooter({
   stats,
-  warnings
+  warnings,
+  notice
 }: {
   stats?: ResponseStats;
   warnings?: ContextWarning[];
+  notice?: ContextNotice;
 }) {
   const parts = stats ? responseStatsParts(stats) : [];
-  if (parts.length === 0 && (!warnings || warnings.length === 0)) return null;
+  const hasDetails = hasContextNoticeDetails(notice);
+  if (parts.length === 0 && (!warnings || warnings.length === 0) && !hasDetails) return null;
 
   const label = parts.join(" \u00b7 ");
 
@@ -787,17 +795,120 @@ function MessageStatsFooter({
       {warnings?.length ? (
         <div className="flex flex-col gap-1 text-xs leading-5 text-warning">
           {warnings.map((warning) => (
-            <div
-              key={warning.kind}
-              className="rounded-md border border-warning/25 bg-warning/10 px-2 py-1"
-            >
-              {warning.message}
-            </div>
+            <ContextWarningRow key={warning.kind} warning={warning} notice={notice} />
           ))}
         </div>
       ) : null}
+      {!warnings?.length && hasDetails ? (
+        <ContextDetailsPanel notice={notice} detailKind="all" />
+      ) : null}
     </div>
   );
+}
+
+function ContextWarningRow({
+  warning,
+  notice
+}: {
+  warning: ContextWarning;
+  notice?: ContextNotice;
+}) {
+  const detailKind = contextWarningDetailKind(warning, notice);
+
+  if (!detailKind) {
+    return (
+      <div className="rounded-md border border-warning/25 bg-warning/10 px-2 py-1">
+        {warning.message}
+      </div>
+    );
+  }
+
+  return (
+    <details className="group rounded-md border border-warning/25 bg-warning/10 px-2 py-1">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 [&::-webkit-details-marker]:hidden">
+        <span>{warning.message}</span>
+        <ChevronDown className="h-3.5 w-3.5 flex-none transition group-open:rotate-180" />
+      </summary>
+      <ContextDetailsPanel notice={notice} detailKind={detailKind} />
+    </details>
+  );
+}
+
+function ContextDetailsPanel({
+  notice,
+  detailKind
+}: {
+  notice?: ContextNotice;
+  detailKind: "retrieved" | "summarized" | "all";
+}) {
+  const showSummary =
+    (detailKind === "summarized" || detailKind === "all") && Boolean(notice?.summary);
+  const retrievedMessages =
+    detailKind === "retrieved" || detailKind === "all"
+      ? notice?.retrievedMessages ?? []
+      : [];
+
+  if (!showSummary && retrievedMessages.length === 0) return null;
+
+  return (
+    <div className="mt-2 space-y-2 border-t border-warning/20 pt-2 text-xs text-foreground/85">
+      {showSummary ? (
+        <section className="space-y-1">
+          <div className="font-medium text-warning">Summary injected</div>
+          <div className="whitespace-pre-wrap rounded-md border border-warning/20 bg-background/35 px-2 py-1.5 leading-5">
+            {notice?.summary}
+          </div>
+        </section>
+      ) : null}
+      {retrievedMessages.length ? (
+        <section className="space-y-1">
+          <div className="font-medium text-warning">Retrieved messages</div>
+          <ol className="space-y-1.5">
+            {retrievedMessages.map((message, index) => (
+              <li
+                key={`${message.role}-${index}-${message.content.slice(0, 24)}`}
+                className="rounded-md border border-warning/20 bg-background/35 px-2 py-1.5"
+              >
+                <div className="mb-0.5 text-[11px] font-medium uppercase text-muted-foreground">
+                  {contextDetailRoleLabel(message.role)}
+                </div>
+                <div className="whitespace-pre-wrap wrap-break-word leading-5">
+                  {message.content}
+                </div>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function hasContextNoticeDetails(notice?: ContextNotice) {
+  return Boolean(notice?.summary || notice?.retrievedMessages?.length);
+}
+
+function contextWarningDetailKind(warning: ContextWarning, notice?: ContextNotice) {
+  if (warning.kind === "retrieved" && notice?.retrievedMessages?.length) {
+    return "retrieved" as const;
+  }
+  if (warning.kind === "summarized" && notice?.summary) {
+    return "summarized" as const;
+  }
+  return null;
+}
+
+function contextDetailRoleLabel(role: string) {
+  switch (role) {
+    case "assistant":
+      return "Assistant";
+    case "system":
+      return "System";
+    case "tool":
+      return "Tool";
+    default:
+      return "User";
+  }
 }
 
 function ModelLoadingIndicator({ model }: { model?: string }) {

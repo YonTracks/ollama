@@ -1245,7 +1245,7 @@ export function SettingsDrawer({
                                 onChange={(event) =>
                                   handleToggleMemoryChat(chat.id, event.target.checked)
                                 }
-                                className="mt-1 h-4 w-4 flex-none accent-[var(--accent)] disabled:opacity-45"
+                                className="mt-1 h-4 w-4 flex-none accent-(--accent) disabled:opacity-45"
                               />
                               <span className="min-w-0">
                                 <span className="flex min-w-0 items-center gap-2">
@@ -1328,7 +1328,7 @@ export function SettingsDrawer({
                                 onChange={(event) =>
                                   handleToggleExcludedMemoryChat(chat.id, event.target.checked)
                                 }
-                                className="mt-1 h-4 w-4 flex-none accent-[var(--danger)]"
+                                className="mt-1 h-4 w-4 flex-none accent-(--danger)"
                               />
                               <span className="min-w-0">
                                 <span className="block truncate text-sm font-medium">

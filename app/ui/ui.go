@@ -2060,10 +2060,11 @@ func approximateContextTokens(text string) int {
 
 type storeMessageRetriever func(messages []store.Message, limit int) []store.Message
 
-func augmentStoreMessagesForContextWithRetriever(messages []store.Message, settings contextRequestSettings, retriever storeMessageRetriever) ([]store.Message, int, int, bool) {
+func augmentStoreMessagesForContextWithRetriever(messages []store.Message, settings contextRequestSettings, retriever storeMessageRetriever) ([]store.Message, int, int, bool, []store.ContextMessageDetail) {
 	var synthetic []store.Message
 	retrieved := 0
 	retrievedTokens := 0
+	var retrievedDetails []store.ContextMessageDetail
 
 	if settings.ExpertMode {
 		synthetic = append(synthetic, createStoreExpertMessage(settings))
@@ -2082,14 +2083,15 @@ func augmentStoreMessagesForContextWithRetriever(messages []store.Message, setti
 			synthetic = append(synthetic, retrievalMessage)
 			retrieved = len(retrievedMessages)
 			retrievedTokens = estimateStoreMessageTokens(retrievalMessage)
+			retrievedDetails = storeContextMessageDetails(retrievedMessages)
 		}
 	}
 
 	if len(synthetic) == 0 {
-		return messages, 0, 0, false
+		return messages, 0, 0, false, nil
 	}
 
-	return insertStoreSyntheticSystemMessages(messages, synthetic), retrieved, retrievedTokens, settings.ExpertMode
+	return insertStoreSyntheticSystemMessages(messages, synthetic), retrieved, retrievedTokens, settings.ExpertMode, retrievedDetails
 }
 
 func createStoreExpertMessage(settings contextRequestSettings) store.Message {
@@ -2650,6 +2652,22 @@ func createStoreRetrievalMessage(messages []store.Message) (store.Message, bool)
 	return store.NewMessage("system", header+"\n"+guidance+"\n"+strings.Join(lines, "\n"), nil), true
 }
 
+func storeContextMessageDetails(messages []store.Message) []store.ContextMessageDetail {
+	details := make([]store.ContextMessageDetail, 0, len(messages))
+	for _, message := range messages {
+		content := summarizeStoreMessage(message)
+		if content == "" {
+			continue
+		}
+		details = append(details, store.ContextMessageDetail{
+			Role:    message.Role,
+			Content: content,
+		})
+	}
+
+	return details
+}
+
 func insertStoreSyntheticSystemMessages(messages []store.Message, synthetic []store.Message) []store.Message {
 	filtered := make([]store.Message, 0, len(messages)+len(synthetic))
 	insertIndex := -1
@@ -2970,6 +2988,16 @@ func createStoreSummaryMessage(messages []store.Message, omittedIndexes []int, m
 	return store.NewMessage("system", content, nil), true
 }
 
+func storeContextSummary(messages []store.Message) string {
+	for _, message := range messages {
+		if message.Role == "system" && strings.HasPrefix(message.Content, "Summary of earlier omitted conversation:") {
+			return message.Content
+		}
+	}
+
+	return ""
+}
+
 func storeSummaryContent(messages []store.Message, omittedIndexes []int, maxSummaryTokens int) (string, bool) {
 	const header = "Summary of earlier omitted conversation:"
 	maxCharacters := max(0, maxSummaryTokens*4-len(header)-1)
@@ -3151,7 +3179,7 @@ func prepareContextChat(chat *store.Chat, settings contextRequestSettings) (*sto
 }
 
 func prepareContextChatWithRetriever(chat *store.Chat, settings contextRequestSettings, retriever storeMessageRetriever) (*store.Chat, *store.ContextNotice) {
-	augmentedMessages, retrievedCount, retrievedTokens, expertMode := augmentStoreMessagesForContextWithRetriever(chat.Messages, settings, retriever)
+	augmentedMessages, retrievedCount, retrievedTokens, expertMode, retrievedDetails := augmentStoreMessagesForContextWithRetriever(chat.Messages, settings, retriever)
 	augmentedChat := *chat
 	augmentedChat.Messages = augmentedMessages
 
@@ -3167,6 +3195,7 @@ func prepareContextChatWithRetriever(chat *store.Chat, settings contextRequestSe
 	if retrievedCount > 0 {
 		notice.RetrievedMemoryCount = &retrievedCount
 		notice.EstimatedRetrievedTokens = &retrievedTokens
+		notice.RetrievedMessages = retrievedDetails
 	}
 
 	if settings.Mode != "friendly" || settings.NumCtx == nil || (!settings.EnableAutoTrim && !settings.EnableAutoSummarize) {
@@ -3202,6 +3231,9 @@ func prepareContextChatWithRetriever(chat *store.Chat, settings contextRequestSe
 		notice.Action = action
 		notice.OmittedMessageCount = &omittedCount
 		notice.EstimatedOmittedTokens = &omittedTokens
+		if action == "summarized" {
+			notice.Summary = storeContextSummary(preparedMessages)
+		}
 	}
 	notice.EstimatedPromptTokensAfter = &afterTokens
 

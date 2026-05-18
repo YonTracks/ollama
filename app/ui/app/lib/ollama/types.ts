@@ -108,10 +108,18 @@ export interface ContextNotice {
   estimatedOmittedTokens?: number;
   retrievedMemoryCount?: number;
   estimatedRetrievedTokens?: number;
+  retrievedMessages?: ContextMessageDetail[];
+  summary?: string;
   expertMode?: boolean;
   estimatedPromptTokensBefore?: number;
   estimatedPromptTokensAfter?: number;
   outputReserveTokens?: number;
+}
+
+export interface ContextMessageDetail {
+  role: ChatMessage["role"];
+  content: string;
+  source?: string;
 }
 
 export interface ContextWarning {

@@ -114,16 +114,24 @@ type WebSearchMetadata struct {
 }
 
 type ContextNotice struct {
-	Mode                        string `json:"mode"`
-	Action                      string `json:"action"`
-	OmittedMessageCount         *int   `json:"omittedMessageCount,omitempty"`
-	EstimatedOmittedTokens      *int   `json:"estimatedOmittedTokens,omitempty"`
-	RetrievedMemoryCount        *int   `json:"retrievedMemoryCount,omitempty"`
-	EstimatedRetrievedTokens    *int   `json:"estimatedRetrievedTokens,omitempty"`
-	ExpertMode                  bool   `json:"expertMode,omitempty"`
-	EstimatedPromptTokensBefore *int   `json:"estimatedPromptTokensBefore,omitempty"`
-	EstimatedPromptTokensAfter  *int   `json:"estimatedPromptTokensAfter,omitempty"`
-	OutputReserveTokens         *int   `json:"outputReserveTokens,omitempty"`
+	Mode                        string                 `json:"mode"`
+	Action                      string                 `json:"action"`
+	OmittedMessageCount         *int                   `json:"omittedMessageCount,omitempty"`
+	EstimatedOmittedTokens      *int                   `json:"estimatedOmittedTokens,omitempty"`
+	RetrievedMemoryCount        *int                   `json:"retrievedMemoryCount,omitempty"`
+	EstimatedRetrievedTokens    *int                   `json:"estimatedRetrievedTokens,omitempty"`
+	RetrievedMessages           []ContextMessageDetail `json:"retrievedMessages,omitempty"`
+	Summary                     string                 `json:"summary,omitempty"`
+	ExpertMode                  bool                   `json:"expertMode,omitempty"`
+	EstimatedPromptTokensBefore *int                   `json:"estimatedPromptTokensBefore,omitempty"`
+	EstimatedPromptTokensAfter  *int                   `json:"estimatedPromptTokensAfter,omitempty"`
+	OutputReserveTokens         *int                   `json:"outputReserveTokens,omitempty"`
+}
+
+type ContextMessageDetail struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	Source  string `json:"source,omitempty"`
 }
 
 type ContextWarning struct {

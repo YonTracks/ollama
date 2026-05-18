@@ -180,6 +180,9 @@ export function prepareContextMessages(params: {
         action: "none",
         retrievedMemoryCount: augmentation.retrievedMessages.length || undefined,
         estimatedRetrievedTokens: augmentation.estimatedRetrievedTokens || undefined,
+        retrievedMessages: augmentation.retrievedMessageDetails.length
+          ? augmentation.retrievedMessageDetails
+          : undefined,
         expertMode: augmentation.expertMode || undefined,
         estimatedPromptTokensBefore: beforeBudget.estimatedPromptTokens,
         estimatedPromptTokensAfter: beforeBudget.estimatedPromptTokens,
@@ -218,6 +221,10 @@ export function prepareContextMessages(params: {
       estimatedOmittedTokens: estimatedOmittedTokens || undefined,
       retrievedMemoryCount: augmentation.retrievedMessages.length || undefined,
       estimatedRetrievedTokens: augmentation.estimatedRetrievedTokens || undefined,
+      retrievedMessages: augmentation.retrievedMessageDetails.length
+        ? augmentation.retrievedMessageDetails
+        : undefined,
+      summary: contextSummaryFromMessages(preparedMessages),
       expertMode: augmentation.expertMode || undefined,
       estimatedPromptTokensBefore: beforeBudget.estimatedPromptTokens,
       estimatedPromptTokensAfter: afterBudget.estimatedPromptTokens,
@@ -335,9 +342,23 @@ function augmentContextMessages(messages: ChatMessage[], settings: OllamaContext
         ? insertSyntheticSystemMessages(messages, syntheticMessages)
         : messages,
     retrievedMessages,
+    retrievedMessageDetails: contextMessageDetails(retrievedMessages),
     estimatedRetrievedTokens: retrievalMessage ? estimateMessageTokens(retrievalMessage) : 0,
     expertMode: Boolean(expertMessage)
   };
+}
+
+function contextMessageDetails(messages: ChatMessage[]) {
+  return messages
+    .map((message) => ({
+      role: message.role,
+      content: summarizeMessage(message)
+    }))
+    .filter((detail) => detail.content.trim().length > 0);
+}
+
+function contextSummaryFromMessages(messages: ChatMessage[]) {
+  return messages.find((message) => message.id === SUMMARY_MESSAGE_ID)?.content;
 }
 
 function createWebSearchMessage(settings: OllamaContextSettings): ChatMessage | null {

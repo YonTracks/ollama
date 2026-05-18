@@ -34,6 +34,9 @@ func TestPrepareContextChatSummarizesOldMessages(t *testing.T) {
 	if notice.Action != "summarized" {
 		t.Fatalf("expected summarized action, got %q", notice.Action)
 	}
+	if !strings.Contains(notice.Summary, "old user topic") || !strings.Contains(notice.Summary, "old assistant answer") {
+		t.Fatalf("notice summary did not include omitted message excerpts: %q", notice.Summary)
+	}
 	if estimateStoreMessagesTokens(prepared.Messages) > 220 {
 		t.Fatalf("prepared messages exceeded prompt budget")
 	}
@@ -83,6 +86,9 @@ func TestPrepareContextChatRetrievesRelevantMemory(t *testing.T) {
 
 	if notice.RetrievedMemoryCount == nil || *notice.RetrievedMemoryCount == 0 {
 		t.Fatalf("expected retrieved memory count")
+	}
+	if len(notice.RetrievedMessages) == 0 || !strings.Contains(notice.RetrievedMessages[0].Content, "gold accounts") {
+		t.Fatalf("expected retrieved memory details, got %#v", notice.RetrievedMessages)
 	}
 
 	var memory string
@@ -137,6 +143,9 @@ func TestPrepareContextChatUsesInjectedRetriever(t *testing.T) {
 
 	if notice.RetrievedMemoryCount == nil || *notice.RetrievedMemoryCount != 1 {
 		t.Fatalf("expected one retrieved memory, got %#v", notice.RetrievedMemoryCount)
+	}
+	if len(notice.RetrievedMessages) != 1 || !strings.Contains(notice.RetrievedMessages[0].Content, "vector-only policy") {
+		t.Fatalf("expected injected retrieval details, got %#v", notice.RetrievedMessages)
 	}
 	var memory string
 	for _, message := range prepared.Messages {

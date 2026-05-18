@@ -81,6 +81,18 @@ export class ContextWarning {
         this.message = source["message"];
     }
 }
+export class ContextMessageDetail {
+    role: string;
+    content: string;
+    source?: string;
+
+    constructor(source: any = {}) {
+        if ('string' === typeof source) source = JSON.parse(source);
+        this.role = source["role"];
+        this.content = source["content"];
+        this.source = source["source"];
+    }
+}
 export class ContextNotice {
     mode: string;
     action: string;
@@ -88,6 +100,8 @@ export class ContextNotice {
     estimatedOmittedTokens?: number;
     retrievedMemoryCount?: number;
     estimatedRetrievedTokens?: number;
+    retrievedMessages?: ContextMessageDetail[];
+    summary?: string;
     expertMode?: boolean;
     estimatedPromptTokensBefore?: number;
     estimatedPromptTokensAfter?: number;
@@ -101,11 +115,31 @@ export class ContextNotice {
         this.estimatedOmittedTokens = source["estimatedOmittedTokens"];
         this.retrievedMemoryCount = source["retrievedMemoryCount"];
         this.estimatedRetrievedTokens = source["estimatedRetrievedTokens"];
+        this.retrievedMessages = this.convertValues(source["retrievedMessages"], ContextMessageDetail);
+        this.summary = source["summary"];
         this.expertMode = source["expertMode"];
         this.estimatedPromptTokensBefore = source["estimatedPromptTokensBefore"];
         this.estimatedPromptTokensAfter = source["estimatedPromptTokensAfter"];
         this.outputReserveTokens = source["outputReserveTokens"];
     }
+
+	convertValues(a: any, classs: any, asMap: boolean = false): any {
+	    if (!a) {
+	        return a;
+	    }
+	    if (Array.isArray(a)) {
+	        return (a as any[]).map(elem => this.convertValues(elem, classs));
+	    } else if ("object" === typeof a) {
+	        if (asMap) {
+	            for (const key of Object.keys(a)) {
+	                a[key] = new classs(a[key]);
+	            }
+	            return a;
+	        }
+	        return new classs(a);
+	    }
+	    return a;
+	}
 }
 export class OllamaUsageMetrics {
     total_duration?: number;
