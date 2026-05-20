@@ -22,7 +22,13 @@ import (
 	"github.com/ollama/ollama/app/store"
 )
 
-const restartDelay = time.Second
+const (
+	restartDelay = time.Second
+
+	defaultManagedHost    = "127.0.0.1:11434"
+	networkExposedHost    = "0.0.0.0"
+	noLocalAPIAuthWarning = "Ollama has no local API authentication. Do not expose 11434 directly."
+)
 
 // Server is a managed ollama server process
 type Server struct {
@@ -248,10 +254,17 @@ func (s *Server) cmd(ctx context.Context) (*exec.Cmd, error) {
 		env[s[0]] = s[1]
 	}
 	if settings.Expose {
-		env["OLLAMA_HOST"] = "0.0.0.0"
+		env["OLLAMA_HOST"] = networkExposedHost
+		env["OLLAMA_ALLOW_NETWORK_EXPOSURE"] = "true"
+		slog.Warn("managed ollama server allows network exposure", "ollama_host", env["OLLAMA_HOST"], "warning", noLocalAPIAuthWarning)
+	} else {
+		env["OLLAMA_HOST"] = defaultManagedHost
+		delete(env, "OLLAMA_ALLOW_NETWORK_EXPOSURE")
 	}
 	if settings.Browser {
 		env["OLLAMA_ORIGINS"] = "*"
+	} else {
+		delete(env, "OLLAMA_ORIGINS")
 	}
 	if settings.Models != "" {
 		if _, err := os.Stat(settings.Models); err == nil {
@@ -268,6 +281,13 @@ func (s *Server) cmd(ctx context.Context) (*exec.Cmd, error) {
 	} else {
 		env["OLLAMA_NO_CLOUD"] = "0"
 	}
+	slog.Info(
+		"managed ollama server security",
+		"ollama_host", env["OLLAMA_HOST"],
+		"network_exposure", settings.Expose,
+		"browser_origins_enabled", settings.Browser,
+		"core_api_auth", "disabled",
+	)
 	cmd.Env = []string{}
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)

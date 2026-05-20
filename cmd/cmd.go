@@ -153,6 +153,8 @@ func ensureThinkingSupport(ctx context.Context, client *api.Client, name string)
 
 var errModelfileNotFound = errors.New("specified Modelfile wasn't found")
 
+const noLocalAPIAuthWarning = "Ollama has no local API authentication. Do not expose 11434 directly."
+
 func getModelfileName(cmd *cobra.Command) (string, error) {
 	filename, _ := cmd.Flags().GetString("file")
 
@@ -182,6 +184,34 @@ func isLocalhost() bool {
 	}
 	ip := net.ParseIP(h)
 	return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
+}
+
+func isLoopbackBindHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+func validateServeHost(hostport string) error {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		host = hostport
+	}
+
+	if isLoopbackBindHost(host) {
+		return nil
+	}
+
+	if envconfig.AllowNetworkExposure() {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", noLocalAPIAuthWarning)
+		slog.Warn("ollama serve network exposure enabled", "host", hostport, "warning", noLocalAPIAuthWarning)
+		return nil
+	}
+
+	return fmt.Errorf("refusing to expose Ollama on %s; set OLLAMA_ALLOW_NETWORK_EXPOSURE=true to allow network exposure. %s", hostport, noLocalAPIAuthWarning)
 }
 
 func resolveExperimentalLocalModelDir(ref, filename string) string {
@@ -1905,7 +1935,12 @@ func RunServer(_ *cobra.Command, _ []string) error {
 		return err
 	}
 
-	ln, err := net.Listen("tcp", envconfig.Host().Host)
+	host := envconfig.Host()
+	if err := validateServeHost(host.Host); err != nil {
+		return err
+	}
+
+	ln, err := net.Listen("tcp", host.Host)
 	if err != nil {
 		return err
 	}

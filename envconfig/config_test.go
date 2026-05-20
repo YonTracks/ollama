@@ -83,6 +83,28 @@ func TestConnectableHost(t *testing.T) {
 	}
 }
 
+func TestAllowNetworkExposure(t *testing.T) {
+	cases := map[string]struct {
+		value  string
+		expect bool
+	}{
+		"empty":         {"", false},
+		"true":          {"true", true},
+		"one":           {"1", true},
+		"false":         {"false", false},
+		"invalid fails": {"yes please", false},
+	}
+
+	for name, tt := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("OLLAMA_ALLOW_NETWORK_EXPOSURE", tt.value)
+			if got := AllowNetworkExposure(); got != tt.expect {
+				t.Errorf("AllowNetworkExposure() = %v, want %v", got, tt.expect)
+			}
+		})
+	}
+}
+
 func TestOrigins(t *testing.T) {
 	cases := []struct {
 		value  string

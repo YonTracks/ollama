@@ -32,6 +32,7 @@ func TestNew(t *testing.T) {
 func TestServerCmd(t *testing.T) {
 	os.Unsetenv("OLLAMA_HOST")
 	os.Unsetenv("OLLAMA_ORIGINS")
+	os.Unsetenv("OLLAMA_ALLOW_NETWORK_EXPOSURE")
 	os.Unsetenv("OLLAMA_MODELS")
 	var defaultModels string
 	home, err := os.UserHomeDir()
@@ -50,31 +51,31 @@ func TestServerCmd(t *testing.T) {
 		{
 			name:     "default",
 			settings: store.Settings{},
-			want:     []string{"OLLAMA_MODELS=" + defaultModels},
-			dont:     []string{"OLLAMA_HOST=", "OLLAMA_ORIGINS="},
+			want:     []string{"OLLAMA_HOST=127.0.0.1:11434", "OLLAMA_MODELS=" + defaultModels},
+			dont:     []string{"OLLAMA_ORIGINS=", "OLLAMA_ALLOW_NETWORK_EXPOSURE="},
 		},
 		{
 			name:     "expose",
 			settings: store.Settings{Expose: true},
-			want:     []string{"OLLAMA_HOST=0.0.0.0", "OLLAMA_MODELS=" + defaultModels},
+			want:     []string{"OLLAMA_HOST=0.0.0.0", "OLLAMA_ALLOW_NETWORK_EXPOSURE=true", "OLLAMA_MODELS=" + defaultModels},
 			dont:     []string{"OLLAMA_ORIGINS="},
 		},
 		{
 			name:     "browser",
 			settings: store.Settings{Browser: true},
-			want:     []string{"OLLAMA_ORIGINS=*", "OLLAMA_MODELS=" + defaultModels},
-			dont:     []string{"OLLAMA_HOST="},
+			want:     []string{"OLLAMA_HOST=127.0.0.1:11434", "OLLAMA_ORIGINS=*", "OLLAMA_MODELS=" + defaultModels},
+			dont:     []string{"OLLAMA_ALLOW_NETWORK_EXPOSURE="},
 		},
 		{
 			name:     "models",
 			settings: store.Settings{Models: tmpModels},
-			want:     []string{"OLLAMA_MODELS=" + tmpModels},
-			dont:     []string{"OLLAMA_HOST=", "OLLAMA_ORIGINS="},
+			want:     []string{"OLLAMA_HOST=127.0.0.1:11434", "OLLAMA_MODELS=" + tmpModels},
+			dont:     []string{"OLLAMA_ORIGINS=", "OLLAMA_ALLOW_NETWORK_EXPOSURE="},
 		},
 		{
 			name:     "inaccessible_models",
 			settings: store.Settings{Models: "/nonexistent/external/drive/models"},
-			want:     []string{},
+			want:     []string{"OLLAMA_HOST=127.0.0.1:11434"},
 			dont:     []string{"OLLAMA_MODELS="},
 		},
 		{
@@ -86,6 +87,7 @@ func TestServerCmd(t *testing.T) {
 			},
 			want: []string{
 				"OLLAMA_HOST=0.0.0.0",
+				"OLLAMA_ALLOW_NETWORK_EXPOSURE=true",
 				"OLLAMA_ORIGINS=*",
 				"OLLAMA_MODELS=" + tmpModels,
 			},
@@ -133,6 +135,42 @@ func TestServerCmd(t *testing.T) {
 				t.Error("expected non-nil cancel function")
 			}
 		})
+	}
+}
+
+func TestServerCmdClearsUnsafeAmbientServerEnv(t *testing.T) {
+	t.Setenv("OLLAMA_HOST", "0.0.0.0")
+	t.Setenv("OLLAMA_ORIGINS", "*")
+	t.Setenv("OLLAMA_ALLOW_NETWORK_EXPOSURE", "true")
+
+	tmpDir := t.TempDir()
+	st := &store.Store{DBPath: filepath.Join(tmpDir, "db.sqlite")}
+	defer st.Close()
+	st.SetSettings(store.Settings{})
+
+	s := &Server{
+		store: st,
+	}
+
+	cmd, err := s.cmd(t.Context())
+	if err != nil {
+		t.Fatalf("s.cmd() error = %v", err)
+	}
+
+	env := map[string]string{}
+	for _, kv := range cmd.Env {
+		parts := strings.SplitN(kv, "=", 2)
+		env[parts[0]] = parts[1]
+	}
+
+	if got := env["OLLAMA_HOST"]; got != "127.0.0.1:11434" {
+		t.Fatalf("OLLAMA_HOST = %q, want 127.0.0.1:11434", got)
+	}
+	if _, ok := env["OLLAMA_ORIGINS"]; ok {
+		t.Fatal("OLLAMA_ORIGINS should not be inherited when browser access is disabled")
+	}
+	if _, ok := env["OLLAMA_ALLOW_NETWORK_EXPOSURE"]; ok {
+		t.Fatal("OLLAMA_ALLOW_NETWORK_EXPOSURE should not be inherited when exposure is disabled")
 	}
 }
 

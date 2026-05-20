@@ -2359,3 +2359,36 @@ func TestIsLocalhost(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateServeHost(t *testing.T) {
+	tests := []struct {
+		name    string
+		host    string
+		allow   string
+		wantErr bool
+	}{
+		{"loopback IPv4", "127.0.0.1:11434", "", false},
+		{"localhost", "localhost:11434", "", false},
+		{"loopback IPv6", "[::1]:11434", "", false},
+		{"empty bind", ":11434", "", true},
+		{"unspecified IPv4", "0.0.0.0:11434", "", true},
+		{"unspecified IPv6", "[::]:11434", "", true},
+		{"LAN IP", "192.168.1.10:11434", "", true},
+		{"remote hostname", "example.com:11434", "", true},
+		{"invalid override still fails closed", "0.0.0.0:11434", "yes please", true},
+		{"override allows non-loopback", "0.0.0.0:11434", "true", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("OLLAMA_ALLOW_NETWORK_EXPOSURE", tt.allow)
+			err := validateServeHost(tt.host)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("expected no error, got %v", err)
+			}
+		})
+	}
+}

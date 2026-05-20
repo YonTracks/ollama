@@ -544,6 +544,98 @@ func TestAuthenticationMiddleware(t *testing.T) {
 	}
 }
 
+func TestPackagedApiRoutesRequireToken(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{
+			name:   "desktop app API",
+			method: http.MethodGet,
+			path:   "/api/v1/settings",
+		},
+		{
+			name:   "search API",
+			method: http.MethodGet,
+			path:   "/api/search?q=ollama",
+		},
+		{
+			name:   "core proxy tags API",
+			method: http.MethodGet,
+			path:   "/api/tags",
+		},
+		{
+			name:   "core proxy chat API",
+			method: http.MethodPost,
+			path:   "/api/chat",
+		},
+		{
+			name:   "core proxy pull API",
+			method: http.MethodPost,
+			path:   "/api/pull",
+		},
+		{
+			name:   "core proxy create API",
+			method: http.MethodPost,
+			path:   "/api/create",
+		},
+		{
+			name:   "core proxy delete API",
+			method: http.MethodDelete,
+			path:   "/api/delete",
+		},
+		{
+			name:   "unknown API route",
+			method: http.MethodGet,
+			path:   "/api/not-real",
+		},
+	}
+
+	handler := (&Server{Token: "secret-token"}).Handler()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			rr := httptest.NewRecorder()
+
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("expected status %d, got %d", http.StatusForbidden, rr.Code)
+			}
+
+			var response map[string]string
+			if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+				t.Fatalf("failed to decode response body: %v", err)
+			}
+			if response["error"] != "Token is required" {
+				t.Fatalf("expected token error, got %#v", response)
+			}
+		})
+	}
+}
+
+func TestUnknownApiRoutesFailClosed(t *testing.T) {
+	handler := (&Server{Token: "secret-token"}).Handler()
+	req := httptest.NewRequest(http.MethodGet, "/api/not-real", nil)
+	req.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", http.StatusNotFound, rr.Code)
+	}
+
+	var response map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response body: %v", err)
+	}
+	if response["error"] != "API route not found" {
+		t.Fatalf("expected fail-closed API error, got %#v", response)
+	}
+}
+
 func TestUserAgent(t *testing.T) {
 	ua := userAgent()
 

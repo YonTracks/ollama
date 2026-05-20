@@ -326,6 +326,12 @@ func (s *Server) Handler() http.Handler {
 			}
 		})
 	}
+	handleHandler := func(next http.Handler) http.Handler {
+		return handle(func(w http.ResponseWriter, r *http.Request) error {
+			next.ServeHTTP(w, r)
+			return nil
+		})
+	}
 
 	mux := http.NewServeMux()
 
@@ -355,7 +361,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/search", handle(s.search))
 
 	// Ollama proxy endpoints
-	ollamaProxy := s.ollamaProxy()
+	ollamaProxy := handleHandler(s.ollamaProxy())
 	mux.Handle("GET /api/tags", ollamaProxy)
 	mux.Handle("POST /api/chat", ollamaProxy)
 	mux.Handle("POST /api/generate", ollamaProxy)
@@ -372,6 +378,17 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/me", ollamaProxy)
 	mux.Handle("POST /api/signout", ollamaProxy)
 	mux.Handle("GET /api/experimental/model-recommendations", ollamaProxy)
+	apiNotFound := handle(func(w http.ResponseWriter, r *http.Request) error {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "API route not found"})
+		return nil
+	})
+	mux.Handle("GET /api/", apiNotFound)
+	mux.Handle("POST /api/", apiNotFound)
+	mux.Handle("PUT /api/", apiNotFound)
+	mux.Handle("PATCH /api/", apiNotFound)
+	mux.Handle("DELETE /api/", apiNotFound)
 
 	// React app - catch all non-API routes and serve the React app
 	mux.Handle("GET /", s.appHandler())
