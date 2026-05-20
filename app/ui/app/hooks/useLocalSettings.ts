@@ -62,22 +62,23 @@ function getDefaultSettings(): LocalSettings {
   };
 }
 
-function settingsKey(mode: AppMode) {
+export function getSettingsStorageKey(mode: AppMode) {
   return mode === "standalone" ? STANDALONE_SETTINGS_KEY : SETTINGS_KEY;
 }
 
 function readLocalSettings(mode: AppMode) {
   try {
-    const raw = localStorage.getItem(settingsKey(mode));
+    const raw = localStorage.getItem(getSettingsStorageKey(mode));
     const defaults = getDefaultSettings();
     if (!raw) return defaults;
 
     const parsed = JSON.parse(raw) as Partial<LocalSettings>;
-    return normalizeLocalSettings(
+    return normalizeSettingsForMode(
       migrateLocalSettings({
         ...defaults,
         ...parsed
-      }, parsed)
+      }, parsed),
+      mode
     );
   } catch {
     return getDefaultSettings();
@@ -106,7 +107,7 @@ function migrateLocalSettings(
 function toLocalSettings(serverSettings?: Settings, current = getDefaultSettings()): LocalSettings {
   if (!serverSettings) return current;
 
-  return normalizeLocalSettings({
+  return normalizeSettingsForMode({
     ...current,
     selectedModel: serverSettings.SelectedModel ?? current.selectedModel,
     sidebarOpen: serverSettings.SidebarOpen ?? current.sidebarOpen,
@@ -127,11 +128,11 @@ function toLocalSettings(serverSettings?: Settings, current = getDefaultSettings
         ? serverSettings.ThinkLevel
         : current.thinkLevel,
     autoUpdateEnabled: serverSettings.AutoUpdateEnabled ?? current.autoUpdateEnabled
-  });
+  }, "desktop");
 }
 
 function toServerSettings(settings: LocalSettings, serverSettings?: Settings): Settings {
-  const normalized = normalizeLocalSettings(settings);
+  const normalized = normalizeSettingsForMode(settings, "desktop");
   return {
     ...serverSettings,
     Expose: normalized.expose,
@@ -150,9 +151,9 @@ function toServerSettings(settings: LocalSettings, serverSettings?: Settings): S
   };
 }
 
-function normalizeLocalSettings(settings: LocalSettings): LocalSettings {
+export function normalizeSettingsForMode(settings: LocalSettings, mode: AppMode): LocalSettings {
   const webSearchMode = normalizeWebSearchMode(settings.webSearchMode);
-  return normalizeToolMode({
+  const normalized = normalizeToolMode({
     ...settings,
     webSearchMode,
     webSearchEnabled: webSearchMode === "manual" ? Boolean(settings.webSearchEnabled) : false,
@@ -164,6 +165,21 @@ function normalizeLocalSettings(settings: LocalSettings): LocalSettings {
     retrievalChatIds: uniqueStrings(settings.retrievalChatIds),
     retrievalExcludedChatIds: uniqueStrings(settings.retrievalExcludedChatIds)
   });
+
+  if (mode !== "standalone") return normalized;
+
+  return {
+    ...normalized,
+    expose: false,
+    browser: false,
+    models: "",
+    agent: false,
+    tools: false,
+    workingDir: "",
+    retrievalScope: "current",
+    retrievalChatIds: [],
+    retrievalExcludedChatIds: []
+  };
 }
 
 function normalizeWebSearchMode(value: LocalSettings["webSearchMode"]) {
@@ -231,9 +247,10 @@ export function useLocalSettings(mode: AppMode, enabled = true) {
 
   const persistLocal = useCallback(
     (next: LocalSettings) => {
-      setSettingsState(next);
+      const normalized = normalizeSettingsForMode(next, mode);
+      setSettingsState(normalized);
       try {
-        localStorage.setItem(settingsKey(mode), JSON.stringify(next));
+        localStorage.setItem(getSettingsStorageKey(mode), JSON.stringify(normalized));
       } catch {
         // Local settings are a convenience cache only.
       }
@@ -256,7 +273,7 @@ export function useLocalSettings(mode: AppMode, enabled = true) {
       setSettingsState((current) => {
         const next = toLocalSettings(response.settings, current);
         try {
-          localStorage.setItem(settingsKey(mode), JSON.stringify(next));
+          localStorage.setItem(getSettingsStorageKey(mode), JSON.stringify(next));
         } catch {
           // Ignore local persistence failures.
         }
@@ -279,7 +296,7 @@ export function useLocalSettings(mode: AppMode, enabled = true) {
 
   const updateSettings = useCallback(
     async (updates: Partial<LocalSettings>) => {
-      const next = normalizeToolMode({ ...settings, ...updates });
+      const next = normalizeSettingsForMode({ ...settings, ...updates }, mode);
       setError(null);
       persistLocal(next);
 

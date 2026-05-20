@@ -2,19 +2,33 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createStandaloneModel,
   deleteStandaloneModel,
+  getCoreApiBase,
   listStandaloneModels,
   pullStandaloneModel,
   sendStandaloneChat,
   standaloneBlobExists,
   uploadStandaloneBlob,
-  DEFAULT_CORE_API_BASE
+  DEFAULT_CORE_API_BASE,
+  SAME_ORIGIN_CORE_API_BASE
 } from "./standalone";
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 
 describe("standalone Ollama client", () => {
+  it("selects the standalone core API base independently of the desktop API base", () => {
+    vi.stubEnv("NEXT_PUBLIC_OLLAMA_API_BASE", "http://127.0.0.1:3001");
+    expect(getCoreApiBase()).toBe(DEFAULT_CORE_API_BASE);
+
+    vi.stubEnv("NEXT_PUBLIC_OLLAMA_CORE_API_BASE", "http://127.0.0.1:11435/");
+    expect(getCoreApiBase()).toBe("http://127.0.0.1:11435");
+    expect(getCoreApiBase(SAME_ORIGIN_CORE_API_BASE)).toBe("");
+    expect(getCoreApiBase("http://192.168.1.20:11434/")).toBe("http://192.168.1.20:11434");
+  });
+
   it("lists models from the core /api/tags endpoint", async () => {
     const fetchMock = vi.fn((url: string, init?: RequestInit) => {
       void url;

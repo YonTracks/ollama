@@ -6,6 +6,7 @@ import {
   deleteChatMessage,
   fetchConnectUrl,
   fetchUser,
+  getApiBase,
   listModels,
   sendChat,
   OllamaClientError
@@ -13,9 +14,23 @@ import {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 
 describe("Ollama client", () => {
+  it("selects the desktop API base without reading the standalone core API base", () => {
+    vi.stubEnv("NEXT_PUBLIC_OLLAMA_CORE_API_BASE", "http://127.0.0.1:11434");
+    vi.stubEnv("NODE_ENV", "production");
+    expect(getApiBase()).toBe("");
+
+    vi.stubEnv("NODE_ENV", "development");
+    expect(getApiBase()).toBe("http://127.0.0.1:3001");
+
+    vi.stubEnv("NEXT_PUBLIC_OLLAMA_API_BASE", "http://127.0.0.1:4555/");
+    expect(getApiBase()).toBe("http://127.0.0.1:4555");
+  });
+
   it("turns unreachable model listing failures into a clear client error", async () => {
     vi.stubGlobal(
       "fetch",

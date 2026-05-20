@@ -1,4 +1,4 @@
-const CACHE_VERSION = "ollama-app-shell-v5";
+const CACHE_VERSION = "ollama-app-shell-v6";
 const STATIC_CACHE = `${CACHE_VERSION}:static`;
 const APP_SHELL = [
   "/",
@@ -10,8 +10,30 @@ const APP_SHELL = [
   "/apple-touch-icon.png"
 ];
 
+const RUNTIME_CACHE_EXCLUDED_PATHS = [
+  "/api",
+  "/api/v1",
+  "/api/chat",
+  "/api/generate",
+  "/api/tags",
+  "/api/show",
+  "/api/ps",
+  "/api/search",
+  "/api/pull",
+  "/api/create",
+  "/api/delete",
+  "/api/blobs"
+];
+
+function matchesPathPrefix(pathname, prefix) {
+  return pathname === prefix || pathname.startsWith(`${prefix}/`);
+}
+
 function isApiRequest(url) {
-  return url.pathname.startsWith("/api/") || url.pathname.includes("/api/");
+  return (
+    RUNTIME_CACHE_EXCLUDED_PATHS.some((prefix) => matchesPathPrefix(url.pathname, prefix)) ||
+    url.pathname.includes("/api/")
+  );
 }
 
 function isStaticAsset(url) {

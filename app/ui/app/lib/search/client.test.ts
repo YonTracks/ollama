@@ -7,20 +7,18 @@ describe("search client helpers", () => {
   });
 
   it("returns a friendly error response instead of throwing when search fails", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify({
-            provider: "brave",
-            query: "latest docs",
-            results: [],
-            error: "Web search provider is unreachable."
-          }),
-          { status: 502, headers: { "Content-Type": "application/json" } }
-        )
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          provider: "brave",
+          query: "latest docs",
+          results: [],
+          error: "Web search provider is unreachable."
+        }),
+        { status: 502, headers: { "Content-Type": "application/json" } }
       )
     );
+    vi.stubGlobal("fetch", fetchMock);
 
     await expect(fetchSearchResults("latest docs", { provider: "brave" })).resolves.toEqual({
       provider: "brave",
@@ -28,6 +26,30 @@ describe("search client helpers", () => {
       disabled: false,
       results: [],
       error: "Web search provider is unreachable."
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/search?q=latest+docs&provider=brave",
+      expect.objectContaining({ cache: "no-store" })
+    );
+  });
+
+  it("falls back to a friendly error when the search route returns non-json", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          "<!doctype html><title>Not Found</title>",
+          { status: 404, headers: { "Content-Type": "text/html" } }
+        )
+      )
+    );
+
+    await expect(fetchSearchResults("latest docs")).resolves.toEqual({
+      provider: "off",
+      query: "latest docs",
+      disabled: false,
+      results: [],
+      error: "Search returned an unreadable response."
     });
   });
 

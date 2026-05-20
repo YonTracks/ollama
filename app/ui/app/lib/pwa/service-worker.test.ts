@@ -6,7 +6,12 @@ describe("service worker cache policy", () => {
   it("explicitly excludes Ollama API and chat requests from caching", () => {
     const source = readFileSync(join(process.cwd(), "public", "sw.js"), "utf8");
 
-    expect(source).toContain('url.pathname.startsWith("/api/")');
+    expect(source).toContain('"/api/chat"');
+    expect(source).toContain('"/api/generate"');
+    expect(source).toContain('"/api/tags"');
+    expect(source).toContain('"/api/show"');
+    expect(source).toContain('"/api/search"');
+    expect(source).toContain("RUNTIME_CACHE_EXCLUDED_PATHS.some");
     expect(source).toContain("if (isApiRequest(url)) return false");
     expect(source).toContain("request.method !== \"GET\"");
   });
@@ -23,7 +28,7 @@ describe("service worker cache policy", () => {
   it("uses a new cache version for app shell updates", () => {
     const source = readFileSync(join(process.cwd(), "public", "sw.js"), "utf8");
 
-    expect(source).toContain('const CACHE_VERSION = "ollama-app-shell-v5"');
+    expect(source).toContain('const CACHE_VERSION = "ollama-app-shell-v6"');
   });
 
   it("registers service worker updates without stale browser cache", () => {
