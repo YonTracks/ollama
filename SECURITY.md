@@ -36,6 +36,17 @@ internet.
 - On Windows, use firewall rules to block inbound access to `11434` unless you
   have intentionally configured and secured a proxy path.
 
+The desktop app proxy only connects to localhost upstreams by default:
+`127.0.0.1`, `localhost`, and `::1`. Override the host allowlist with
+`OLLAMA_PROXY_ALLOWED_UPSTREAMS`, but keep it limited to loopback hosts.
+
+The authenticated proxy blocks model-changing routes by default. Set
+`OLLAMA_PROXY_ALLOW_MODEL_MUTATION=true` to allow `/api/pull`, `/api/create`,
+`/api/copy`, `/api/delete`, and model blob uploads through the proxy. Set
+`OLLAMA_PROXY_ALLOW_PUSH=true` separately to allow `/api/push`. Proxy routes use
+request body limits and logs avoid request bodies, tokens, API keys, and query
+strings.
+
 ## Contact
 
 For any other questions or concerns related to security, please contact us at hello@ollama.com

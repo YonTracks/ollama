@@ -196,15 +196,50 @@ func Bool(k string) func() bool {
 	}
 }
 
-// AllowNetworkExposure returns true only when network exposure has been
-// explicitly enabled for serving Ollama on a non-loopback address.
-func AllowNetworkExposure() bool {
-	if s := Var("OLLAMA_ALLOW_NETWORK_EXPOSURE"); s != "" {
+func strictBool(k string) bool {
+	if s := Var(k); s != "" {
 		b, err := strconv.ParseBool(s)
 		return err == nil && b
 	}
 
 	return false
+}
+
+// AllowNetworkExposure returns true only when network exposure has been
+// explicitly enabled for serving Ollama on a non-loopback address.
+func AllowNetworkExposure() bool {
+	return strictBool("OLLAMA_ALLOW_NETWORK_EXPOSURE")
+}
+
+// ProxyAllowModelMutation returns true when the authenticated app proxy may
+// forward model-changing API requests such as pull, create, copy, delete, and
+// blob uploads.
+func ProxyAllowModelMutation() bool {
+	return strictBool("OLLAMA_PROXY_ALLOW_MODEL_MUTATION")
+}
+
+// ProxyAllowPush returns true when the authenticated app proxy may forward
+// /api/push requests.
+func ProxyAllowPush() bool {
+	return strictBool("OLLAMA_PROXY_ALLOW_PUSH")
+}
+
+// ProxyAllowedUpstreams returns the host allowlist for app proxy upstreams.
+func ProxyAllowedUpstreams() []string {
+	raw := Var("OLLAMA_PROXY_ALLOWED_UPSTREAMS")
+	if raw == "" {
+		return []string{"127.0.0.1", "localhost", "::1"}
+	}
+
+	upstreams := []string{}
+	for _, part := range strings.Split(raw, ",") {
+		host := strings.ToLower(strings.Trim(strings.TrimSpace(part), "[]"))
+		if host != "" {
+			upstreams = append(upstreams, host)
+		}
+	}
+
+	return upstreams
 }
 
 // LogLevel returns the log level for the application.
@@ -321,31 +356,34 @@ type EnvVar struct {
 
 func AsMap() map[string]EnvVar {
 	ret := map[string]EnvVar{
-		"OLLAMA_DEBUG":                  {"OLLAMA_DEBUG", LogLevel(), "Show additional debug information (e.g. OLLAMA_DEBUG=1)"},
-		"OLLAMA_DEBUG_LOG_REQUESTS":     {"OLLAMA_DEBUG_LOG_REQUESTS", DebugLogRequests(), "Log inference request bodies and replay curl commands to a temp directory"},
-		"OLLAMA_FLASH_ATTENTION":        {"OLLAMA_FLASH_ATTENTION", FlashAttention(false), "Enabled flash attention"},
-		"OLLAMA_KV_CACHE_TYPE":          {"OLLAMA_KV_CACHE_TYPE", KvCacheType(), "Quantization type for the K/V cache (default: f16)"},
-		"OLLAMA_GPU_OVERHEAD":           {"OLLAMA_GPU_OVERHEAD", GpuOverhead(), "Reserve a portion of VRAM per GPU (bytes)"},
-		"OLLAMA_ALLOW_NETWORK_EXPOSURE": {"OLLAMA_ALLOW_NETWORK_EXPOSURE", AllowNetworkExposure(), "Allow ollama serve to bind to non-localhost addresses"},
-		"OLLAMA_HOST":                   {"OLLAMA_HOST", Host(), "IP Address for the ollama server (default 127.0.0.1:11434)"},
-		"OLLAMA_KEEP_ALIVE":             {"OLLAMA_KEEP_ALIVE", KeepAlive(), "The duration that models stay loaded in memory (default \"5m\")"},
-		"OLLAMA_LLM_LIBRARY":            {"OLLAMA_LLM_LIBRARY", LLMLibrary(), "Set LLM library to bypass autodetection"},
-		"OLLAMA_LOAD_TIMEOUT":           {"OLLAMA_LOAD_TIMEOUT", LoadTimeout(), "How long to allow model loads to stall before giving up (default \"5m\")"},
-		"OLLAMA_MAX_LOADED_MODELS":      {"OLLAMA_MAX_LOADED_MODELS", MaxRunners(), "Maximum number of loaded models per GPU"},
-		"OLLAMA_MAX_TRANSFER_STREAMS":   {"OLLAMA_MAX_TRANSFER_STREAMS", MaxTransferStreams(), "Maximum parallel transfer streams for safetensors model pulls/pushes (default 4)"},
-		"OLLAMA_MAX_QUEUE":              {"OLLAMA_MAX_QUEUE", MaxQueue(), "Maximum number of queued requests"},
-		"OLLAMA_MODELS":                 {"OLLAMA_MODELS", Models(), "The path to the models directory"},
-		"OLLAMA_NO_CLOUD":               {"OLLAMA_NO_CLOUD", NoCloud(), "Disable Ollama cloud features (remote inference and web search)"},
-		"OLLAMA_NOHISTORY":              {"OLLAMA_NOHISTORY", NoHistory(), "Do not preserve readline history"},
-		"OLLAMA_NOPRUNE":                {"OLLAMA_NOPRUNE", NoPrune(), "Do not prune model blobs on startup"},
-		"OLLAMA_NUM_PARALLEL":           {"OLLAMA_NUM_PARALLEL", NumParallel(), "Maximum number of parallel requests"},
-		"OLLAMA_ORIGINS":                {"OLLAMA_ORIGINS", AllowedOrigins(), "A comma separated list of allowed origins"},
-		"OLLAMA_SCHED_SPREAD":           {"OLLAMA_SCHED_SPREAD", SchedSpread(), "Always schedule model across all GPUs"},
-		"OLLAMA_MULTIUSER_CACHE":        {"OLLAMA_MULTIUSER_CACHE", MultiUserCache(), "Optimize prompt caching for multi-user scenarios"},
-		"OLLAMA_CONTEXT_LENGTH":         {"OLLAMA_CONTEXT_LENGTH", ContextLength(), "Context length to use unless otherwise specified (default: 4k/32k/256k based on VRAM)"},
-		"OLLAMA_EDITOR":                 {"OLLAMA_EDITOR", Editor(), "Path to editor for interactive prompt editing (Ctrl+G)"},
-		"OLLAMA_NEW_ENGINE":             {"OLLAMA_NEW_ENGINE", NewEngine(), "Enable the new Ollama engine"},
-		"OLLAMA_REMOTES":                {"OLLAMA_REMOTES", Remotes(), "Allowed hosts for remote models (default \"ollama.com\")"},
+		"OLLAMA_DEBUG":                      {"OLLAMA_DEBUG", LogLevel(), "Show additional debug information (e.g. OLLAMA_DEBUG=1)"},
+		"OLLAMA_DEBUG_LOG_REQUESTS":         {"OLLAMA_DEBUG_LOG_REQUESTS", DebugLogRequests(), "Log inference request bodies and replay curl commands to a temp directory"},
+		"OLLAMA_FLASH_ATTENTION":            {"OLLAMA_FLASH_ATTENTION", FlashAttention(false), "Enabled flash attention"},
+		"OLLAMA_KV_CACHE_TYPE":              {"OLLAMA_KV_CACHE_TYPE", KvCacheType(), "Quantization type for the K/V cache (default: f16)"},
+		"OLLAMA_GPU_OVERHEAD":               {"OLLAMA_GPU_OVERHEAD", GpuOverhead(), "Reserve a portion of VRAM per GPU (bytes)"},
+		"OLLAMA_ALLOW_NETWORK_EXPOSURE":     {"OLLAMA_ALLOW_NETWORK_EXPOSURE", AllowNetworkExposure(), "Allow ollama serve to bind to non-localhost addresses"},
+		"OLLAMA_HOST":                       {"OLLAMA_HOST", Host(), "IP Address for the ollama server (default 127.0.0.1:11434)"},
+		"OLLAMA_KEEP_ALIVE":                 {"OLLAMA_KEEP_ALIVE", KeepAlive(), "The duration that models stay loaded in memory (default \"5m\")"},
+		"OLLAMA_LLM_LIBRARY":                {"OLLAMA_LLM_LIBRARY", LLMLibrary(), "Set LLM library to bypass autodetection"},
+		"OLLAMA_LOAD_TIMEOUT":               {"OLLAMA_LOAD_TIMEOUT", LoadTimeout(), "How long to allow model loads to stall before giving up (default \"5m\")"},
+		"OLLAMA_MAX_LOADED_MODELS":          {"OLLAMA_MAX_LOADED_MODELS", MaxRunners(), "Maximum number of loaded models per GPU"},
+		"OLLAMA_MAX_TRANSFER_STREAMS":       {"OLLAMA_MAX_TRANSFER_STREAMS", MaxTransferStreams(), "Maximum parallel transfer streams for safetensors model pulls/pushes (default 4)"},
+		"OLLAMA_MAX_QUEUE":                  {"OLLAMA_MAX_QUEUE", MaxQueue(), "Maximum number of queued requests"},
+		"OLLAMA_MODELS":                     {"OLLAMA_MODELS", Models(), "The path to the models directory"},
+		"OLLAMA_NO_CLOUD":                   {"OLLAMA_NO_CLOUD", NoCloud(), "Disable Ollama cloud features (remote inference and web search)"},
+		"OLLAMA_NOHISTORY":                  {"OLLAMA_NOHISTORY", NoHistory(), "Do not preserve readline history"},
+		"OLLAMA_NOPRUNE":                    {"OLLAMA_NOPRUNE", NoPrune(), "Do not prune model blobs on startup"},
+		"OLLAMA_NUM_PARALLEL":               {"OLLAMA_NUM_PARALLEL", NumParallel(), "Maximum number of parallel requests"},
+		"OLLAMA_ORIGINS":                    {"OLLAMA_ORIGINS", AllowedOrigins(), "A comma separated list of allowed origins"},
+		"OLLAMA_SCHED_SPREAD":               {"OLLAMA_SCHED_SPREAD", SchedSpread(), "Always schedule model across all GPUs"},
+		"OLLAMA_MULTIUSER_CACHE":            {"OLLAMA_MULTIUSER_CACHE", MultiUserCache(), "Optimize prompt caching for multi-user scenarios"},
+		"OLLAMA_CONTEXT_LENGTH":             {"OLLAMA_CONTEXT_LENGTH", ContextLength(), "Context length to use unless otherwise specified (default: 4k/32k/256k based on VRAM)"},
+		"OLLAMA_EDITOR":                     {"OLLAMA_EDITOR", Editor(), "Path to editor for interactive prompt editing (Ctrl+G)"},
+		"OLLAMA_NEW_ENGINE":                 {"OLLAMA_NEW_ENGINE", NewEngine(), "Enable the new Ollama engine"},
+		"OLLAMA_PROXY_ALLOWED_UPSTREAMS":    {"OLLAMA_PROXY_ALLOWED_UPSTREAMS", ProxyAllowedUpstreams(), "Comma-separated localhost names the app proxy may connect to"},
+		"OLLAMA_PROXY_ALLOW_MODEL_MUTATION": {"OLLAMA_PROXY_ALLOW_MODEL_MUTATION", ProxyAllowModelMutation(), "Allow the app proxy to forward model-changing API requests"},
+		"OLLAMA_PROXY_ALLOW_PUSH":           {"OLLAMA_PROXY_ALLOW_PUSH", ProxyAllowPush(), "Allow the app proxy to forward /api/push requests"},
+		"OLLAMA_REMOTES":                    {"OLLAMA_REMOTES", Remotes(), "Allowed hosts for remote models (default \"ollama.com\")"},
 
 		// Informational
 		"HTTP_PROXY":  {"HTTP_PROXY", String("HTTP_PROXY")(), "HTTP proxy"},

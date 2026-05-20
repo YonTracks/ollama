@@ -14,6 +14,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -105,6 +106,9 @@ const (
 	maxSettingsRequestBytes = 1 * 1024 * 1024
 	maxSmallJSONBytes       = 64 * 1024
 	maxSearchResponseBytes  = 2 * 1024 * 1024
+	maxProxyRequestBytes    = maxChatRequestBytes
+	maxProxyMutationBytes   = 16 * 1024 * 1024
+	maxProxyBlobBytes       = 64 * 1024 * 1024 * 1024
 )
 
 type Server struct {
@@ -178,6 +182,143 @@ func (s *Server) log() *slog.Logger {
 	return s.Logger
 }
 
+func defaultOllamaProxyTarget() *url.URL {
+	return &url.URL{Scheme: "http", Host: "127.0.0.1:11434"}
+}
+
+func normalizeProxyHost(host string) string {
+	return strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
+}
+
+func localProxyHost(host string) bool {
+	host = normalizeProxyHost(host)
+	if host == "localhost" {
+		return true
+	}
+
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func validateOllamaProxyTarget(target *url.URL) error {
+	if target == nil {
+		return errors.New("ollama proxy target is not configured")
+	}
+	if target.Scheme != "http" {
+		return fmt.Errorf("ollama proxy upstream must use http")
+	}
+	if target.Path != "" && target.Path != "/" {
+		return fmt.Errorf("ollama proxy upstream path is not allowed")
+	}
+
+	host := normalizeProxyHost(target.Hostname())
+	if !localProxyHost(host) {
+		return fmt.Errorf("ollama proxy upstream must be localhost")
+	}
+
+	for _, allowed := range envconfig.ProxyAllowedUpstreams() {
+		if host == normalizeProxyHost(allowed) {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("ollama proxy upstream host is not allowed")
+}
+
+func ollamaProxyTarget() (*url.URL, error) {
+	target := envconfig.ConnectableHost()
+	if err := validateOllamaProxyTarget(target); err != nil {
+		return nil, err
+	}
+
+	return target, nil
+}
+
+func ollamaClientTarget(logger *slog.Logger) *url.URL {
+	target, err := ollamaProxyTarget()
+	if err == nil {
+		return target
+	}
+
+	if logger != nil {
+		logger.Warn("invalid ollama upstream, falling back to localhost", "error", err)
+	}
+	return defaultOllamaProxyTarget()
+}
+
+func limitProxyRequestBody(w http.ResponseWriter, r *http.Request, maxBytes int64) bool {
+	if maxBytes <= 0 || r.Body == nil {
+		return true
+	}
+	if r.ContentLength > maxBytes {
+		writeProxyError(w, http.StatusRequestEntityTooLarge, "proxy request body too large")
+		return false
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	return true
+}
+
+func writeProxyError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+func stripProxyCredentials(req *http.Request) {
+	req.Header.Del("Authorization")
+	req.Header.Del("Cookie")
+	req.Header.Del("Proxy-Authorization")
+	req.Header.Del("X-Api-Key")
+	req.Header.Del("X-Auth-Token")
+}
+
+type proxyRoutePolicy struct {
+	maxBytes    int64
+	allowed     func() bool
+	requiredEnv string
+}
+
+func (s *Server) proxyRoute(next http.Handler, policy proxyRoutePolicy) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if policy.allowed != nil && !policy.allowed() {
+			s.log().Warn("blocked ollama proxy route", "method", r.Method, "path", r.URL.Path, "required_env", policy.requiredEnv)
+			writeProxyError(w, http.StatusForbidden, fmt.Sprintf("Proxy route disabled; set %s=true to enable it.", policy.requiredEnv))
+			return
+		}
+		if !limitProxyRequestBody(w, r, policy.maxBytes) {
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) newOllamaReverseProxy(target *url.URL) *httputil.ReverseProxy {
+	newProxy := httputil.NewSingleHostReverseProxy(target)
+
+	originalDirector := newProxy.Director
+	newProxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		req.Host = target.Host
+		stripProxyCredentials(req)
+		s.log().Debug("proxying request", "method", req.Method, "path", req.URL.Path, "target", target.Host)
+	}
+
+	newProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeProxyError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("proxy request body exceeds %d bytes", maxErr.Limit))
+			return
+		}
+
+		s.log().Error("proxy error", "error", err, "path", r.URL.Path, "target", target.Host)
+		writeProxyError(w, http.StatusBadGateway, "proxy error")
+	}
+
+	return newProxy
+}
+
 // ollamaProxy creates a reverse proxy handler to the Ollama server
 func (s *Server) ollamaProxy() http.Handler {
 	var (
@@ -193,14 +334,21 @@ func (s *Server) ollamaProxy() http.Handler {
 		if p == nil {
 			proxyMu.Lock()
 			if proxy == nil {
-				var err error
+				target, err := ollamaProxyTarget()
+				if err != nil {
+					proxyMu.Unlock()
+					s.log().Warn("refusing unsafe ollama proxy upstream", "error", err)
+					writeProxyError(w, http.StatusBadGateway, "Ollama upstream is not local")
+					return
+				}
+
 				for i := range 2 {
 					if i > 0 {
 						s.log().Warn("ollama server not ready, retrying", "attempt", i+1)
 						time.Sleep(1 * time.Second)
 					}
 
-					err = WaitForServer(context.Background(), 10*time.Second)
+					err = waitForServer(context.Background(), 10*time.Second, target)
 					if err == nil {
 						break
 					}
@@ -209,26 +357,13 @@ func (s *Server) ollamaProxy() http.Handler {
 				if err != nil {
 					proxyMu.Unlock()
 					s.log().Error("ollama server not ready after retries", "error", err)
-					http.Error(w, "Ollama server is not ready", http.StatusServiceUnavailable)
+					writeProxyError(w, http.StatusServiceUnavailable, "Ollama server is not ready")
 					return
 				}
 
-				target := envconfig.ConnectableHost()
 				s.log().Info("configuring ollama proxy", "target", target.String())
 
-				newProxy := httputil.NewSingleHostReverseProxy(target)
-
-				originalDirector := newProxy.Director
-				newProxy.Director = func(req *http.Request) {
-					originalDirector(req)
-					req.Host = target.Host
-					s.log().Debug("proxying request", "method", req.Method, "path", req.URL.Path, "target", target.Host)
-				}
-
-				newProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-					s.log().Error("proxy error", "error", err, "path", r.URL.Path, "target", target.String())
-					http.Error(w, "proxy error: "+err.Error(), http.StatusBadGateway)
-				}
+				newProxy := s.newOllamaReverseProxy(target)
 
 				proxy = newProxy
 				p = newProxy
@@ -361,23 +496,41 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/search", handle(s.search))
 
 	// Ollama proxy endpoints
-	ollamaProxy := handleHandler(s.ollamaProxy())
-	mux.Handle("GET /api/tags", ollamaProxy)
-	mux.Handle("POST /api/chat", ollamaProxy)
-	mux.Handle("POST /api/generate", ollamaProxy)
-	mux.Handle("POST /api/pull", ollamaProxy)
-	mux.Handle("POST /api/create", ollamaProxy)
-	mux.Handle("DELETE /api/delete", ollamaProxy)
-	mux.Handle("HEAD /api/blobs/{digest}", ollamaProxy)
-	mux.Handle("POST /api/blobs/{digest}", ollamaProxy)
-	mux.Handle("POST /api/show", ollamaProxy)
-	mux.Handle("GET /api/version", ollamaProxy)
-	mux.Handle("GET /api/status", ollamaProxy)
-	mux.Handle("GET /api/ps", ollamaProxy)
-	mux.Handle("HEAD /api/version", ollamaProxy)
-	mux.Handle("POST /api/me", ollamaProxy)
-	mux.Handle("POST /api/signout", ollamaProxy)
-	mux.Handle("GET /api/experimental/model-recommendations", ollamaProxy)
+	ollamaProxy := s.ollamaProxy()
+	safeProxy := handleHandler(s.proxyRoute(ollamaProxy, proxyRoutePolicy{maxBytes: maxProxyRequestBytes}))
+	modelMutationProxy := handleHandler(s.proxyRoute(ollamaProxy, proxyRoutePolicy{
+		maxBytes:    maxProxyMutationBytes,
+		allowed:     envconfig.ProxyAllowModelMutation,
+		requiredEnv: "OLLAMA_PROXY_ALLOW_MODEL_MUTATION",
+	}))
+	blobMutationProxy := handleHandler(s.proxyRoute(ollamaProxy, proxyRoutePolicy{
+		maxBytes:    maxProxyBlobBytes,
+		allowed:     envconfig.ProxyAllowModelMutation,
+		requiredEnv: "OLLAMA_PROXY_ALLOW_MODEL_MUTATION",
+	}))
+	pushProxy := handleHandler(s.proxyRoute(ollamaProxy, proxyRoutePolicy{
+		maxBytes:    maxProxyMutationBytes,
+		allowed:     envconfig.ProxyAllowPush,
+		requiredEnv: "OLLAMA_PROXY_ALLOW_PUSH",
+	}))
+	mux.Handle("GET /api/tags", safeProxy)
+	mux.Handle("POST /api/chat", safeProxy)
+	mux.Handle("POST /api/generate", safeProxy)
+	mux.Handle("POST /api/pull", modelMutationProxy)
+	mux.Handle("POST /api/create", modelMutationProxy)
+	mux.Handle("POST /api/copy", modelMutationProxy)
+	mux.Handle("DELETE /api/delete", modelMutationProxy)
+	mux.Handle("POST /api/push", pushProxy)
+	mux.Handle("HEAD /api/blobs/{digest}", safeProxy)
+	mux.Handle("POST /api/blobs/{digest}", blobMutationProxy)
+	mux.Handle("POST /api/show", safeProxy)
+	mux.Handle("GET /api/version", safeProxy)
+	mux.Handle("GET /api/status", safeProxy)
+	mux.Handle("GET /api/ps", safeProxy)
+	mux.Handle("HEAD /api/version", safeProxy)
+	mux.Handle("POST /api/me", safeProxy)
+	mux.Handle("POST /api/signout", safeProxy)
+	mux.Handle("GET /api/experimental/model-recommendations", safeProxy)
 	apiNotFound := handle(func(w http.ResponseWriter, r *http.Request) error {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
@@ -470,7 +623,7 @@ func (s *Server) httpClient() *http.Client {
 // inferenceClient uses almost the same HTTP client, but without a timeout so
 // long requests aren't truncated
 func (s *Server) inferenceClient() *api.Client {
-	return api.NewClient(envconfig.Host(), userAgentHTTPClient(0))
+	return api.NewClient(ollamaClientTarget(s.log()), userAgentHTTPClient(0))
 }
 
 func userAgentHTTPClient(timeout time.Duration) *http.Client {
@@ -535,12 +688,17 @@ func (s *Server) UserData(ctx context.Context) (*api.UserResponse, error) {
 
 // WaitForServer waits for the Ollama server to be ready
 func WaitForServer(ctx context.Context, timeout time.Duration) error {
+	target, err := ollamaProxyTarget()
+	if err != nil {
+		return err
+	}
+	return waitForServer(ctx, timeout, target)
+}
+
+func waitForServer(ctx context.Context, timeout time.Duration, target *url.URL) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		c, err := api.ClientFromEnvironment()
-		if err != nil {
-			return err
-		}
+		c := api.NewClient(target, userAgentHTTPClient(2*time.Second))
 		if _, err := c.Version(ctx); err == nil {
 			slog.Debug("ollama server is ready")
 			return nil

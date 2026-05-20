@@ -7,10 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -586,6 +589,21 @@ func TestPackagedApiRoutesRequireToken(t *testing.T) {
 			path:   "/api/delete",
 		},
 		{
+			name:   "core proxy copy API",
+			method: http.MethodPost,
+			path:   "/api/copy",
+		},
+		{
+			name:   "core proxy push API",
+			method: http.MethodPost,
+			path:   "/api/push",
+		},
+		{
+			name:   "core proxy blob upload API",
+			method: http.MethodPost,
+			path:   "/api/blobs/sha256:abc123",
+		},
+		{
 			name:   "unknown API route",
 			method: http.MethodGet,
 			path:   "/api/not-real",
@@ -633,6 +651,241 @@ func TestUnknownApiRoutesFailClosed(t *testing.T) {
 	}
 	if response["error"] != "API route not found" {
 		t.Fatalf("expected fail-closed API error, got %#v", response)
+	}
+}
+
+func TestProxyDangerousRoutesBlockedByDefault(t *testing.T) {
+	t.Setenv("OLLAMA_PROXY_ALLOW_MODEL_MUTATION", "")
+	t.Setenv("OLLAMA_PROXY_ALLOW_PUSH", "")
+
+	tests := []struct {
+		method string
+		path   string
+		env    string
+	}{
+		{http.MethodPost, "/api/pull", "OLLAMA_PROXY_ALLOW_MODEL_MUTATION"},
+		{http.MethodPost, "/api/create", "OLLAMA_PROXY_ALLOW_MODEL_MUTATION"},
+		{http.MethodPost, "/api/copy", "OLLAMA_PROXY_ALLOW_MODEL_MUTATION"},
+		{http.MethodDelete, "/api/delete", "OLLAMA_PROXY_ALLOW_MODEL_MUTATION"},
+		{http.MethodPost, "/api/blobs/sha256:abc123", "OLLAMA_PROXY_ALLOW_MODEL_MUTATION"},
+		{http.MethodPost, "/api/push", "OLLAMA_PROXY_ALLOW_PUSH"},
+	}
+
+	handler := (&Server{Token: "secret-token"}).Handler()
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(`{"model":"test"}`))
+			req.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
+			rr := httptest.NewRecorder()
+
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("expected status %d, got %d", http.StatusForbidden, rr.Code)
+			}
+
+			var response map[string]string
+			if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
+				t.Fatalf("failed to decode response body: %v", err)
+			}
+			if !strings.Contains(response["error"], tt.env) {
+				t.Fatalf("expected blocked route error to mention %s, got %#v", tt.env, response)
+			}
+		})
+	}
+}
+
+func TestProxyAllowsSafeRoutesToLocalUpstream(t *testing.T) {
+	var gotPaths atomic.Value
+	gotPaths.Store([]string{})
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths := gotPaths.Load().([]string)
+		gotPaths.Store(append(paths, r.Method+" "+r.URL.Path))
+
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/version":
+			_, _ = w.Write([]byte(`{"version":"test"}`))
+		case "/api/tags":
+			_, _ = w.Write([]byte(`{"models":[]}`))
+		default:
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer upstream.Close()
+
+	t.Setenv("OLLAMA_HOST", upstream.URL)
+	t.Setenv("OLLAMA_PROXY_ALLOWED_UPSTREAMS", "127.0.0.1,localhost,::1")
+
+	handler := (&Server{Token: "secret-token"}).Handler()
+	tests := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/tags"},
+		{http.MethodPost, "/api/chat"},
+		{http.MethodPost, "/api/generate"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(`{"model":"test"}`))
+			req.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
+			rr := httptest.NewRecorder()
+
+			handler.ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusOK {
+				t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestProxyAllowsDangerousRoutesWithExplicitEnv(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/version" {
+			_, _ = w.Write([]byte(`{"version":"test"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"path":` + strconv.Quote(r.URL.Path) + `}`))
+	}))
+	defer upstream.Close()
+
+	t.Setenv("OLLAMA_HOST", upstream.URL)
+	t.Setenv("OLLAMA_PROXY_ALLOWED_UPSTREAMS", "127.0.0.1,localhost,::1")
+	t.Setenv("OLLAMA_PROXY_ALLOW_MODEL_MUTATION", "true")
+
+	handler := (&Server{Token: "secret-token"}).Handler()
+	req := httptest.NewRequest(http.MethodPost, "/api/pull", strings.NewReader(`{"model":"test"}`))
+	req.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected model mutation route through, got %d body=%q", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/push", strings.NewReader(`{"model":"test"}`))
+	req.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
+	rr = httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected push to remain blocked without push env, got %d", rr.Code)
+	}
+
+	t.Setenv("OLLAMA_PROXY_ALLOW_PUSH", "true")
+	req = httptest.NewRequest(http.MethodPost, "/api/push", strings.NewReader(`{"model":"test"}`))
+	req.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
+	rr = httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected push route through with push env, got %d body=%q", rr.Code, rr.Body.String())
+	}
+}
+
+func TestProxyRejectsRemoteUpstream(t *testing.T) {
+	t.Setenv("OLLAMA_HOST", "http://example.com:11434")
+	t.Setenv("OLLAMA_PROXY_ALLOWED_UPSTREAMS", "example.com,127.0.0.1,localhost")
+
+	handler := (&Server{Token: "secret-token"}).Handler()
+	req := httptest.NewRequest(http.MethodGet, "/api/tags", nil)
+	req.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusBadGateway, rr.Code, rr.Body.String())
+	}
+}
+
+func TestProxyRequestBodyLimit(t *testing.T) {
+	handler := (&Server{Token: "secret-token"}).Handler()
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{}`))
+	req.ContentLength = maxProxyRequestBytes + 1
+	req.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected status %d, got %d", http.StatusRequestEntityTooLarge, rr.Code)
+	}
+}
+
+func TestProxyLogsRedactSensitiveData(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	handler := (&Server{Token: "desktop-cookie-token", Logger: logger}).Handler()
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/pull?api_key=secret-query-key",
+		strings.NewReader(`{"prompt":"secret prompt text","token":"secret-body-token","api_key":"secret-body-key"}`),
+	)
+	req.Header.Set("Authorization", "Bearer secret-authorization-token")
+	req.AddCookie(&http.Cookie{Name: "token", Value: "desktop-cookie-token"})
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d", http.StatusForbidden, rr.Code)
+	}
+
+	output := logs.String()
+	for _, secret := range []string{
+		"secret-query-key",
+		"secret prompt text",
+		"secret-body-token",
+		"secret-body-key",
+		"secret-authorization-token",
+		"desktop-cookie-token",
+	} {
+		if strings.Contains(output, secret) {
+			t.Fatalf("proxy logs leaked %q in %s", secret, output)
+		}
+	}
+}
+
+func TestOllamaProxyDirectorStripsCredentials(t *testing.T) {
+	target, err := url.Parse("http://127.0.0.1:11434")
+	if err != nil {
+		t.Fatalf("parse URL: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	proxy := (&Server{Logger: logger}).newOllamaReverseProxy(target)
+	req := httptest.NewRequest(http.MethodPost, "http://desktop.local/api/chat", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Cookie", "token=desktop-token")
+	req.Header.Set("Proxy-Authorization", "Basic secret")
+	req.Header.Set("X-Api-Key", "secret")
+	req.Header.Set("X-Auth-Token", "secret")
+	req.Header.Set("X-Keep", "value")
+
+	proxy.Director(req)
+
+	for _, header := range []string{"Authorization", "Cookie", "Proxy-Authorization", "X-Api-Key", "X-Auth-Token"} {
+		if got := req.Header.Get(header); got != "" {
+			t.Fatalf("%s was forwarded as %q", header, got)
+		}
+	}
+	if got := req.Header.Get("X-Keep"); got != "value" {
+		t.Fatalf("X-Keep = %q, want value", got)
+	}
+	if req.URL.Host != target.Host {
+		t.Fatalf("URL host = %q, want %q", req.URL.Host, target.Host)
+	}
+	if req.Host != target.Host {
+		t.Fatalf("request Host = %q, want %q", req.Host, target.Host)
 	}
 }
 

@@ -105,6 +105,50 @@ func TestAllowNetworkExposure(t *testing.T) {
 	}
 }
 
+func TestProxySecurityEnv(t *testing.T) {
+	boolCases := []struct {
+		name   string
+		key    string
+		value  string
+		check  func() bool
+		expect bool
+	}{
+		{"mutation empty", "OLLAMA_PROXY_ALLOW_MODEL_MUTATION", "", ProxyAllowModelMutation, false},
+		{"mutation true", "OLLAMA_PROXY_ALLOW_MODEL_MUTATION", "true", ProxyAllowModelMutation, true},
+		{"mutation invalid", "OLLAMA_PROXY_ALLOW_MODEL_MUTATION", "yes please", ProxyAllowModelMutation, false},
+		{"push empty", "OLLAMA_PROXY_ALLOW_PUSH", "", ProxyAllowPush, false},
+		{"push true", "OLLAMA_PROXY_ALLOW_PUSH", "1", ProxyAllowPush, true},
+		{"push invalid", "OLLAMA_PROXY_ALLOW_PUSH", "yes please", ProxyAllowPush, false},
+	}
+
+	for _, tt := range boolCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(tt.key, tt.value)
+			if got := tt.check(); got != tt.expect {
+				t.Errorf("%s = %v, want %v", tt.key, got, tt.expect)
+			}
+		})
+	}
+
+	t.Run("default upstreams", func(t *testing.T) {
+		t.Setenv("OLLAMA_PROXY_ALLOWED_UPSTREAMS", "")
+		got := ProxyAllowedUpstreams()
+		want := []string{"127.0.0.1", "localhost", "::1"}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Fatalf("ProxyAllowedUpstreams mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("custom upstreams normalize", func(t *testing.T) {
+		t.Setenv("OLLAMA_PROXY_ALLOWED_UPSTREAMS", " LOCALHOST, [::1],127.0.0.1, ")
+		got := ProxyAllowedUpstreams()
+		want := []string{"localhost", "::1", "127.0.0.1"}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Fatalf("ProxyAllowedUpstreams mismatch (-want +got):\n%s", diff)
+		}
+	})
+}
+
 func TestOrigins(t *testing.T) {
 	cases := []struct {
 		value  string
