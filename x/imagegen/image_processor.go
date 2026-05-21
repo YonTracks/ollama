@@ -7,6 +7,7 @@ import (
 	_ "image/png"
 	"os"
 
+	"github.com/ollama/ollama/model/imageproc"
 	"github.com/ollama/ollama/x/imagegen/mlx"
 	"golang.org/x/image/draw"
 )
@@ -20,7 +21,7 @@ func ProcessImage(path string, imageSize int32) (*mlx.Array, error) {
 	}
 	defer f.Close()
 
-	img, _, err := image.Decode(f)
+	img, _, err := imageproc.DecodeReader(f)
 	if err != nil {
 		return nil, fmt.Errorf("decode image: %w", err)
 	}

@@ -1,8 +1,16 @@
 package gguf
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
+	"math"
 	"strings"
+)
+
+var (
+	errTensorShapeOverflow = errors.New("gguf tensor shape overflows supported size")
+	errTensorSizeOverflow  = errors.New("gguf tensor byte size overflows supported size")
 )
 
 type TensorInfo struct {
@@ -13,26 +21,70 @@ type TensorInfo struct {
 }
 
 func (ti TensorInfo) Valid() bool {
-	return ti.Name != "" && ti.NumBytes() > 0
+	n, err := ti.NumBytesChecked()
+	return ti.Name != "" && err == nil && n > 0
 }
 
 func (ti TensorInfo) NumValues() int64 {
+	n, err := ti.NumValuesChecked()
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+func (ti TensorInfo) NumValuesChecked() (int64, error) {
 	var numItems int64 = 1
 	for _, dim := range ti.Shape {
-		numItems *= int64(dim)
+		if dim > math.MaxInt64 {
+			return 0, fmt.Errorf("%w: dimension %d", errTensorShapeOverflow, dim)
+		}
+		d := int64(dim)
+		if d != 0 && numItems > math.MaxInt64/d {
+			return 0, fmt.Errorf("%w: shape %v", errTensorShapeOverflow, ti.Shape)
+		}
+		numItems *= d
 	}
-	return numItems
+
+	return numItems, nil
 }
 
 // NumBytes returns the number of bytes in the tensor.
 func (ti TensorInfo) NumBytes() int64 {
-	return int64(float64(ti.NumValues()) * ti.Type.NumBytes())
+	n, err := ti.NumBytesChecked()
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
+// NumBytesChecked returns the number of bytes in the tensor, rejecting sizes
+// that overflow int64 before they can be used for section readers or offsets.
+func (ti TensorInfo) NumBytesChecked() (int64, error) {
+	numValues, err := ti.NumValuesChecked()
+	if err != nil {
+		return 0, err
+	}
+	if numValues == 0 {
+		return 0, nil
+	}
+
+	typeSize := ti.Type.typeSize()
+	blockSize := ti.Type.blockSize()
+	if typeSize <= 0 || blockSize <= 0 {
+		return 0, fmt.Errorf("unsupported gguf tensor type %d", ti.Type)
+	}
+	if numValues > math.MaxInt64/typeSize {
+		return 0, fmt.Errorf("%w: shape %v type %s", errTensorSizeOverflow, ti.Shape, ti.Type)
+	}
+
+	return (numValues * typeSize) / blockSize, nil
 }
 
 func (ti TensorInfo) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("name", ti.Name),
-		slog.Int64("offset", int64(ti.Offset)),
+		slog.Uint64("offset", ti.Offset),
 		slog.Any("shape", ti.Shape),
 		slog.Int64("num_values", ti.NumValues()),
 		slog.Int64("num_bytes", ti.NumBytes()),

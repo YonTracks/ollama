@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"math"
 	"os"
 	"slices"
 	"strconv"
@@ -24,7 +25,11 @@ type quantizer struct {
 
 func (q quantizer) WriteTo(w io.Writer) (int64, error) {
 	quantize := q.from.Kind != q.to.Kind
-	sr := io.NewSectionReader(q, int64(q.offset), int64(q.from.Size()))
+	offset, size, err := checkedQuantizerSection(q.offset, q.from.Size())
+	if err != nil {
+		return 0, fmt.Errorf("tensor %s has invalid source range: %w", q.from.Name, err)
+	}
+	sr := io.NewSectionReader(q, offset, size)
 	if !quantize {
 		n, err := io.Copy(w, sr)
 		q.progressFn(q.from.Size())
@@ -49,6 +54,19 @@ func (q quantizer) WriteTo(w io.Writer) (int64, error) {
 	n, err := w.Write(data)
 	q.progressFn(q.from.Size())
 	return int64(n), err
+}
+
+func checkedQuantizerSection(offset, size uint64) (int64, int64, error) {
+	if offset > uint64(math.MaxInt64) {
+		return 0, 0, fmt.Errorf("offset %d overflows supported size", offset)
+	}
+	if size > uint64(math.MaxInt64) {
+		return 0, 0, fmt.Errorf("size %d overflows supported size", size)
+	}
+	if offset > uint64(math.MaxInt64)-size {
+		return 0, 0, fmt.Errorf("offset %d plus size %d overflows supported size", offset, size)
+	}
+	return int64(offset), int64(size), nil
 }
 
 type quantizeState struct {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { normalizeBraveResults } from "./brave";
-import { normalizeCustomResults } from "./custom";
+import { normalizeCustomResults, validateCustomSearchUrl } from "./custom";
 import { normalizeTavilyResults } from "./tavily";
 
 describe("search result normalizers", () => {
@@ -104,5 +104,20 @@ describe("search result normalizers", () => {
         engine: "custom"
       }
     ]);
+  });
+
+  it("blocks custom search endpoints on local addresses by default", async () => {
+    delete process.env.CUSTOM_SEARCH_ALLOW_LOCAL;
+    await expect(validateCustomSearchUrl(new URL("http://127.0.0.1:9999/search"))).rejects.toThrow(
+      /CUSTOM_SEARCH_ENDPOINT/
+    );
+  });
+
+  it("allows local custom search endpoints only with the explicit override", async () => {
+    process.env.CUSTOM_SEARCH_ALLOW_LOCAL = "true";
+    await expect(
+      validateCustomSearchUrl(new URL("http://127.0.0.1:9999/search"))
+    ).resolves.toBeUndefined();
+    delete process.env.CUSTOM_SEARCH_ALLOW_LOCAL;
   });
 });

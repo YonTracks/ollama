@@ -16,6 +16,7 @@ import type {
   OllamaTagsResponse,
   OllamaUser,
   OllamaVersion,
+  SecurityStatusResponse,
   Settings,
   SettingsResponse
 } from "./types";
@@ -530,6 +531,18 @@ export async function getCloudStatus(signal?: AbortSignal): Promise<CloudStatusR
   return {
     disabled: Boolean(data.disabled),
     source: normalizeCloudStatusSource(data.source)
+  };
+}
+
+export async function getSecurityStatus(signal?: AbortSignal): Promise<SecurityStatusResponse> {
+  const data = await fetchJson<SecurityStatusResponse>("/api/v1/security", { signal });
+  return {
+    ...data,
+    cloudSource: normalizeCloudStatusSource(data.cloudSource),
+    proxyAllowedUpstreams: Array.isArray(data.proxyAllowedUpstreams)
+      ? data.proxyAllowedUpstreams
+      : [],
+    warnings: Array.isArray(data.warnings) ? data.warnings : []
   };
 }
 

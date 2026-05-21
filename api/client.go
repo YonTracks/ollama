@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ollama/ollama/auth"
@@ -138,9 +139,7 @@ func (c *Client) do(ctx context.Context, method, path string, reqData, respData 
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("User-Agent", fmt.Sprintf("ollama/%s (%s %s) Go/%s", version.Version, runtime.GOARCH, runtime.GOOS, runtime.Version()))
 
-	if token != "" {
-		request.Header.Set("Authorization", token)
-	}
+	setAuthorizationHeader(request, c.base, token)
 
 	respObj, err := c.http.Do(request)
 	if err != nil {
@@ -204,9 +203,7 @@ func (c *Client) stream(ctx context.Context, method, path string, data any, fn f
 	request.Header.Set("Accept", "application/x-ndjson")
 	request.Header.Set("User-Agent", fmt.Sprintf("ollama/%s (%s %s) Go/%s", version.Version, runtime.GOARCH, runtime.GOOS, runtime.Version()))
 
-	if token != "" {
-		request.Header.Set("Authorization", token)
-	}
+	setAuthorizationHeader(request, c.base, token)
 
 	response, err := c.http.Do(request)
 	if err != nil {
@@ -260,6 +257,18 @@ func (c *Client) stream(ctx context.Context, method, path string, data any, fn f
 	}
 
 	return nil
+}
+
+func setAuthorizationHeader(request *http.Request, base *url.URL, signedToken string) {
+	if base.Hostname() != "ollama.com" {
+		if token := strings.TrimSpace(envconfig.APIToken()); token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+			return
+		}
+	}
+	if signedToken != "" {
+		request.Header.Set("Authorization", signedToken)
+	}
 }
 
 // GenerateResponseFunc is a function that [Client.Generate] invokes every time

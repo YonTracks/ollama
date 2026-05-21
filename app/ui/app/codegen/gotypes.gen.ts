@@ -664,6 +664,76 @@ export class SettingsResponse {
 	    return a;
 	}
 }
+export class SecurityWarning {
+    code: string;
+    message: string;
+
+    constructor(source: any = {}) {
+        if ('string' === typeof source) source = JSON.parse(source);
+        this.code = source["code"];
+        this.message = source["message"];
+    }
+}
+export class SecurityStatusResponse {
+    mode: "desktop";
+    coreApiBase: string;
+    coreApiReachable: boolean;
+    coreApiHostLocal: boolean;
+    coreApiHostAllowed: boolean;
+    coreApiAuthEnabled: boolean;
+    desktopAuthEnabled: boolean;
+    devMode: boolean;
+    localOnlyOfflineMode: boolean;
+    cloudDisabled: boolean;
+    cloudSource: "env" | "config" | "both" | "none";
+    networkExposureAllowed: boolean;
+    modelMutationProxyEnabled: boolean;
+    pushProxyEnabled: boolean;
+    browserOriginsEnabled: boolean;
+    customBrowserOrigins: boolean;
+    proxyAllowedUpstreams: string[];
+    warnings: SecurityWarning[];
+
+    constructor(source: any = {}) {
+        if ('string' === typeof source) source = JSON.parse(source);
+        this.mode = source["mode"];
+        this.coreApiBase = source["coreApiBase"];
+        this.coreApiReachable = source["coreApiReachable"];
+        this.coreApiHostLocal = source["coreApiHostLocal"];
+        this.coreApiHostAllowed = source["coreApiHostAllowed"];
+        this.coreApiAuthEnabled = source["coreApiAuthEnabled"];
+        this.desktopAuthEnabled = source["desktopAuthEnabled"];
+        this.devMode = source["devMode"];
+        this.localOnlyOfflineMode = source["localOnlyOfflineMode"];
+        this.cloudDisabled = source["cloudDisabled"];
+        this.cloudSource = source["cloudSource"];
+        this.networkExposureAllowed = source["networkExposureAllowed"];
+        this.modelMutationProxyEnabled = source["modelMutationProxyEnabled"];
+        this.pushProxyEnabled = source["pushProxyEnabled"];
+        this.browserOriginsEnabled = source["browserOriginsEnabled"];
+        this.customBrowserOrigins = source["customBrowserOrigins"];
+        this.proxyAllowedUpstreams = source["proxyAllowedUpstreams"];
+        this.warnings = this.convertValues(source["warnings"], SecurityWarning);
+    }
+
+	convertValues(a: any, classs: any, asMap: boolean = false): any {
+	    if (!a) {
+	        return a;
+	    }
+	    if (Array.isArray(a)) {
+	        return (a as any[]).map(elem => this.convertValues(elem, classs));
+	    } else if ("object" === typeof a) {
+	        if (asMap) {
+	            for (const key of Object.keys(a)) {
+	                a[key] = new classs(a[key]);
+	            }
+	            return a;
+	        }
+	        return new classs(a);
+	    }
+	    return a;
+	}
+}
 export class HealthResponse {
     healthy: boolean;
 

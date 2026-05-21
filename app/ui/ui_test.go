@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/app/store"
@@ -158,9 +159,73 @@ func TestDesktopToolsAvailabilityRequiresEnvAndRegistry(t *testing.T) {
 	}
 }
 
+func TestHandlerExchangesTokenQueryForHttpOnlyCookie(t *testing.T) {
+	server := &Server{Token: "secret-token"}
+	req := httptest.NewRequest(http.MethodGet, "/?ollama_token=secret-token", nil)
+	rr := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusFound)
+	}
+	if got := rr.Header().Get("Location"); got != "/" {
+		t.Fatalf("Location = %q, want /", got)
+	}
+	cookies := rr.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("cookies = %d, want 1", len(cookies))
+	}
+	cookie := cookies[0]
+	if cookie.Name != "token" || cookie.Value != "secret-token" || !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("cookie = %+v, want HttpOnly SameSite=Strict token cookie", cookie)
+	}
+	if rr.Header().Get("Content-Security-Policy") == "" {
+		t.Fatal("Content-Security-Policy header is empty")
+	}
+}
+
+func TestHandlerDoesNotExchangeTokenOnAPIRoutes(t *testing.T) {
+	server := &Server{Token: "secret-token"}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/settings?ollama_token=secret-token", nil)
+	rr := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+	if got := rr.Header().Values("Set-Cookie"); len(got) != 0 {
+		t.Fatalf("Set-Cookie = %v, want none", got)
+	}
+}
+
+func TestValidateCustomSearchEndpointBlocksLocalhost(t *testing.T) {
+	t.Setenv("CUSTOM_SEARCH_ALLOW_LOCAL", "")
+	endpoint, err := url.Parse("http://127.0.0.1:8080/search")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCustomSearchEndpoint(context.Background(), endpoint); err == nil {
+		t.Fatal("expected localhost custom search endpoint to be blocked")
+	}
+}
+
+func TestValidateCustomSearchEndpointAllowsLocalOverride(t *testing.T) {
+	t.Setenv("CUSTOM_SEARCH_ALLOW_LOCAL", "true")
+	endpoint, err := url.Parse("http://127.0.0.1:8080/search")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCustomSearchEndpoint(context.Background(), endpoint); err != nil {
+		t.Fatalf("validateCustomSearchEndpoint() error = %v", err)
+	}
+}
+
 func TestHandlePostApiCloudSetting(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("OLLAMA_NO_CLOUD", "")
 
 	testStore := &store.Store{
@@ -222,6 +287,7 @@ func TestHandlePostApiCloudSetting(t *testing.T) {
 func TestHandleGetApiCloudSetting(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("OLLAMA_NO_CLOUD", "")
 
 	testStore := &store.Store{
@@ -559,6 +625,11 @@ func TestPackagedApiRoutesRequireToken(t *testing.T) {
 			path:   "/api/v1/settings",
 		},
 		{
+			name:   "security status API",
+			method: http.MethodGet,
+			path:   "/api/v1/security",
+		},
+		{
 			name:   "search API",
 			method: http.MethodGet,
 			path:   "/api/search?q=ollama",
@@ -651,6 +722,123 @@ func TestUnknownApiRoutesFailClosed(t *testing.T) {
 	}
 	if response["error"] != "API route not found" {
 		t.Fatalf("expected fail-closed API error, got %#v", response)
+	}
+}
+
+func TestSecurityStatusReportsSafeDesktopDefaults(t *testing.T) {
+	previousTimeout := securityStatusTimeout
+	securityStatusTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { securityStatusTimeout = previousTimeout })
+
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/version" {
+			t.Fatalf("unexpected upstream path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"version":"test"}`))
+	}))
+	defer upstream.Close()
+
+	t.Setenv("OLLAMA_HOST", upstream.URL)
+	t.Setenv("OLLAMA_PROXY_ALLOWED_UPSTREAMS", "127.0.0.1,localhost,::1")
+	t.Setenv("OLLAMA_PROXY_ALLOW_MODEL_MUTATION", "")
+	t.Setenv("OLLAMA_PROXY_ALLOW_PUSH", "")
+
+	testStore := &store.Store{DBPath: filepath.Join(t.TempDir(), "db.sqlite")}
+	defer testStore.Close()
+	if err := testStore.SetCloudEnabled(false); err != nil {
+		t.Fatalf("SetCloudEnabled(false) error = %v", err)
+	}
+
+	handler := (&Server{Token: "secret-token", Store: testStore}).Handler()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/security", nil)
+	req.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rr.Code, rr.Body.String())
+	}
+
+	var status responses.SecurityStatusResponse
+	if err := json.NewDecoder(rr.Body).Decode(&status); err != nil {
+		t.Fatalf("failed to decode security status: %v", err)
+	}
+
+	if status.Mode != "desktop" {
+		t.Fatalf("Mode = %q, want desktop", status.Mode)
+	}
+	if !status.CoreAPIReachable || !status.CoreAPIHostLocal || !status.CoreAPIHostAllowed {
+		t.Fatalf("unexpected core status: %#v", status)
+	}
+	if !status.DesktopAuthEnabled || status.DevMode {
+		t.Fatalf("unexpected auth/dev status: %#v", status)
+	}
+	if !status.LocalOnlyOfflineMode || !status.CloudDisabled || status.CloudSource != "config" {
+		t.Fatalf("unexpected cloud status: %#v", status)
+	}
+	if status.NetworkExposureAllowed || status.ModelMutationProxyEnabled || status.PushProxyEnabled || status.CustomBrowserOrigins {
+		t.Fatalf("unexpected unsafe flags: %#v", status)
+	}
+	if !status.BrowserOriginsEnabled {
+		t.Fatalf("BrowserOriginsEnabled = false, want true for default core origins")
+	}
+	if len(status.Warnings) != 1 || status.Warnings[0].Code != "default_browser_origins" {
+		t.Fatalf("expected only default browser origins warning, got %#v", status.Warnings)
+	}
+}
+
+func TestSecurityStatusWarnsOnUnsafeConfiguration(t *testing.T) {
+	previousTimeout := securityStatusTimeout
+	securityStatusTimeout = 10 * time.Millisecond
+	t.Cleanup(func() { securityStatusTimeout = previousTimeout })
+
+	t.Setenv("OLLAMA_HOST", "http://example.com:11434")
+	t.Setenv("OLLAMA_ALLOW_NETWORK_EXPOSURE", "true")
+	t.Setenv("OLLAMA_PROXY_ALLOW_MODEL_MUTATION", "true")
+	t.Setenv("OLLAMA_PROXY_ALLOW_PUSH", "true")
+	t.Setenv("OLLAMA_ORIGINS", "*")
+
+	testStore := &store.Store{DBPath: filepath.Join(t.TempDir(), "db.sqlite")}
+	defer testStore.Close()
+	if err := testStore.SetSettings(store.Settings{Expose: true, Browser: true}); err != nil {
+		t.Fatalf("SetSettings() error = %v", err)
+	}
+
+	status := (&Server{Dev: true, Store: testStore}).securityStatus(t.Context())
+
+	if status.CoreAPIHostLocal || status.CoreAPIHostAllowed || status.CoreAPIReachable {
+		t.Fatalf("unexpected core status: %#v", status)
+	}
+	if status.DesktopAuthEnabled {
+		t.Fatalf("DesktopAuthEnabled = true, want false")
+	}
+	if !status.NetworkExposureAllowed || !status.ModelMutationProxyEnabled || !status.PushProxyEnabled || !status.BrowserOriginsEnabled || !status.CustomBrowserOrigins {
+		t.Fatalf("expected unsafe flags enabled: %#v", status)
+	}
+
+	wantWarnings := map[string]bool{
+		"unsafe_upstream":       false,
+		"desktop_auth_disabled": false,
+		"network_exposure":      false,
+		"browser_origins":       false,
+		"model_mutation_proxy":  false,
+		"push_proxy":            false,
+	}
+	for _, warning := range status.Warnings {
+		if _, ok := wantWarnings[warning.Code]; ok {
+			wantWarnings[warning.Code] = true
+		}
+	}
+	for code, seen := range wantWarnings {
+		if !seen {
+			t.Fatalf("missing warning %q in %#v", code, status.Warnings)
+		}
 	}
 }
 
@@ -887,6 +1075,25 @@ func TestOllamaProxyDirectorStripsCredentials(t *testing.T) {
 	}
 	if req.Host != target.Host {
 		t.Fatalf("request Host = %q, want %q", req.Host, target.Host)
+	}
+}
+
+func TestOllamaProxyDirectorAddsCoreAPIToken(t *testing.T) {
+	t.Setenv("OLLAMA_API_TOKEN", "core-token")
+	target, err := url.Parse("http://127.0.0.1:11434")
+	if err != nil {
+		t.Fatalf("parse URL: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	proxy := (&Server{Logger: logger}).newOllamaReverseProxy(target)
+	req := httptest.NewRequest(http.MethodPost, "http://desktop.local/api/chat", nil)
+	req.Header.Set("Authorization", "Bearer desktop-token")
+
+	proxy.Director(req)
+
+	if got := req.Header.Get("Authorization"); got != "Bearer core-token" {
+		t.Fatalf("Authorization = %q, want core token", got)
 	}
 }
 

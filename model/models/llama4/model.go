@@ -1,7 +1,6 @@
 package llama4
 
 import (
-	"bytes"
 	"image"
 	"slices"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/ollama/ollama/ml"
 	"github.com/ollama/ollama/ml/nn"
 	"github.com/ollama/ollama/model"
+	"github.com/ollama/ollama/model/imageproc"
 	"github.com/ollama/ollama/model/input"
 	"github.com/ollama/ollama/tokenizer"
 )
@@ -67,7 +67,7 @@ func (m *Model) EncodeMultimodal(ctx ml.Context, multimodalData []byte) ([]input
 		return nil, model.ErrNoVisionModel
 	}
 
-	img, _, err := image.Decode(bytes.NewReader(multimodalData))
+	img, _, err := imageproc.DecodeBytes(multimodalData)
 	if err != nil {
 		return nil, err
 	}

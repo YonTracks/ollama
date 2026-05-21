@@ -149,6 +149,19 @@ func TestProxySecurityEnv(t *testing.T) {
 	})
 }
 
+func TestValuesRedactsSecrets(t *testing.T) {
+	t.Setenv("OLLAMA_API_TOKEN", "super-secret")
+	t.Setenv("HTTPS_PROXY", "http://user:pass@example.com:8080")
+
+	vals := Values()
+	if got := vals["OLLAMA_API_TOKEN"]; got != "<redacted>" {
+		t.Fatalf("OLLAMA_API_TOKEN = %q, want <redacted>", got)
+	}
+	if got := vals["HTTPS_PROXY"]; got != "http://redacted:redacted@example.com:8080" {
+		t.Fatalf("HTTPS_PROXY = %q, want redacted proxy URL", got)
+	}
+}
+
 func TestOrigins(t *testing.T) {
 	cases := []struct {
 		value  string

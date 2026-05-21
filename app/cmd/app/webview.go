@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -43,7 +44,7 @@ func (w *Webview) Run(path string) unsafe.Pointer {
 		// In development mode, use the local dev server
 		url = fmt.Sprintf("http://localhost:5173%s", path)
 	} else {
-		url = fmt.Sprintf("http://127.0.0.1:%d%s", w.port, path)
+		url = fmt.Sprintf("http://127.0.0.1:%d%s", w.port, pathWithToken(path, w.token))
 	}
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
@@ -57,11 +58,6 @@ func (w *Webview) Run(path string) unsafe.Pointer {
 		hideWindow(wv.Window())
 		wv.SetTitle("Ollama")
 
-		// TODO (jmorganca): this isn't working yet since it needs to be set
-		// on the first page load, ideally in an interstitial page like `/token`
-		// that exists only to set the cookie and redirect to /
-		// wv.Init(fmt.Sprintf(`document.cookie = "token=%s; path=/"`, w.token))
-		tokenJSON, _ := json.Marshal(w.token)
 		init := `
 		// Disable reload
 		document.addEventListener('keydown', function(e) {
@@ -83,10 +79,6 @@ func (w *Webview) Run(path string) unsafe.Pointer {
 			history.pushState(null, '', window.location.pathname);
 			window.history.replaceState(null, '', window.location.pathname);
 		});
-
-		// Set token cookie
-		const ollamaToken = ` + string(tokenJSON) + `;
-		document.cookie = "token=" + encodeURIComponent(ollamaToken) + "; path=/; SameSite=Strict";
 	`
 		// Windows-specific scrollbar styling
 		if runtime.GOOS == "windows" {
@@ -481,6 +473,21 @@ func (w *Webview) Run(path string) unsafe.Pointer {
 	}
 
 	return w.webview.Window()
+}
+
+func pathWithToken(path, token string) string {
+	if path == "" {
+		path = "/"
+	}
+
+	u, err := url.Parse(path)
+	if err != nil {
+		return path
+	}
+	q := u.Query()
+	q.Set("ollama_token", token)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func (w *Webview) Terminate() {

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/ollama/ollama/model/imageproc"
 	"github.com/ollama/ollama/x/imagegen/mlx"
 )
 
@@ -115,7 +116,7 @@ func clampF(v, min, max float32) float32 {
 func DecodeImage(data []byte) (image.Image, error) {
 	orientation := readJPEGOrientation(data)
 
-	img, _, err := image.Decode(bytes.NewReader(data))
+	img, _, err := imageproc.DecodeBytes(data)
 	if err != nil {
 		return nil, err
 	}

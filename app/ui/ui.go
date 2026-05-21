@@ -6,6 +6,7 @@ package ui
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"os"
 	"runtime"
@@ -111,6 +113,8 @@ const (
 	maxProxyBlobBytes       = 64 * 1024 * 1024 * 1024
 )
 
+var securityStatusTimeout = 500 * time.Millisecond
+
 type Server struct {
 	Logger       *slog.Logger
 	Restart      func()
@@ -200,6 +204,17 @@ func localProxyHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+func proxyHostAllowed(host string) bool {
+	host = normalizeProxyHost(host)
+	for _, allowed := range envconfig.ProxyAllowedUpstreams() {
+		if host == normalizeProxyHost(allowed) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func validateOllamaProxyTarget(target *url.URL) error {
 	if target == nil {
 		return errors.New("ollama proxy target is not configured")
@@ -216,10 +231,8 @@ func validateOllamaProxyTarget(target *url.URL) error {
 		return fmt.Errorf("ollama proxy upstream must be localhost")
 	}
 
-	for _, allowed := range envconfig.ProxyAllowedUpstreams() {
-		if host == normalizeProxyHost(allowed) {
-			return nil
-		}
+	if proxyHostAllowed(host) {
+		return nil
 	}
 
 	return fmt.Errorf("ollama proxy upstream host is not allowed")
@@ -333,6 +346,9 @@ func (s *Server) newOllamaReverseProxy(target *url.URL) *httputil.ReverseProxy {
 		originalDirector(req)
 		req.Host = target.Host
 		stripProxyCredentials(req)
+		if token := strings.TrimSpace(envconfig.APIToken()); token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 		s.log().Debug("proxying request", "method", req.Method, "path", req.URL.Path, "target", target.Host)
 	}
 
@@ -415,9 +431,14 @@ func (s *Server) ollamaProxy() http.Handler {
 
 type errHandlerFunc func(http.ResponseWriter, *http.Request) error
 
+const desktopTokenQueryParam = "ollama_token"
+
 func (s *Server) Handler() http.Handler {
 	handle := func(f errHandlerFunc) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requestID := fmt.Sprintf("%d", time.Now().UnixNano())
+			applySecurityHeaders(w, requestID)
+
 			// Add CORS headers for dev work
 			if CORS() {
 				applyCORSHeaders(w, r)
@@ -431,14 +452,11 @@ func (s *Server) Handler() http.Handler {
 
 			// Don't check for token in development mode
 			if !s.Dev {
-				cookie, err := r.Cookie("token")
-				if err != nil {
-					w.WriteHeader(http.StatusForbidden)
-					json.NewEncoder(w).Encode(map[string]string{"error": "Token is required"})
+				if s.exchangeDesktopToken(w, r) {
 					return
 				}
 
-				if cookie.Value != s.Token {
+				if !s.validDesktopCookie(r) {
 					w.WriteHeader(http.StatusForbidden)
 					json.NewEncoder(w).Encode(map[string]string{"error": "Token is required"})
 					return
@@ -450,7 +468,6 @@ func (s *Server) Handler() http.Handler {
 			log := s.log()
 			level := slog.LevelInfo
 			start := time.Now()
-			requestID := fmt.Sprintf("%d", time.Now().UnixNano())
 
 			defer func() {
 				p := recover()
@@ -479,12 +496,6 @@ func (s *Server) Handler() http.Handler {
 					panic(p)
 				}
 			}()
-
-			w.Header().Set("X-Frame-Options", "DENY")
-			w.Header().Set("X-Content-Type-Options", "nosniff")
-			w.Header().Set("Referrer-Policy", "no-referrer")
-			w.Header().Set("X-Version", version.Version)
-			w.Header().Set("X-Request-ID", requestID)
 
 			ctx := r.Context()
 			if err := f(sw, r); err != nil {
@@ -525,6 +536,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/model/upstream", handle(s.modelUpstream))
 	mux.Handle("GET /api/v1/settings", handle(s.getSettings))
 	mux.Handle("POST /api/v1/settings", handle(s.settings))
+	mux.Handle("GET /api/v1/security", handle(s.getSecurityStatus))
 	mux.Handle("GET /api/v1/cloud", handle(s.getCloudSetting))
 	mux.Handle("POST /api/v1/cloud", handle(s.cloudSetting))
 	mux.Handle("GET /api/v1/user", handle(s.getUser))
@@ -580,13 +592,77 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/", apiNotFound)
 
 	// React app - catch all non-API routes and serve the React app
-	mux.Handle("GET /", s.appHandler())
-	mux.Handle("PUT /", s.appHandler())
-	mux.Handle("POST /", s.appHandler())
-	mux.Handle("PATCH /", s.appHandler())
-	mux.Handle("DELETE /", s.appHandler())
+	app := handleHandler(s.appHandler())
+	mux.Handle("GET /", app)
+	mux.Handle("PUT /", app)
+	mux.Handle("POST /", app)
+	mux.Handle("PATCH /", app)
+	mux.Handle("DELETE /", app)
 
 	return mux
+}
+
+func applySecurityHeaders(w http.ResponseWriter, requestID string) {
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Permissions-Policy", "camera=(), geolocation=(), payment=(), serial=(), usb=()")
+	w.Header().Set("Content-Security-Policy", strings.Join([]string{
+		"default-src 'self'",
+		"base-uri 'none'",
+		"frame-ancestors 'none'",
+		"object-src 'none'",
+		"script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
+		"style-src 'self' 'unsafe-inline'",
+		"img-src 'self' data: blob: http: https:",
+		"font-src 'self' data:",
+		"connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*",
+		"worker-src 'self' blob:",
+		"manifest-src 'self'",
+		"form-action 'none'",
+	}, "; "))
+	w.Header().Set("X-Version", version.Version)
+	w.Header().Set("X-Request-ID", requestID)
+}
+
+func (s *Server) validDesktopCookie(r *http.Request) bool {
+	cookie, err := r.Cookie("token")
+	if err != nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(s.Token)) == 1
+}
+
+func (s *Server) exchangeDesktopToken(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodGet || strings.HasPrefix(r.URL.Path, "/api/") {
+		return false
+	}
+
+	token := r.URL.Query().Get(desktopTokenQueryParam)
+	if token == "" {
+		return false
+	}
+	if subtle.ConstantTimeCompare([]byte(token), []byte(s.Token)) != 1 {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"error": "Token is required"})
+		return true
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "token",
+		Value:    s.Token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   r.TLS != nil,
+	})
+
+	cleanURL := *r.URL
+	q := cleanURL.Query()
+	q.Del(desktopTokenQueryParam)
+	cleanURL.RawQuery = q.Encode()
+	http.Redirect(w, r, cleanURL.String(), http.StatusFound)
+	return true
 }
 
 // handleError renders appropriate error responses based on request type
@@ -3752,6 +3828,96 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) error {
 	})
 }
 
+func (s *Server) getSecurityStatus(w http.ResponseWriter, r *http.Request) error {
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(s.securityStatus(r.Context()))
+}
+
+func (s *Server) securityStatus(ctx context.Context) responses.SecurityStatusResponse {
+	target := envconfig.ConnectableHost()
+	host := normalizeProxyHost(target.Hostname())
+	hostLocal := localProxyHost(host)
+	hostAllowed := proxyHostAllowed(host)
+	targetErr := validateOllamaProxyTarget(target)
+
+	settings := store.Settings{}
+	if s.Store != nil {
+		if loaded, err := s.Store.Settings(); err == nil {
+			settings = loaded
+			normalizeDesktopToolSettings(&settings)
+		}
+	}
+
+	cloudDisabled := false
+	cloudSource := "none"
+	if s.Store != nil {
+		if disabled, source, err := s.Store.CloudStatus(); err == nil {
+			cloudDisabled = disabled
+			cloudSource = source
+		}
+	}
+
+	status := responses.SecurityStatusResponse{
+		Mode:                      "desktop",
+		CoreAPIBase:               target.String(),
+		CoreAPIHostLocal:          hostLocal,
+		CoreAPIHostAllowed:        hostAllowed,
+		CoreAPIAuthEnabled:        strings.TrimSpace(envconfig.APIToken()) != "",
+		DesktopAuthEnabled:        !s.Dev,
+		DevMode:                   s.Dev,
+		LocalOnlyOfflineMode:      cloudDisabled,
+		CloudDisabled:             cloudDisabled,
+		CloudSource:               cloudSource,
+		NetworkExposureAllowed:    settings.Expose || envconfig.AllowNetworkExposure(),
+		ModelMutationProxyEnabled: envconfig.ProxyAllowModelMutation(),
+		PushProxyEnabled:          envconfig.ProxyAllowPush(),
+		BrowserOriginsEnabled:     len(envconfig.AllowedOrigins()) > 0,
+		CustomBrowserOrigins:      settings.Browser || envconfig.Var("OLLAMA_ORIGINS") != "",
+		ProxyAllowedUpstreams:     envconfig.ProxyAllowedUpstreams(),
+	}
+
+	if targetErr == nil {
+		status.CoreAPIReachable = waitForServer(ctx, securityStatusTimeout, target) == nil
+	}
+
+	status.Warnings = securityWarnings(status, targetErr)
+	return status
+}
+
+func securityWarnings(status responses.SecurityStatusResponse, targetErr error) []responses.SecurityWarning {
+	warnings := []responses.SecurityWarning{}
+	add := func(code, message string) {
+		warnings = append(warnings, responses.SecurityWarning{Code: code, Message: message})
+	}
+
+	if targetErr != nil {
+		add("unsafe_upstream", "The configured Ollama upstream is not an allowed localhost HTTP endpoint.")
+	} else if !status.CoreAPIReachable {
+		add("core_unreachable", "The local Ollama core API is not reachable.")
+	}
+	if !status.DesktopAuthEnabled {
+		add("desktop_auth_disabled", "Desktop API token checks are disabled in development mode.")
+	}
+	if status.NetworkExposureAllowed && !status.CoreAPIAuthEnabled {
+		add("network_exposure", "Network exposure is enabled. Ollama's local API does not provide built-in authentication.")
+	} else if status.NetworkExposureAllowed {
+		add("network_exposure", "Network exposure is enabled. Require clients to send the configured core API token.")
+	}
+	if status.CustomBrowserOrigins {
+		add("browser_origins", "Custom browser origins are enabled for the core server.")
+	} else if status.BrowserOriginsEnabled {
+		add("default_browser_origins", "The core server accepts Ollama's default localhost and app browser origins.")
+	}
+	if status.ModelMutationProxyEnabled {
+		add("model_mutation_proxy", "The desktop proxy can forward model-changing API routes.")
+	}
+	if status.PushProxyEnabled {
+		add("push_proxy", "The desktop proxy can forward model push requests.")
+	}
+
+	return warnings
+}
+
 func (s *Server) cloudSetting(w http.ResponseWriter, r *http.Request) error {
 	var req struct {
 		Enabled bool `json:"enabled"`
@@ -4214,6 +4380,9 @@ func (s *Server) searchCustom(ctx context.Context, options searchOptions) ([]res
 	if endpoint.Scheme != "http" && endpoint.Scheme != "https" {
 		return nil, searchConfigurationError("CUSTOM_SEARCH_ENDPOINT must use http or https.")
 	}
+	if err := validateCustomSearchEndpoint(ctx, endpoint); err != nil {
+		return nil, searchConfigurationError(err.Error())
+	}
 	params := endpoint.Query()
 	params.Set("q", options.Query)
 	params.Set("count", strconv.Itoa(options.Count))
@@ -4226,6 +4395,64 @@ func (s *Server) searchCustom(ctx context.Context, options searchOptions) ([]res
 	}
 
 	return normalizeCustomSearchResults(payload, options.Count), nil
+}
+
+func validateCustomSearchEndpoint(ctx context.Context, endpoint *url.URL) error {
+	if endpoint == nil || endpoint.Hostname() == "" {
+		return errors.New("CUSTOM_SEARCH_ENDPOINT must include a host.")
+	}
+	if endpoint.User != nil {
+		return errors.New("CUSTOM_SEARCH_ENDPOINT must not include credentials.")
+	}
+	if allowLocalCustomSearch() {
+		return nil
+	}
+
+	host := strings.ToLower(strings.Trim(endpoint.Hostname(), "[]"))
+	if ip := net.ParseIP(host); ip != nil {
+		if customSearchIPBlocked(ip) {
+			return errors.New("CUSTOM_SEARCH_ENDPOINT points to a local or private address. Set CUSTOM_SEARCH_ALLOW_LOCAL=true only for a trusted local search adapter.")
+		}
+		return nil
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || !strings.Contains(host, ".") {
+		return errors.New("CUSTOM_SEARCH_ENDPOINT points to a local or private host. Set CUSTOM_SEARCH_ALLOW_LOCAL=true only for a trusted local search adapter.")
+	}
+
+	lookupCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupIPAddr(lookupCtx, host)
+	if err != nil {
+		return fmt.Errorf("CUSTOM_SEARCH_ENDPOINT host could not be validated: %w", err)
+	}
+	for _, addr := range addrs {
+		if customSearchIPBlocked(addr.IP) {
+			return errors.New("CUSTOM_SEARCH_ENDPOINT resolves to a local or private address. Set CUSTOM_SEARCH_ALLOW_LOCAL=true only for a trusted local search adapter.")
+		}
+	}
+
+	return nil
+}
+
+func allowLocalCustomSearch() bool {
+	value := strings.TrimSpace(os.Getenv("CUSTOM_SEARCH_ALLOW_LOCAL"))
+	allowed, err := strconv.ParseBool(value)
+	return err == nil && allowed
+}
+
+func customSearchIPBlocked(ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return true
+	}
+	addr = addr.Unmap()
+	if addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsUnspecified() || addr.IsMulticast() {
+		return true
+	}
+	if netip.MustParsePrefix("100.64.0.0/10").Contains(addr) {
+		return true
+	}
+	return false
 }
 
 func (s *Server) fetchSearchJSON(ctx context.Context, timeout time.Duration, method, endpoint string, body any, headers map[string]string, target any) error {

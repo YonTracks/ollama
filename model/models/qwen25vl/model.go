@@ -1,14 +1,13 @@
 package qwen25vl
 
 import (
-	"bytes"
-	"image"
 	"slices"
 
 	"github.com/ollama/ollama/fs"
 	"github.com/ollama/ollama/kvcache"
 	"github.com/ollama/ollama/ml"
 	"github.com/ollama/ollama/model"
+	"github.com/ollama/ollama/model/imageproc"
 	"github.com/ollama/ollama/model/input"
 	"github.com/ollama/ollama/tokenizer"
 )
@@ -54,7 +53,7 @@ func New(c fs.Config) (model.Model, error) {
 }
 
 func (m *Model) PixelValues(ctx ml.Context, multimodalData []byte) (ml.Tensor, *Grid, error) {
-	img, _, err := image.Decode(bytes.NewReader(multimodalData))
+	img, _, err := imageproc.DecodeBytes(multimodalData)
 	if err != nil {
 		return nil, nil, err
 	}

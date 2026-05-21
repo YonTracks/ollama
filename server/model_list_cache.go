@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"slices"
 	"strings"
@@ -22,6 +23,8 @@ import (
 	"github.com/ollama/ollama/thinking"
 	"github.com/ollama/ollama/types/model"
 )
+
+const maxModelListGGUFStringBytes = 16 * 1024 * 1024
 
 type modelListSummary struct {
 	Model        string
@@ -713,7 +716,11 @@ func skipModelListGGUFArray(r io.Reader, byteOrder binary.ByteOrder, version uin
 	default:
 		return fmt.Errorf("unsupported gguf array type %d", arrayType)
 	}
-	return discardModelListGGUFBytes(r, int64(count*size))
+	n, err := checkedModelListGGUFByteCount(count, size)
+	if err != nil {
+		return err
+	}
+	return discardModelListGGUFBytes(r, n)
 }
 
 func readModelListGGUFString(r io.Reader, byteOrder binary.ByteOrder, version uint32) (string, error) {
@@ -724,6 +731,9 @@ func readModelListGGUFString(r io.Reader, byteOrder binary.ByteOrder, version ui
 
 	if length == 0 {
 		return "", nil
+	}
+	if length > maxModelListGGUFStringBytes {
+		return "", fmt.Errorf("gguf string length %d exceeds %d bytes", length, maxModelListGGUFStringBytes)
 	}
 
 	bts := make([]byte, length)
@@ -741,6 +751,9 @@ func skipModelListGGUFString(r io.Reader, byteOrder binary.ByteOrder, version ui
 	if err := binary.Read(r, byteOrder, &length); err != nil {
 		return err
 	}
+	if length > math.MaxInt64 {
+		return fmt.Errorf("gguf string length %d overflows supported size", length)
+	}
 	return discardModelListGGUFBytes(r, int64(length))
 }
 
@@ -750,6 +763,17 @@ func discardModelListGGUFBytes(r io.Reader, n int64) error {
 	}
 	_, err := io.CopyN(io.Discard, r, n)
 	return err
+}
+
+func checkedModelListGGUFByteCount(count, size uint64) (int64, error) {
+	if size != 0 && count > uint64(math.MaxInt64)/size {
+		return 0, fmt.Errorf("gguf array byte count overflows supported size: count=%d size=%d", count, size)
+	}
+	n := count * size
+	if n > math.MaxInt64 {
+		return 0, fmt.Errorf("gguf array byte count %d overflows supported size", n)
+	}
+	return int64(n), nil
 }
 
 func appendModelListCapabilities(capabilities []model.Capability, values ...model.Capability) []model.Capability {

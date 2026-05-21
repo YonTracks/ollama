@@ -281,12 +281,16 @@ func (s *Server) cmd(ctx context.Context) (*exec.Cmd, error) {
 	} else {
 		env["OLLAMA_NO_CLOUD"] = "0"
 	}
+	coreAPIAuth := "disabled"
+	if strings.TrimSpace(env["OLLAMA_API_TOKEN"]) != "" {
+		coreAPIAuth = "enabled"
+	}
 	slog.Info(
 		"managed ollama server security",
 		"ollama_host", env["OLLAMA_HOST"],
 		"network_exposure", settings.Expose,
 		"browser_origins_enabled", settings.Browser,
-		"core_api_auth", "disabled",
+		"core_api_auth", coreAPIAuth,
 	)
 	cmd.Env = []string{}
 	for k, v := range env {

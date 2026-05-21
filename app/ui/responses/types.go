@@ -110,6 +110,32 @@ type SettingsResponse struct {
 	Settings store.Settings `json:"settings"`
 }
 
+type SecurityWarning struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type SecurityStatusResponse struct {
+	Mode                      string            `json:"mode" ts_type:"\"desktop\""`
+	CoreAPIBase               string            `json:"coreApiBase"`
+	CoreAPIReachable          bool              `json:"coreApiReachable"`
+	CoreAPIHostLocal          bool              `json:"coreApiHostLocal"`
+	CoreAPIHostAllowed        bool              `json:"coreApiHostAllowed"`
+	CoreAPIAuthEnabled        bool              `json:"coreApiAuthEnabled"`
+	DesktopAuthEnabled        bool              `json:"desktopAuthEnabled"`
+	DevMode                   bool              `json:"devMode"`
+	LocalOnlyOfflineMode      bool              `json:"localOnlyOfflineMode"`
+	CloudDisabled             bool              `json:"cloudDisabled"`
+	CloudSource               string            `json:"cloudSource" ts_type:"\"env\" | \"config\" | \"both\" | \"none\""`
+	NetworkExposureAllowed    bool              `json:"networkExposureAllowed"`
+	ModelMutationProxyEnabled bool              `json:"modelMutationProxyEnabled"`
+	PushProxyEnabled          bool              `json:"pushProxyEnabled"`
+	BrowserOriginsEnabled     bool              `json:"browserOriginsEnabled"`
+	CustomBrowserOrigins      bool              `json:"customBrowserOrigins"`
+	ProxyAllowedUpstreams     []string          `json:"proxyAllowedUpstreams"`
+	Warnings                  []SecurityWarning `json:"warnings"`
+}
+
 type HealthResponse struct {
 	Healthy bool `json:"healthy"`
 }

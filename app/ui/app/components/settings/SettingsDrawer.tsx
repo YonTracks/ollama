@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   AlertCircle,
   Bolt,
@@ -35,6 +35,7 @@ import {
   getApiBase,
   getCloudStatus,
   getInferenceCompute,
+  getSecurityStatus,
   updateCloudSetting
 } from "@/lib/ollama/client";
 import {
@@ -50,7 +51,8 @@ import type {
   ChatInfo,
   CloudStatusResponse,
   OllamaModel,
-  OllamaUser
+  OllamaUser,
+  SecurityStatusResponse
 } from "@/lib/ollama/types";
 import type { SearchHealthResponse } from "@/lib/search/types";
 import type { LocalSettings } from "@/types/app";
@@ -134,6 +136,9 @@ export function SettingsDrawer({
   const [searchHealth, setSearchHealth] = useState<SearchHealthResponse | null>(null);
   const [searchHealthLoading, setSearchHealthLoading] = useState(false);
   const [searchHealthError, setSearchHealthError] = useState<string | null>(null);
+  const [securityStatus, setSecurityStatus] = useState<SecurityStatusResponse | null>(null);
+  const [securityStatusLoading, setSecurityStatusLoading] = useState(false);
+  const [securityStatusError, setSecurityStatusError] = useState<string | null>(null);
 
   const standalone = appMode === "standalone";
   const cloudOverriddenByEnv = cloudStatus?.source === "env" || cloudStatus?.source === "both";
@@ -260,6 +265,37 @@ export function SettingsDrawer({
 
     return () => controller.abort();
   }, [connection.status, open, standalone]);
+
+  const refreshSecurityStatus = useCallback(
+    (signal?: AbortSignal) => {
+      if (standalone) return Promise.resolve();
+
+      setSecurityStatusLoading(true);
+      setSecurityStatusError(null);
+      return getSecurityStatus(signal)
+        .then(setSecurityStatus)
+        .catch((error) => {
+          if (!signal?.aborted) {
+            setSecurityStatus(null);
+            setSecurityStatusError(
+              error instanceof Error ? error.message : "Failed to load security status"
+            );
+          }
+        })
+        .finally(() => {
+          if (!signal?.aborted) setSecurityStatusLoading(false);
+        });
+    },
+    [standalone]
+  );
+
+  useEffect(() => {
+    if (!open || standalone || connection.status !== "connected") return;
+
+    const controller = new AbortController();
+    refreshSecurityStatus(controller.signal);
+    return () => controller.abort();
+  }, [connection.status, open, refreshSecurityStatus, standalone]);
 
   useEffect(() => {
     if (!open || activeTab !== "chat") return;
@@ -707,6 +743,7 @@ export function SettingsDrawer({
           ) : null}
           {cloudError ? <Notice tone="danger">{cloudError}</Notice> : null}
           {userError ? <Notice tone="danger">{userError}</Notice> : null}
+          {securityStatusError ? <Notice tone="danger">{securityStatusError}</Notice> : null}
           {deleteChatsError ? <Notice tone="danger">{deleteChatsError}</Notice> : null}
           {restartNotice ? (
             <Notice tone="warning">Saved. Ollama is restarting to apply this change.</Notice>
@@ -762,6 +799,25 @@ export function SettingsDrawer({
                     or a standalone build.
                   </div>
                 )}
+              </SettingsSection>
+
+              <SettingsSection
+                title="Security Status"
+                action={
+                  !standalone ? (
+                    <IconButton label="Refresh security status" onClick={() => refreshSecurityStatus()}>
+                      <RefreshCcw className={cn("h-4 w-4", securityStatusLoading && "animate-spin")} />
+                    </IconButton>
+                  ) : undefined
+                }
+              >
+                <SecurityStatusPanel
+                  standalone={standalone}
+                  status={securityStatus}
+                  loading={securityStatusLoading}
+                  settings={settings}
+                  connection={connection}
+                />
               </SettingsSection>
 
               {!standalone ? (
@@ -1682,6 +1738,125 @@ function WebSearchModeRow({
       ) : null}
     </div>
   );
+}
+
+function SecurityStatusPanel({
+  standalone,
+  status,
+  loading,
+  settings,
+  connection
+}: {
+  standalone: boolean;
+  status: SecurityStatusResponse | null;
+  loading: boolean;
+  settings: LocalSettings;
+  connection: ReturnType<typeof useOllamaConnection>;
+}) {
+  const searchLabel = `Search ${settings.webSearchMode}`;
+  const memoryLabel = `Memory ${memoryScopeLabel(settings.retrievalScope)}`;
+
+  if (standalone) {
+    return (
+      <div className="rounded-md border border-border bg-panel-strong px-3 py-3">
+        <div className="flex flex-wrap gap-2">
+          <StatusChip label="Standalone mode" tone="info" Icon={Shield} />
+          <StatusChip
+            label={connection.status === "connected" ? "Core reachable" : "Core unreachable"}
+            tone={connection.status === "connected" ? "success" : "warning"}
+            Icon={connection.status === "connected" ? CheckCircle2 : AlertCircle}
+          />
+          <StatusChip label="Desktop API not used" tone="info" Icon={Server} />
+          <StatusChip label="Browser storage" tone="info" Icon={Database} />
+          <StatusChip label={searchLabel} tone={settings.webSearchMode === "off" ? "success" : "info"} Icon={Search} />
+          <StatusChip label={memoryLabel} tone="info" Icon={BrainCircuit} />
+        </div>
+      </div>
+    );
+  }
+
+  const warnings = status?.warnings ?? [];
+  return (
+    <div className="rounded-md border border-border bg-panel-strong px-3 py-3">
+      <div className="flex flex-wrap gap-2">
+        <StatusChip label="Desktop mode" tone="info" Icon={Shield} />
+        <StatusChip
+          label={loading ? "Checking core" : status?.coreApiReachable ? "Core reachable" : "Core unreachable"}
+          tone={loading ? "info" : status?.coreApiReachable ? "success" : "warning"}
+          Icon={loading ? RefreshCcw : status?.coreApiReachable ? CheckCircle2 : AlertCircle}
+          spin={loading}
+        />
+        <StatusChip
+          label={status?.desktopAuthEnabled ? "Desktop auth on" : "Desktop auth off"}
+          tone={status?.desktopAuthEnabled ? "success" : "warning"}
+          Icon={status?.desktopAuthEnabled ? CheckCircle2 : AlertCircle}
+        />
+        <StatusChip
+          label={status?.coreApiAuthEnabled ? "Core token on" : "Core token off"}
+          tone={status?.coreApiAuthEnabled ? "success" : "info"}
+          Icon={status?.coreApiAuthEnabled ? CheckCircle2 : Shield}
+        />
+        <StatusChip
+          label={status?.coreApiHostLocal && status?.coreApiHostAllowed ? "Local upstream" : "Upstream blocked"}
+          tone={status?.coreApiHostLocal && status?.coreApiHostAllowed ? "success" : "danger"}
+          Icon={status?.coreApiHostLocal && status?.coreApiHostAllowed ? CheckCircle2 : AlertCircle}
+        />
+        <StatusChip
+          label={status?.localOnlyOfflineMode ? "Local-only offline" : "Cloud allowed"}
+          tone={status?.localOnlyOfflineMode ? "success" : "info"}
+          Icon={status?.localOnlyOfflineMode ? HardDrive : Cloud}
+        />
+        <StatusChip
+          label={status?.networkExposureAllowed ? "Network exposure on" : "Network exposure off"}
+          tone={status?.networkExposureAllowed ? "warning" : "success"}
+          Icon={status?.networkExposureAllowed ? AlertCircle : CheckCircle2}
+        />
+        <StatusChip
+          label={
+            status?.customBrowserOrigins
+              ? "Custom origins on"
+              : status?.browserOriginsEnabled
+                ? "Default origins"
+                : "Browser origins off"
+          }
+          tone={status?.customBrowserOrigins ? "warning" : status?.browserOriginsEnabled ? "info" : "success"}
+          Icon={status?.customBrowserOrigins ? AlertCircle : Shield}
+        />
+        <StatusChip
+          label={status?.modelMutationProxyEnabled ? "Model mutation proxy on" : "Model mutation proxy off"}
+          tone={status?.modelMutationProxyEnabled ? "warning" : "success"}
+          Icon={status?.modelMutationProxyEnabled ? AlertCircle : CheckCircle2}
+        />
+        <StatusChip
+          label={status?.pushProxyEnabled ? "Push proxy on" : "Push proxy off"}
+          tone={status?.pushProxyEnabled ? "warning" : "success"}
+          Icon={status?.pushProxyEnabled ? AlertCircle : CheckCircle2}
+        />
+        <StatusChip label={searchLabel} tone={settings.webSearchMode === "off" ? "success" : "info"} Icon={Search} />
+        <StatusChip label={memoryLabel} tone="info" Icon={BrainCircuit} />
+      </div>
+
+      {status?.coreApiBase ? (
+        <div className="mt-3 text-xs text-muted-foreground">
+          Core API <code className="rounded bg-muted px-1 py-0.5 text-foreground">{status.coreApiBase}</code>
+        </div>
+      ) : null}
+
+      {warnings.length > 0 ? (
+        <div className="mt-3 space-y-1 text-xs leading-5 text-warning">
+          {warnings.map((warning) => (
+            <div key={warning.code}>{warning.message}</div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function memoryScopeLabel(scope: LocalSettings["retrievalScope"]) {
+  if (scope === "all") return "all";
+  if (scope === "selected") return "selected";
+  return "current";
 }
 
 function SearchProviderStatusRow({

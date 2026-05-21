@@ -289,6 +289,32 @@ export interface CloudStatusResponse {
   source: CloudStatusSource;
 }
 
+export interface SecurityWarning {
+  code: string;
+  message: string;
+}
+
+export interface SecurityStatusResponse {
+  mode: "desktop";
+  coreApiBase: string;
+  coreApiReachable: boolean;
+  coreApiHostLocal: boolean;
+  coreApiHostAllowed: boolean;
+  coreApiAuthEnabled: boolean;
+  desktopAuthEnabled: boolean;
+  devMode: boolean;
+  localOnlyOfflineMode: boolean;
+  cloudDisabled: boolean;
+  cloudSource: CloudStatusSource;
+  networkExposureAllowed: boolean;
+  modelMutationProxyEnabled: boolean;
+  pushProxyEnabled: boolean;
+  browserOriginsEnabled: boolean;
+  customBrowserOrigins: boolean;
+  proxyAllowedUpstreams: string[];
+  warnings: SecurityWarning[];
+}
+
 export interface OllamaUser {
   id?: string;
   email?: string;

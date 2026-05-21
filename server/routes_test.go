@@ -92,6 +92,47 @@ func (t *panicTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 var panicOnRoundTrip = &http.Client{Transport: &panicTransport{}}
 
+func TestGenerateRoutesAPITokenMiddleware(t *testing.T) {
+	t.Setenv("OLLAMA_API_TOKEN", "test-token")
+
+	s := &Server{}
+	h, err := s.GenerateRoutes(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/version", nil)
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d, want %d", resp.Code, http.StatusUnauthorized)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/version", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp = httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("authorized status = %d, want %d", resp.Code, http.StatusOK)
+	}
+}
+
+func TestGenerateRoutesRequestBodyLimit(t *testing.T) {
+	s := &Server{}
+	h, err := s.GenerateRoutes(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader("{}"))
+	req.ContentLength = maxCoreInferenceBodyBytes + 1
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusRequestEntityTooLarge)
+	}
+}
+
 func TestRoutes(t *testing.T) {
 	modelsDir := t.TempDir()
 	t.Setenv("OLLAMA_MODELS", modelsDir)
@@ -549,6 +590,82 @@ func TestRoutes(t *testing.T) {
 
 			if tc.Expected != nil {
 				tc.Expected(t, resp)
+			}
+		})
+	}
+}
+
+func TestDangerousRoutesRejectUnsafeNamesAndPaths(t *testing.T) {
+	t.Setenv("OLLAMA_MODELS", t.TempDir())
+
+	s := &Server{modelCaches: &modelCaches{modelList: newModelListCache()}}
+	s.modelCaches.modelList.Start(context.Background())
+	if err := s.modelCaches.modelList.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	router, err := s.GenerateRoutes(&ollama.Registry{HTTPClient: panicOnRoundTrip})
+	if err != nil {
+		t.Fatalf("failed to generate routes: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		want   string
+	}{
+		{
+			name:   "create rejects path traversal model name",
+			method: http.MethodPost,
+			path:   "/api/create",
+			body:   `{"name":"../escape","files":{"model.gguf":"sha256:0000000000000000000000000000000000000000000000000000000000000000"},"stream":false}`,
+			want:   "invalid model name",
+		},
+		{
+			name:   "create rejects path traversal file name",
+			method: http.MethodPost,
+			path:   "/api/create",
+			body:   `{"name":"safe-model","files":{"../escape.gguf":"sha256:0000000000000000000000000000000000000000000000000000000000000000"},"stream":false}`,
+			want:   "file path must be relative",
+		},
+		{
+			name:   "copy rejects path traversal source",
+			method: http.MethodPost,
+			path:   "/api/copy",
+			body:   `{"source":"../escape","destination":"safe-model"}`,
+			want:   "invalid",
+		},
+		{
+			name:   "delete rejects path traversal model name",
+			method: http.MethodDelete,
+			path:   "/api/delete",
+			body:   `{"model":"../escape"}`,
+			want:   "invalid",
+		},
+		{
+			name:   "pull rejects path traversal model name",
+			method: http.MethodPost,
+			path:   "/api/pull",
+			body:   `{"model":"../escape","stream":false}`,
+			want:   "invalid",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			resp := httptest.NewRecorder()
+
+			router.ServeHTTP(resp, req)
+
+			if resp.Code != http.StatusBadRequest {
+				t.Fatalf("expected status %d, got %d body=%q", http.StatusBadRequest, resp.Code, resp.Body.String())
+			}
+			if !strings.Contains(resp.Body.String(), tt.want) {
+				t.Fatalf("expected body to contain %q, got %q", tt.want, resp.Body.String())
 			}
 		})
 	}

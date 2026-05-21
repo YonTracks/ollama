@@ -1,14 +1,13 @@
 package nemotronh
 
 import (
-	"bytes"
 	"errors"
-	"image"
 	"slices"
 
 	"github.com/ollama/ollama/fs"
 	"github.com/ollama/ollama/ml"
 	"github.com/ollama/ollama/model"
+	"github.com/ollama/ollama/model/imageproc"
 	"github.com/ollama/ollama/model/input"
 )
 
@@ -63,7 +62,7 @@ func (m *OmniModel) EncodeMultimodal(ctx ml.Context, multimodalData []byte) ([]i
 		return nil, model.ErrNoVisionModel
 	}
 
-	img, _, err := image.Decode(bytes.NewReader(multimodalData))
+	img, _, err := imageproc.DecodeBytes(multimodalData)
 	if err != nil {
 		return nil, err
 	}

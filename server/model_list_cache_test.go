@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"slices"
 	"testing"
@@ -62,6 +63,13 @@ func TestModelListCacheHydratesSummary(t *testing.T) {
 		listModel.Details.ContextLength != 4096 ||
 		listModel.Details.EmbeddingLength != 384 {
 		t.Fatalf("list response = %+v, want capabilities/context/embedding", listModel)
+	}
+}
+
+func TestCheckedModelListGGUFByteCountRejectsOverflow(t *testing.T) {
+	_, err := checkedModelListGGUFByteCount(uint64(math.MaxInt64/2+1), 2)
+	if err == nil {
+		t.Fatal("expected overflow error")
 	}
 }
 

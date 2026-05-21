@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"math"
 	"os"
 	"slices"
 	"strings"
@@ -337,11 +338,22 @@ func (f *File) TensorInfos() iter.Seq2[int, TensorInfo] {
 
 func (f *File) TensorReader(name string) (TensorInfo, io.Reader, error) {
 	t := f.TensorInfo(name)
-	if t.NumBytes() == 0 {
+	size, err := t.NumBytesChecked()
+	if err != nil {
+		return TensorInfo{}, nil, fmt.Errorf("tensor %s has invalid size: %w", name, err)
+	}
+	if size == 0 {
 		return TensorInfo{}, nil, fmt.Errorf("tensor %s not found", name)
+	}
+	if f.offset < 0 || t.Offset > math.MaxInt64 {
+		return TensorInfo{}, nil, fmt.Errorf("tensor %s has invalid offset", name)
+	}
+	offset := int64(t.Offset)
+	if f.offset > math.MaxInt64-offset {
+		return TensorInfo{}, nil, fmt.Errorf("tensor %s offset overflows supported size", name)
 	}
 
 	// fast forward through tensor info if we haven't already
 	_ = f.tensors.rest()
-	return t, io.NewSectionReader(f.file, f.offset+int64(t.Offset), t.NumBytes()), nil
+	return t, io.NewSectionReader(f.file, f.offset+offset, size), nil
 }

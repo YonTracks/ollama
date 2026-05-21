@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -64,6 +65,13 @@ const (
 	cloudErrWebSearchUnavailable          = "web search is unavailable"
 	cloudErrWebFetchUnavailable           = "web fetch is unavailable"
 	copilotChatUserAgentPrefix            = "GitHubCopilotChat/"
+)
+
+const (
+	maxCoreInferenceBodyBytes = 256 * 1024 * 1024
+	maxCoreMutationBodyBytes  = 16 * 1024 * 1024
+	maxCoreSmallBodyBytes     = 1 * 1024 * 1024
+	maxCoreBlobBodyBytes      = 64 * 1024 * 1024 * 1024
 )
 
 func writeModelRefParseError(c *gin.Context, err error, fallbackStatus int, fallbackMessage string) {
@@ -1644,6 +1652,77 @@ func allowedHostsMiddleware(addr net.Addr) gin.HandlerFunc {
 	}
 }
 
+func apiTokenMiddleware() gin.HandlerFunc {
+	token := strings.TrimSpace(envconfig.APIToken())
+	return func(c *gin.Context) {
+		if token == "" {
+			c.Next()
+			return
+		}
+
+		got, ok := bearerToken(c.GetHeader("Authorization"))
+		if !ok || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+
+		c.Next()
+	}
+}
+
+func bearerToken(header string) (string, bool) {
+	scheme, value, ok := strings.Cut(strings.TrimSpace(header), " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
+		return "", false
+	}
+	value = strings.TrimSpace(value)
+	return value, value != ""
+}
+
+func requestBodyLimitMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		limit := requestBodyLimit(c.Request.Method, c.Request.URL.Path)
+		if limit <= 0 || c.Request.Body == nil {
+			c.Next()
+			return
+		}
+
+		if c.Request.ContentLength > limit {
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body too large"})
+			return
+		}
+
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
+		c.Next()
+	}
+}
+
+func requestBodyLimit(method, path string) int64 {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+	default:
+		return 0
+	}
+
+	if method == http.MethodPost && strings.HasPrefix(path, "/api/blobs/") {
+		return maxCoreBlobBodyBytes
+	}
+
+	switch path {
+	case "/api/generate", "/api/chat", "/api/embed", "/api/embeddings",
+		"/v1/chat/completions", "/v1/completions", "/v1/embeddings", "/v1/responses",
+		"/v1/images/generations", "/v1/images/edits", "/v1/audio/transcriptions", "/v1/messages":
+		return maxCoreInferenceBodyBytes
+	case "/api/create", "/api/pull", "/api/push":
+		return maxCoreMutationBodyBytes
+	case "/api/show", "/api/copy", "/api/delete", "/api/me", "/api/signout",
+		"/api/experimental/web_search", "/api/experimental/web_fetch":
+		return maxCoreSmallBodyBytes
+	default:
+		return maxCoreSmallBodyBytes
+	}
+}
+
 func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	corsConfig := cors.DefaultConfig()
 	corsConfig.AllowWildcard = true
@@ -1677,6 +1756,8 @@ func (s *Server) GenerateRoutes(rc *ollama.Registry) (http.Handler, error) {
 	r.Use(
 		cors.New(corsConfig),
 		allowedHostsMiddleware(s.addr),
+		requestBodyLimitMiddleware(),
+		apiTokenMiddleware(),
 	)
 
 	// General

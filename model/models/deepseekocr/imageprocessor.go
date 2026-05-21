@@ -1,7 +1,6 @@
 package deepseekocr
 
 import (
-	"bytes"
 	"image"
 	"image/color"
 	"math"
@@ -18,7 +17,7 @@ type ratio struct {
 }
 
 func ProcessImage(ctx ml.Context, bts []byte) (ml.Tensor, ml.Tensor, []int, error) {
-	img, _, err := image.Decode(bytes.NewReader(bts))
+	img, _, err := imageproc.DecodeBytes(bts)
 	if err != nil {
 		return nil, nil, nil, err
 	}

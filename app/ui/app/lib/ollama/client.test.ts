@@ -7,6 +7,7 @@ import {
   fetchConnectUrl,
   fetchUser,
   getApiBase,
+  getSecurityStatus,
   listModels,
   sendChat,
   OllamaClientError
@@ -201,6 +202,47 @@ describe("Ollama client", () => {
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining("/api/v1/user"),
       expect.objectContaining({ method: "GET" })
+    );
+  });
+
+  it("reads security status from the desktop diagnostics endpoint", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            mode: "desktop",
+            coreApiBase: "http://127.0.0.1:11434",
+            coreApiReachable: true,
+            coreApiHostLocal: true,
+            coreApiHostAllowed: true,
+            desktopAuthEnabled: true,
+            devMode: false,
+            localOnlyOfflineMode: false,
+            cloudDisabled: false,
+            cloudSource: "surprise",
+            networkExposureAllowed: false,
+            modelMutationProxyEnabled: false,
+            pushProxyEnabled: false,
+            browserOriginsEnabled: false,
+            proxyAllowedUpstreams: null,
+            warnings: null
+          }),
+          { status: 200 }
+        )
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getSecurityStatus()).resolves.toMatchObject({
+      mode: "desktop",
+      coreApiReachable: true,
+      cloudSource: "none",
+      proxyAllowedUpstreams: [],
+      warnings: []
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/v1/security"),
+      expect.objectContaining({ cache: "no-store" })
     );
   });
 

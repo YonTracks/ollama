@@ -278,6 +278,8 @@ var (
 	ContextLength = Uint("OLLAMA_CONTEXT_LENGTH", 0)
 	// Auth enables authentication between the Ollama client and server
 	UseAuth = Bool("OLLAMA_AUTH")
+	// APIToken protects the local HTTP API with a static bearer token when set.
+	APIToken = String("OLLAMA_API_TOKEN")
 	// Enable Vulkan backend
 	EnableVulkan = Bool("OLLAMA_VULKAN")
 	// NoCloudEnv checks the OLLAMA_NO_CLOUD environment variable.
@@ -362,6 +364,7 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_KV_CACHE_TYPE":              {"OLLAMA_KV_CACHE_TYPE", KvCacheType(), "Quantization type for the K/V cache (default: f16)"},
 		"OLLAMA_GPU_OVERHEAD":               {"OLLAMA_GPU_OVERHEAD", GpuOverhead(), "Reserve a portion of VRAM per GPU (bytes)"},
 		"OLLAMA_ALLOW_NETWORK_EXPOSURE":     {"OLLAMA_ALLOW_NETWORK_EXPOSURE", AllowNetworkExposure(), "Allow ollama serve to bind to non-localhost addresses"},
+		"OLLAMA_API_TOKEN":                  {"OLLAMA_API_TOKEN", APIToken(), "Require this bearer token for the local HTTP API when set"},
 		"OLLAMA_HOST":                       {"OLLAMA_HOST", Host(), "IP Address for the ollama server (default 127.0.0.1:11434)"},
 		"OLLAMA_KEEP_ALIVE":                 {"OLLAMA_KEEP_ALIVE", KeepAlive(), "The duration that models stay loaded in memory (default \"5m\")"},
 		"OLLAMA_LLM_LIBRARY":                {"OLLAMA_LLM_LIBRARY", LLMLibrary(), "Set LLM library to bypass autodetection"},
@@ -414,9 +417,36 @@ func AsMap() map[string]EnvVar {
 func Values() map[string]string {
 	vals := make(map[string]string)
 	for k, v := range AsMap() {
-		vals[k] = fmt.Sprintf("%v", v.Value)
+		vals[k] = redactedValue(v.Name, v.Value)
 	}
 	return vals
+}
+
+func redactedValue(name string, value any) string {
+	s := fmt.Sprintf("%v", value)
+	switch strings.ToUpper(name) {
+	case "OLLAMA_API_TOKEN":
+		if s == "" {
+			return ""
+		}
+		return "<redacted>"
+	case "HTTP_PROXY", "HTTPS_PROXY":
+		return redactProxyValue(s)
+	}
+	return s
+}
+
+func redactProxyValue(value string) string {
+	u, err := url.Parse(value)
+	if err != nil || u.User == nil {
+		return value
+	}
+	if _, ok := u.User.Password(); ok {
+		u.User = url.UserPassword("redacted", "redacted")
+	} else {
+		u.User = url.User("redacted")
+	}
+	return u.String()
 }
 
 // Var returns an environment variable stripped of leading and trailing quotes or spaces

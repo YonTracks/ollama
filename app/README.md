@@ -94,6 +94,20 @@ from the installed Ollama taskbar app if it is already serving
 Standalone still does not use the desktop app backend for chats, settings, or
 tools.
 
+The Windows installer writes `OLLAMA_HOST=127.0.0.1:11434` only when the user
+does not already have `OLLAMA_HOST` configured. The installer runs without
+elevation and does not add firewall rules, so use Windows Firewall or endpoint
+management policy to block inbound `11434` when you need an explicit rule.
+
+For explicit core API authentication during local or LAN testing, set
+`OLLAMA_API_TOKEN` on both `ollama serve` and the Ollama CLI processes. Requests
+must include `Authorization: Bearer <token>`. The desktop app proxy remains
+separate and keeps its own session token.
+
+If you use `CUSTOM_SEARCH_ENDPOINT`, it must be an HTTP(S) endpoint on a public
+host by default. Local/private custom search adapters require
+`CUSTOM_SEARCH_ALLOW_LOCAL=true` so SSRF-sensitive routing stays opt-in.
+
 Run `go generate ./...` from the repository root only when you need to refresh
 generated TypeScript or embedded static UI assets. Stop any running
 `npm run dev` or `npm run dev:standalone` server first; on Windows, Next.js can
