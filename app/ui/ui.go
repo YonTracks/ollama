@@ -268,9 +268,40 @@ func writeProxyError(w http.ResponseWriter, status int, message string) {
 func stripProxyCredentials(req *http.Request) {
 	req.Header.Del("Authorization")
 	req.Header.Del("Cookie")
+	req.Header.Del("Origin")
 	req.Header.Del("Proxy-Authorization")
 	req.Header.Del("X-Api-Key")
 	req.Header.Del("X-Auth-Token")
+}
+
+func stripUpstreamCORSHeaders(header http.Header) {
+	for _, key := range []string{
+		"Access-Control-Allow-Credentials",
+		"Access-Control-Allow-Headers",
+		"Access-Control-Allow-Methods",
+		"Access-Control-Allow-Origin",
+		"Access-Control-Expose-Headers",
+		"Access-Control-Max-Age",
+	} {
+		header.Del(key)
+	}
+
+	if values := header.Values("Vary"); len(values) > 0 {
+		header.Del("Vary")
+		for _, value := range values {
+			parts := strings.Split(value, ",")
+			kept := make([]string, 0, len(parts))
+			for _, part := range parts {
+				part = strings.TrimSpace(part)
+				if part != "" && !strings.EqualFold(part, "Origin") {
+					kept = append(kept, part)
+				}
+			}
+			if len(kept) > 0 {
+				header.Add("Vary", strings.Join(kept, ", "))
+			}
+		}
+	}
 }
 
 type proxyRoutePolicy struct {
@@ -305,6 +336,11 @@ func (s *Server) newOllamaReverseProxy(target *url.URL) *httputil.ReverseProxy {
 		s.log().Debug("proxying request", "method", req.Method, "path", req.URL.Path, "target", target.Host)
 	}
 
+	newProxy.ModifyResponse = func(resp *http.Response) error {
+		stripUpstreamCORSHeaders(resp.Header)
+		return nil
+	}
+
 	newProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
@@ -313,7 +349,7 @@ func (s *Server) newOllamaReverseProxy(target *url.URL) *httputil.ReverseProxy {
 		}
 
 		s.log().Error("proxy error", "error", err, "path", r.URL.Path, "target", target.Host)
-		writeProxyError(w, http.StatusBadGateway, "proxy error")
+		writeProxyError(w, http.StatusBadGateway, "Ollama core API is not reachable.")
 	}
 
 	return newProxy

@@ -866,6 +866,7 @@ func TestOllamaProxyDirectorStripsCredentials(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://desktop.local/api/chat", nil)
 	req.Header.Set("Authorization", "Bearer secret")
 	req.Header.Set("Cookie", "token=desktop-token")
+	req.Header.Set("Origin", "http://localhost:5173")
 	req.Header.Set("Proxy-Authorization", "Basic secret")
 	req.Header.Set("X-Api-Key", "secret")
 	req.Header.Set("X-Auth-Token", "secret")
@@ -873,7 +874,7 @@ func TestOllamaProxyDirectorStripsCredentials(t *testing.T) {
 
 	proxy.Director(req)
 
-	for _, header := range []string{"Authorization", "Cookie", "Proxy-Authorization", "X-Api-Key", "X-Auth-Token"} {
+	for _, header := range []string{"Authorization", "Cookie", "Origin", "Proxy-Authorization", "X-Api-Key", "X-Auth-Token"} {
 		if got := req.Header.Get(header); got != "" {
 			t.Fatalf("%s was forwarded as %q", header, got)
 		}
@@ -886,6 +887,42 @@ func TestOllamaProxyDirectorStripsCredentials(t *testing.T) {
 	}
 	if req.Host != target.Host {
 		t.Fatalf("request Host = %q, want %q", req.Host, target.Host)
+	}
+}
+
+func TestOllamaProxyStripsUpstreamCORSHeaders(t *testing.T) {
+	header := http.Header{}
+	header.Add("Access-Control-Allow-Origin", "http://localhost:5173")
+	header.Add("Access-Control-Allow-Credentials", "true")
+	header.Add("Access-Control-Allow-Headers", "Content-Type")
+	header.Add("Access-Control-Allow-Methods", "GET, POST")
+	header.Add("Access-Control-Expose-Headers", "X-Test")
+	header.Add("Access-Control-Max-Age", "600")
+	header.Add("Vary", "Origin")
+	header.Add("Vary", "Accept-Encoding, Origin")
+	header.Add("Vary", "Accept-Language")
+	header.Add("Content-Type", "application/json")
+
+	stripUpstreamCORSHeaders(header)
+
+	for _, key := range []string{
+		"Access-Control-Allow-Origin",
+		"Access-Control-Allow-Credentials",
+		"Access-Control-Allow-Headers",
+		"Access-Control-Allow-Methods",
+		"Access-Control-Expose-Headers",
+		"Access-Control-Max-Age",
+	} {
+		if got := header.Values(key); len(got) > 0 {
+			t.Fatalf("%s was not stripped: %#v", key, got)
+		}
+	}
+
+	if got := header.Values("Vary"); strings.Join(got, ",") != "Accept-Encoding,Accept-Language" {
+		t.Fatalf("Vary = %#v, want Accept-Encoding and Accept-Language", got)
+	}
+	if got := header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
 	}
 }
 

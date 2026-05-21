@@ -11,6 +11,17 @@ const initialState: ServiceWorkerState = {
   error: null
 };
 
+type ServiceWorkerWindow = Pick<Window, "OLLAMA_DESKTOP" | "ready" | "webview">;
+
+export function shouldRegisterServiceWorker(
+  win: ServiceWorkerWindow | undefined =
+    typeof window === "undefined" ? undefined : window
+) {
+  if (!win) return false;
+  if (process.env.NODE_ENV !== "production") return false;
+  return !Boolean(win.OLLAMA_DESKTOP || win.ready || win.webview);
+}
+
 export function useServiceWorker() {
   const [state, setState] = useState<ServiceWorkerState>(initialState);
   const [registration, setRegistration] = useState<ServiceWorkerRegistration | null>(null);
@@ -18,6 +29,21 @@ export function useServiceWorker() {
   useEffect(() => {
     if (!("serviceWorker" in navigator)) {
       setState((current) => ({ ...current, supported: false }));
+      return;
+    }
+
+    if (!shouldRegisterServiceWorker()) {
+      setState({
+        supported: true,
+        registered: false,
+        installing: false,
+        updateReady: false,
+        error: null
+      });
+      navigator.serviceWorker
+        .getRegistrations()
+        .then((registrations) => Promise.all(registrations.map((item) => item.unregister())))
+        .catch(() => undefined);
       return;
     }
 
