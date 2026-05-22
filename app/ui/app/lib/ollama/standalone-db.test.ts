@@ -2,14 +2,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   deleteAllStandaloneChats,
   deleteStandaloneChatMessage,
+  disableStandaloneChatEncryption,
+  enableStandaloneChatEncryption,
   getStandaloneChat,
   listStandaloneChats,
+  lockStandaloneChatEncryption,
   renameStandaloneChat,
-  saveStandaloneChat
+  saveStandaloneChat,
+  standaloneChatEncryptionConfigured,
+  standaloneChatEncryptionUnlocked,
+  unlockStandaloneChatEncryption
 } from "./standalone-db";
 import type { Chat } from "./types";
 
 afterEach(() => {
+  lockStandaloneChatEncryption();
   vi.unstubAllGlobals();
 });
 
@@ -38,6 +45,44 @@ describe("standalone IndexedDB chat persistence", () => {
 
     await expect(deleteAllStandaloneChats()).resolves.toBe(2);
     await expect(listStandaloneChats()).resolves.toEqual({ chatInfos: [] });
+  });
+
+  it("encrypts standalone chat records when browser chat encryption is enabled", async () => {
+    const db = installFakeIndexedDb();
+    const storage = memoryStorage();
+    vi.stubGlobal("localStorage", storage);
+
+    await saveStandaloneChat(chatRecord("chat-secret", "Secret chat", "2026-05-20T00:00:00.000Z"));
+    await enableStandaloneChatEncryption("passphrase");
+
+    expect(standaloneChatEncryptionConfigured()).toBe(true);
+    expect(standaloneChatEncryptionUnlocked()).toBe(true);
+
+    let rawRecord = db.dumpRecords()[0] as { encrypted?: boolean };
+    expect(rawRecord.encrypted).toBe(true);
+    expect(JSON.stringify(rawRecord)).not.toContain("Secret chat");
+
+    await expect(getStandaloneChat("chat-secret")).resolves.toMatchObject({
+      chat: { id: "chat-secret", title: "Secret chat" }
+    });
+
+    lockStandaloneChatEncryption();
+    await expect(listStandaloneChats()).resolves.toMatchObject({
+      chatInfos: [{ id: "chat-secret", title: "Locked chat" }]
+    });
+    await expect(getStandaloneChat("chat-secret")).rejects.toThrow("locked");
+
+    await expect(unlockStandaloneChatEncryption("wrong")).rejects.toThrow("Could not unlock");
+    await unlockStandaloneChatEncryption("passphrase");
+    await expect(getStandaloneChat("chat-secret")).resolves.toMatchObject({
+      chat: { id: "chat-secret", title: "Secret chat" }
+    });
+
+    await disableStandaloneChatEncryption();
+    expect(standaloneChatEncryptionConfigured()).toBe(false);
+    rawRecord = db.dumpRecords()[0] as { encrypted?: boolean };
+    expect(rawRecord.encrypted).not.toBe(true);
+    expect(JSON.stringify(rawRecord)).toContain("Secret chat");
   });
 });
 
@@ -74,6 +119,7 @@ function installFakeIndexedDb() {
       return request as unknown as IDBOpenDBRequest;
     }
   });
+  return db;
 }
 
 class FakeIDBRequest<T = unknown> {
@@ -117,6 +163,10 @@ class FakeIDBDatabase {
     const records = this.stores.get(name);
     if (!records) throw new Error(`Missing object store ${name}.`);
     return new FakeIDBTransaction(records);
+  }
+
+  dumpRecords(name = "chats") {
+    return [...(this.stores.get(name)?.values() ?? [])].map(cloneValue);
   }
 
   close() {
@@ -197,4 +247,28 @@ class FakeIDBObjectStore {
 function cloneValue<T>(value: T): T {
   if (value === undefined) return value;
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function memoryStorage(): Storage {
+  const data = new Map<string, string>();
+  return {
+    get length() {
+      return data.size;
+    },
+    clear() {
+      data.clear();
+    },
+    getItem(key: string) {
+      return data.get(key) ?? null;
+    },
+    key(index: number) {
+      return [...data.keys()][index] ?? null;
+    },
+    removeItem(key: string) {
+      data.delete(key);
+    },
+    setItem(key: string, value: string) {
+      data.set(key, value);
+    }
+  };
 }

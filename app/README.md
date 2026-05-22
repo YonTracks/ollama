@@ -104,6 +104,26 @@ For explicit core API authentication during local or LAN testing, set
 must include `Authorization: Bearer <token>`. The desktop app proxy remains
 separate and keeps its own session token.
 
+The standalone browser/PWA keeps `OLLAMA_API_TOKEN` in memory by default.
+Settings can remember it in the browser profile for automatic reconnect, or
+lock it with passphrase-encrypted Web Crypto material when you prefer to unlock
+it manually after restart. The token is never written to the standalone settings
+JSON.
+Standalone browser chats are normal IndexedDB records by default; Settings ->
+Storage can enable passphrase-based browser chat encryption, which rewrites
+existing standalone chats and keeps future saves encrypted while unlocked.
+
+For desktop app privacy at rest, set `OLLAMA_APP_DATA_KEY` before launching the
+taskbar app or `go run ./app/cmd/app -dev`. When present, new sensitive SQLite
+fields such as chat titles, message content, tool results, attachments, browser
+state, and cached user profile data are encrypted with AES-GCM. Existing
+plaintext rows remain readable so users can upgrade without a migration step;
+keep the same key available or encrypted rows cannot be read.
+To turn desktop SQLite encryption off, launch once with the same
+`OLLAMA_APP_DATA_KEY` and `OLLAMA_APP_DATA_ENCRYPTION=off`. Startup rewrites the
+encrypted sensitive fields back to plaintext. After that succeeds, remove both
+environment variables.
+
 If you use `CUSTOM_SEARCH_ENDPOINT`, it must be an HTTP(S) endpoint on a public
 host by default. Local/private custom search adapters require
 `CUSTOM_SEARCH_ALLOW_LOCAL=true` so SSRF-sensitive routing stays opt-in.

@@ -43,6 +43,24 @@ import {
   SAME_ORIGIN_CORE_API_BASE,
   getCoreApiBase
 } from "@/lib/ollama/standalone";
+import {
+  disableStandaloneChatEncryption,
+  enableStandaloneChatEncryption,
+  standaloneChatEncryptionConfigured,
+  standaloneChatEncryptionUnlocked,
+  supportsStandaloneChatEncryption,
+  unlockStandaloneChatEncryption
+} from "@/lib/ollama/standalone-db";
+import {
+  browserCoreApiTokenExists,
+  clearBrowserCoreApiToken,
+  clearEncryptedCoreApiToken,
+  encryptedCoreApiTokenExists,
+  loadEncryptedCoreApiToken,
+  saveBrowserCoreApiToken,
+  saveEncryptedCoreApiToken,
+  supportsEncryptedTokenStorage
+} from "@/lib/ollama/token-vault";
 import { fetchSearchHealth } from "@/lib/search/client";
 import { cn, formatBytes } from "@/lib/utils";
 import type { useOllamaConnection } from "@/hooks/useOllamaConnection";
@@ -61,6 +79,14 @@ const CONTEXT_LENGTH_OPTIONS = [4096, 8192, 16384, 32768, 65536, 131072, 262144]
 
 type SettingsTabId = "general" | "models" | "chat" | "advanced" | "data";
 type DesktopToolMode = "off" | "tools" | "agent";
+type StatusChipTone = "success" | "warning" | "danger" | "info";
+
+interface StatusChipConfig {
+  label: string;
+  tone: StatusChipTone;
+  Icon: LucideIcon;
+  spin?: boolean;
+}
 
 interface ToastOptions {
   silent?: boolean;
@@ -139,8 +165,21 @@ export function SettingsDrawer({
   const [securityStatus, setSecurityStatus] = useState<SecurityStatusResponse | null>(null);
   const [securityStatusLoading, setSecurityStatusLoading] = useState(false);
   const [securityStatusError, setSecurityStatusError] = useState<string | null>(null);
+  const [browserTokenAvailable, setBrowserTokenAvailable] = useState(false);
+  const [encryptedTokenAvailable, setEncryptedTokenAvailable] = useState(false);
+  const [tokenPassphrase, setTokenPassphrase] = useState("");
+  const [tokenVaultBusy, setTokenVaultBusy] = useState(false);
+  const [tokenVaultError, setTokenVaultError] = useState<string | null>(null);
+  const [chatEncryptionConfigured, setChatEncryptionConfigured] = useState(false);
+  const [chatEncryptionUnlocked, setChatEncryptionUnlocked] = useState(false);
+  const [chatEncryptionPassphrase, setChatEncryptionPassphrase] = useState("");
+  const [chatEncryptionBusy, setChatEncryptionBusy] = useState(false);
+  const [chatEncryptionError, setChatEncryptionError] = useState<string | null>(null);
 
   const standalone = appMode === "standalone";
+  const settingsNotice = settingsError
+    ? appDataEncryptionMessage(settingsError) ?? settingsError
+    : null;
   const cloudOverriddenByEnv = cloudStatus?.source === "env" || cloudStatus?.source === "both";
   const cloudEnabled = !(cloudStatus?.disabled ?? false);
   const cloudToggleDisabled = cloudLoading || cloudOverriddenByEnv || connection.status !== "connected";
@@ -194,6 +233,7 @@ export function SettingsDrawer({
     : settings.tools
       ? "tools"
       : "off";
+  const encryptedTokenLocked = encryptedTokenAvailable && !settings.coreApiToken.trim();
 
   const visibleModels = useMemo(() => models.slice(0, 7), [models]);
   const tabs = useMemo(
@@ -209,6 +249,21 @@ export function SettingsDrawer({
   useEffect(() => {
     setToolsAvailable(Boolean(window.OLLAMA_TOOLS));
   }, []);
+
+  useEffect(() => {
+    if (!open || !standalone) return;
+    const hasBrowserToken = browserCoreApiTokenExists();
+    const hasEncryptedToken = encryptedCoreApiTokenExists();
+    setBrowserTokenAvailable(hasBrowserToken);
+    setEncryptedTokenAvailable(hasEncryptedToken);
+    if (hasBrowserToken && settings.coreApiTokenStorage !== "browser") {
+      void onUpdateSettings({ coreApiTokenStorage: "browser" });
+    } else if (hasEncryptedToken && settings.coreApiTokenStorage !== "encrypted") {
+      void onUpdateSettings({ coreApiTokenStorage: "encrypted" });
+    }
+    setChatEncryptionConfigured(standaloneChatEncryptionConfigured());
+    setChatEncryptionUnlocked(standaloneChatEncryptionUnlocked());
+  }, [onUpdateSettings, open, settings.coreApiTokenStorage, standalone]);
 
   useEffect(() => {
     if (!open) {
@@ -291,12 +346,12 @@ export function SettingsDrawer({
   );
 
   useEffect(() => {
-    if (!open || standalone || connection.status !== "connected") return;
+    if (!open || standalone) return;
 
     const controller = new AbortController();
     refreshSecurityStatus(controller.signal);
     return () => controller.abort();
-  }, [connection.status, open, refreshSecurityStatus, standalone]);
+  }, [open, refreshSecurityStatus, standalone]);
 
   useEffect(() => {
     if (!open || activeTab !== "chat") return;
@@ -369,6 +424,197 @@ export function SettingsDrawer({
       webSearchMode,
       webSearchEnabled: webSearchMode === "manual" ? settings.webSearchEnabled : false
     });
+  };
+
+  const handleRememberCoreApiToken = async () => {
+    setTokenVaultBusy(true);
+    setTokenVaultError(null);
+    try {
+      saveBrowserCoreApiToken(settings.coreApiToken);
+      clearEncryptedCoreApiToken();
+      setBrowserTokenAvailable(true);
+      setEncryptedTokenAvailable(false);
+      setTokenPassphrase("");
+      await handleUpdate(
+        { coreApiTokenStorage: "browser" },
+        false,
+        "Core API token remembered in this browser."
+      );
+      await Promise.resolve(onRefreshConnection({ silent: true }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not remember token.";
+      setTokenVaultError(message);
+      showToast({
+        id: "core-token-vault",
+        title: "Token was not saved",
+        description: message,
+        tone: "danger",
+        duration: 7000
+      });
+    } finally {
+      setTokenVaultBusy(false);
+    }
+  };
+
+  const handleLockCoreApiToken = async () => {
+    setTokenVaultBusy(true);
+    setTokenVaultError(null);
+    try {
+      await saveEncryptedCoreApiToken(settings.coreApiToken, tokenPassphrase);
+      clearBrowserCoreApiToken();
+      const token = await loadEncryptedCoreApiToken(tokenPassphrase);
+      setBrowserTokenAvailable(false);
+      setEncryptedTokenAvailable(true);
+      setTokenPassphrase("");
+      await handleUpdate(
+        { coreApiToken: token, coreApiTokenStorage: "encrypted" },
+        false,
+        "Core API token locked with passphrase encryption."
+      );
+      await Promise.resolve(onRefreshConnection({ silent: true }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not lock token.";
+      setTokenVaultError(message);
+      showToast({
+        id: "core-token-vault",
+        title: "Token was not locked",
+        description: message,
+        tone: "danger",
+        duration: 7000
+      });
+    } finally {
+      setTokenVaultBusy(false);
+    }
+  };
+
+  const handleUnlockCoreApiToken = async () => {
+    setTokenVaultBusy(true);
+    setTokenVaultError(null);
+    try {
+      const token = await loadEncryptedCoreApiToken(tokenPassphrase);
+      setTokenPassphrase("");
+      await handleUpdate(
+        { coreApiToken: token, coreApiTokenStorage: "encrypted" },
+        false,
+        "Encrypted core API token unlocked for this session."
+      );
+      await Promise.resolve(onRefreshConnection({ silent: true }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not unlock token.";
+      setTokenVaultError(message);
+      showToast({
+        id: "core-token-vault",
+        title: "Token was not unlocked",
+        description: message,
+        tone: "danger",
+        duration: 7000
+      });
+    } finally {
+      setTokenVaultBusy(false);
+    }
+  };
+
+  const handleForgetCoreApiToken = async () => {
+    clearBrowserCoreApiToken();
+    clearEncryptedCoreApiToken();
+    setBrowserTokenAvailable(false);
+    setEncryptedTokenAvailable(false);
+    setTokenPassphrase("");
+    setTokenVaultError(null);
+    await handleUpdate(
+      { coreApiTokenStorage: "session" },
+      false,
+      "Encrypted core API token removed from this browser."
+    );
+  };
+
+  const refreshChatEncryptionState = () => {
+    setChatEncryptionConfigured(standaloneChatEncryptionConfigured());
+    setChatEncryptionUnlocked(standaloneChatEncryptionUnlocked());
+  };
+
+  const handleEnableChatEncryption = async () => {
+    setChatEncryptionBusy(true);
+    setChatEncryptionError(null);
+    try {
+      await enableStandaloneChatEncryption(chatEncryptionPassphrase);
+      setChatEncryptionPassphrase("");
+      refreshChatEncryptionState();
+      showToast({
+        id: "browser-chat-encryption",
+        title: "Browser chats encrypted",
+        description: "Existing standalone chats were encrypted in this browser profile.",
+        tone: "success"
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not encrypt browser chats.";
+      setChatEncryptionError(message);
+      showToast({
+        id: "browser-chat-encryption",
+        title: "Browser chats were not encrypted",
+        description: message,
+        tone: "danger",
+        duration: 7000
+      });
+    } finally {
+      setChatEncryptionBusy(false);
+    }
+  };
+
+  const handleUnlockChatEncryption = async () => {
+    setChatEncryptionBusy(true);
+    setChatEncryptionError(null);
+    try {
+      await unlockStandaloneChatEncryption(chatEncryptionPassphrase);
+      setChatEncryptionPassphrase("");
+      refreshChatEncryptionState();
+      showToast({
+        id: "browser-chat-encryption",
+        title: "Browser chats unlocked",
+        description: "Encrypted standalone chats can be read and updated for this session.",
+        tone: "success"
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not unlock browser chats.";
+      setChatEncryptionError(message);
+      showToast({
+        id: "browser-chat-encryption",
+        title: "Browser chats were not unlocked",
+        description: message,
+        tone: "danger",
+        duration: 7000
+      });
+    } finally {
+      setChatEncryptionBusy(false);
+    }
+  };
+
+  const handleDisableChatEncryption = async () => {
+    setChatEncryptionBusy(true);
+    setChatEncryptionError(null);
+    try {
+      await disableStandaloneChatEncryption();
+      setChatEncryptionPassphrase("");
+      refreshChatEncryptionState();
+      showToast({
+        id: "browser-chat-encryption",
+        title: "Browser chat encryption turned off",
+        description: "Standalone chats were rewritten as normal browser records.",
+        tone: "success"
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not turn off browser chat encryption.";
+      setChatEncryptionError(message);
+      showToast({
+        id: "browser-chat-encryption",
+        title: "Browser chat encryption stayed on",
+        description: message,
+        tone: "danger",
+        duration: 7000
+      });
+    } finally {
+      setChatEncryptionBusy(false);
+    }
   };
 
   const handleToggleMemoryChat = (chatId: string, checked: boolean) => {
@@ -560,6 +806,7 @@ export function SettingsDrawer({
         selectedModel: "",
         coreApiBase: "",
         coreApiToken: "",
+        coreApiTokenStorage: "session",
         webSearchMode: "off",
         webSearchEnabled: false,
         webSearchProvider: "off",
@@ -740,8 +987,8 @@ export function SettingsDrawer({
           aria-labelledby={`settings-tab-${activeTab}`}
           className="scrollbar-subtle min-h-0 flex-1 overflow-y-auto p-4"
         >
-          {settingsError ? (
-            <Notice tone="danger">{settingsError}</Notice>
+          {settingsNotice ? (
+            <Notice tone="danger">{settingsNotice}</Notice>
           ) : null}
           {cloudError ? <Notice tone="danger">{cloudError}</Notice> : null}
           {userError ? <Notice tone="danger">{userError}</Notice> : null}
@@ -795,13 +1042,83 @@ export function SettingsDrawer({
                         id="core-api-token"
                         type="password"
                         value={settings.coreApiToken}
-                        placeholder="Bearer token"
+                        placeholder={encryptedTokenLocked ? "Passphrase-locked token" : "Bearer token"}
                         autoComplete="off"
                         spellCheck={false}
                         onChange={(event) => onUpdateSettings({ coreApiToken: event.target.value })}
                         onBlur={() => onRefreshConnection()}
                         className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm focus:focus-ring"
                       />
+                      <div className="mt-2 text-xs leading-5 text-muted-foreground">
+                        {encryptedTokenLocked
+                          ? "A passphrase-locked token is saved. Unlock it below, or enter a token and remember it for automatic reconnect."
+                          : "Remember stores this token in this browser so standalone reconnects automatically. Lock requires a passphrase after restart."}
+                      </div>
+                      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                        <input
+                          type="password"
+                          value={tokenPassphrase}
+                          placeholder={
+                            encryptedTokenLocked
+                              ? "Passphrase to unlock"
+                              : "Optional passphrase to lock"
+                          }
+                          autoComplete="off"
+                          spellCheck={false}
+                          onChange={(event) => setTokenPassphrase(event.target.value)}
+                          className="h-10 min-w-0 flex-1 rounded-md border border-border bg-background px-3 text-sm focus:focus-ring"
+                        />
+                        <button
+                          type="button"
+                          disabled={
+                            tokenVaultBusy ||
+                            !settings.coreApiToken.trim()
+                          }
+                          onClick={() => void handleRememberCoreApiToken()}
+                          className="h-10 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring disabled:opacity-55"
+                        >
+                          Remember
+                        </button>
+                        <button
+                          type="button"
+                          disabled={
+                            tokenVaultBusy ||
+                            !supportsEncryptedTokenStorage() ||
+                            !settings.coreApiToken.trim() ||
+                            !tokenPassphrase.trim()
+                          }
+                          onClick={() => void handleLockCoreApiToken()}
+                          className="h-10 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring disabled:opacity-55"
+                        >
+                          Lock
+                        </button>
+                        <button
+                          type="button"
+                          disabled={
+                            tokenVaultBusy ||
+                            !supportsEncryptedTokenStorage() ||
+                            !encryptedTokenAvailable ||
+                            !tokenPassphrase.trim()
+                          }
+                          onClick={() => void handleUnlockCoreApiToken()}
+                          className="h-10 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring disabled:opacity-55"
+                        >
+                          {encryptedTokenLocked ? "Unlock token" : "Unlock"}
+                        </button>
+                        {browserTokenAvailable || encryptedTokenAvailable ? (
+                          <button
+                            type="button"
+                            disabled={tokenVaultBusy}
+                            onClick={() => void handleForgetCoreApiToken()}
+                            className="h-10 rounded-md border border-danger/40 px-3 text-sm font-medium text-danger transition hover:bg-danger/10 focus:focus-ring disabled:opacity-55"
+                          >
+                            Forget
+                          </button>
+                        ) : null}
+                      </div>
+                      {tokenVaultError ? (
+                        <div className="mt-2 text-xs text-danger">{tokenVaultError}</div>
+                      ) : null}
                     </div>
                     <Notice tone="warning">
                       Standalone mode uses the core Ollama API and stores chats in this browser.
@@ -835,6 +1152,10 @@ export function SettingsDrawer({
                   loading={securityStatusLoading}
                   settings={settings}
                   connection={connection}
+                  browserTokenAvailable={browserTokenAvailable}
+                  encryptedTokenAvailable={encryptedTokenAvailable}
+                  chatEncryptionConfigured={chatEncryptionConfigured}
+                  chatEncryptionUnlocked={chatEncryptionUnlocked}
                 />
               </SettingsSection>
 
@@ -1476,6 +1797,77 @@ export function SettingsDrawer({
                   </div>
                 </div>
               </div>
+              <div className="rounded-md border border-border bg-panel-strong px-3 py-3">
+                <div className="flex flex-col gap-3">
+                  <div className="flex items-start gap-3">
+                    <Shield className="mt-0.5 h-4 w-4 flex-none text-accent" />
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium">Browser chat encryption</div>
+                      <div className="mt-0.5 text-xs text-muted-foreground">
+                        {chatEncryptionConfigured
+                          ? chatEncryptionUnlocked
+                            ? "Encrypted chats are unlocked for this session."
+                            : "Encrypted chats are locked until you enter the passphrase."
+                          : "Standalone chats are currently stored as normal IndexedDB records."}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <input
+                      type="password"
+                      value={chatEncryptionPassphrase}
+                      placeholder={
+                        chatEncryptionConfigured
+                          ? "Passphrase to unlock"
+                          : "Passphrase to encrypt chats"
+                      }
+                      autoComplete="off"
+                      spellCheck={false}
+                      onChange={(event) => setChatEncryptionPassphrase(event.target.value)}
+                      className="h-10 min-w-0 flex-1 rounded-md border border-border bg-background px-3 text-sm focus:focus-ring"
+                    />
+                    {!chatEncryptionConfigured ? (
+                      <button
+                        type="button"
+                        disabled={
+                          chatEncryptionBusy ||
+                          !supportsStandaloneChatEncryption() ||
+                          !chatEncryptionPassphrase.trim()
+                        }
+                        onClick={() => void handleEnableChatEncryption()}
+                        className="h-10 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring disabled:opacity-55"
+                      >
+                        Enable
+                      </button>
+                    ) : !chatEncryptionUnlocked ? (
+                      <button
+                        type="button"
+                        disabled={
+                          chatEncryptionBusy ||
+                          !supportsStandaloneChatEncryption() ||
+                          !chatEncryptionPassphrase.trim()
+                        }
+                        onClick={() => void handleUnlockChatEncryption()}
+                        className="h-10 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring disabled:opacity-55"
+                      >
+                        Unlock
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={chatEncryptionBusy}
+                        onClick={() => void handleDisableChatEncryption()}
+                        className="h-10 rounded-md border border-danger/40 px-3 text-sm font-medium text-danger transition hover:bg-danger/10 focus:focus-ring disabled:opacity-55"
+                      >
+                        Turn off
+                      </button>
+                    )}
+                  </div>
+                  {chatEncryptionError ? (
+                    <div className="text-xs text-danger">{chatEncryptionError}</div>
+                  ) : null}
+                </div>
+              </div>
             </SettingsSection>
           ) : null}
 
@@ -1764,16 +2156,30 @@ function SecurityStatusPanel({
   status,
   loading,
   settings,
-  connection
+  connection,
+  browserTokenAvailable,
+  encryptedTokenAvailable,
+  chatEncryptionConfigured,
+  chatEncryptionUnlocked
 }: {
   standalone: boolean;
   status: SecurityStatusResponse | null;
   loading: boolean;
   settings: LocalSettings;
   connection: ReturnType<typeof useOllamaConnection>;
+  browserTokenAvailable: boolean;
+  encryptedTokenAvailable: boolean;
+  chatEncryptionConfigured: boolean;
+  chatEncryptionUnlocked: boolean;
 }) {
   const searchLabel = `Search ${settings.webSearchMode}`;
   const memoryLabel = `Memory ${memoryScopeLabel(settings.retrievalScope)}`;
+  const tokenLabel = coreTokenStatusLabel(settings, browserTokenAvailable, encryptedTokenAvailable);
+  const chatStorageLabel = chatEncryptionConfigured
+    ? chatEncryptionUnlocked
+      ? "Browser chats encrypted"
+      : "Browser chats locked"
+    : "Browser chats plain";
 
   if (standalone) {
     return (
@@ -1787,11 +2193,16 @@ function SecurityStatusPanel({
           />
           <StatusChip label="Desktop API not used" tone="info" Icon={Server} />
           <StatusChip
-            label={settings.coreApiToken.trim() ? "Core token set" : "Core token not set"}
-            tone={settings.coreApiToken.trim() ? "success" : "info"}
+            label={tokenLabel}
+            tone={settings.coreApiToken.trim() ? "success" : encryptedTokenAvailable ? "warning" : "info"}
             Icon={settings.coreApiToken.trim() ? CheckCircle2 : Shield}
           />
           <StatusChip label="Browser storage" tone="info" Icon={Database} />
+          <StatusChip
+            label={chatStorageLabel}
+            tone={chatEncryptionConfigured ? (chatEncryptionUnlocked ? "success" : "warning") : "info"}
+            Icon={chatEncryptionConfigured ? Shield : Database}
+          />
           <StatusChip label={searchLabel} tone={settings.webSearchMode === "off" ? "success" : "info"} Icon={Search} />
           <StatusChip label={memoryLabel} tone="info" Icon={BrainCircuit} />
         </div>
@@ -1800,6 +2211,8 @@ function SecurityStatusPanel({
   }
 
   const warnings = status?.warnings ?? [];
+  const appDataStatus = appDataEncryptionChip(status, loading);
+  const upstreamStatus = upstreamChip(status, loading);
   return (
     <div className="rounded-md border border-border bg-panel-strong px-3 py-3">
       <div className="flex flex-wrap gap-2">
@@ -1821,9 +2234,16 @@ function SecurityStatusPanel({
           Icon={status?.coreApiAuthEnabled ? CheckCircle2 : Shield}
         />
         <StatusChip
-          label={status?.coreApiHostLocal && status?.coreApiHostAllowed ? "Local upstream" : "Upstream blocked"}
-          tone={status?.coreApiHostLocal && status?.coreApiHostAllowed ? "success" : "danger"}
-          Icon={status?.coreApiHostLocal && status?.coreApiHostAllowed ? CheckCircle2 : AlertCircle}
+          label={appDataStatus.label}
+          tone={appDataStatus.tone}
+          Icon={appDataStatus.Icon}
+          spin={appDataStatus.spin}
+        />
+        <StatusChip
+          label={upstreamStatus.label}
+          tone={upstreamStatus.tone}
+          Icon={upstreamStatus.Icon}
+          spin={upstreamStatus.spin}
         />
         <StatusChip
           label={status?.localOnlyOfflineMode ? "Local-only offline" : "Cloud allowed"}
@@ -1873,8 +2293,102 @@ function SecurityStatusPanel({
           ))}
         </div>
       ) : null}
+      {status?.appDataEncryptionError ? (
+        <div className="mt-3 text-xs leading-5 text-danger">
+          {status.appDataEncryptionError}
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function coreTokenStatusLabel(
+  settings: LocalSettings,
+  browserTokenAvailable: boolean,
+  encryptedTokenAvailable: boolean
+) {
+  if (settings.coreApiToken.trim()) {
+    if (settings.coreApiTokenStorage === "browser" || browserTokenAvailable) {
+      return "Core token remembered";
+    }
+    if (settings.coreApiTokenStorage === "encrypted") {
+      return "Core token unlocked";
+    }
+    return "Core token session";
+  }
+  if (encryptedTokenAvailable || settings.coreApiTokenStorage === "encrypted") {
+    return "Core token locked";
+  }
+  return "Core token not set";
+}
+
+function appDataEncryptionChip(
+  status: SecurityStatusResponse | null,
+  loading: boolean
+): StatusChipConfig {
+  if (!status) {
+    return {
+      label: loading ? "Checking app data" : "App data unknown",
+      tone: loading ? "info" as const : "warning" as const,
+      Icon: loading ? RefreshCcw : AlertCircle,
+      spin: loading
+    };
+  }
+
+  switch (status.appDataEncryptionState) {
+    case "encrypted":
+      return { label: "App data encrypted", tone: "success" as const, Icon: Shield };
+    case "key_missing":
+      return { label: "Encryption key missing", tone: "danger" as const, Icon: AlertCircle };
+    case "key_invalid":
+      return { label: "Wrong encryption key", tone: "danger" as const, Icon: AlertCircle };
+    case "enabled":
+      return { label: "Encryption ready", tone: "info" as const, Icon: Shield };
+    case "plain":
+      return {
+        label: status.appDataEncryptionDisabled ? "App data encryption off" : "App data plain",
+        tone: "info" as const,
+        Icon: Database
+      };
+    default:
+      return { label: "App data unknown", tone: "warning" as const, Icon: AlertCircle };
+  }
+}
+
+function upstreamChip(
+  status: SecurityStatusResponse | null,
+  loading: boolean
+): StatusChipConfig {
+  if (!status) {
+    return {
+      label: loading ? "Checking upstream" : "Upstream unknown",
+      tone: loading ? "info" as const : "warning" as const,
+      Icon: loading ? RefreshCcw : AlertCircle,
+      spin: loading
+    };
+  }
+
+  if (status.coreApiHostLocal && status.coreApiHostAllowed) {
+    return { label: "Local upstream", tone: "success" as const, Icon: CheckCircle2 };
+  }
+  return { label: "Upstream blocked", tone: "danger" as const, Icon: AlertCircle };
+}
+
+function appDataEncryptionMessage(message: string | null) {
+  if (!message) return null;
+  const normalized = message.toLowerCase();
+  if (
+    !normalized.includes("app data") &&
+    !normalized.includes("ollama_app_data_key") &&
+    !normalized.includes("message authentication failed")
+  ) {
+    return null;
+  }
+
+  if (normalized.includes("not unlock") || normalized.includes("message authentication failed")) {
+    return "App data is encrypted, but OLLAMA_APP_DATA_KEY did not unlock it. Set the correct key, or start once with OLLAMA_APP_DATA_ENCRYPTION=off and the correct key to decrypt app data.";
+  }
+  return "App data is encrypted. Set OLLAMA_APP_DATA_KEY to the correct key, then restart Ollama.";
 }
 
 function memoryScopeLabel(scope: LocalSettings["retrievalScope"]) {
@@ -1942,7 +2456,7 @@ function StatusChip({
   spin
 }: {
   label: string;
-  tone: "success" | "warning" | "danger" | "info";
+  tone: StatusChipTone;
   Icon: LucideIcon;
   spin?: boolean;
 }) {

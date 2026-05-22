@@ -9,6 +9,7 @@ export interface LocalSettings {
   selectedModel: string;
   coreApiBase: string;
   coreApiToken: string;
+  coreApiTokenStorage: "session" | "browser" | "encrypted";
   sidebarOpen: boolean;
   expose: boolean;
   browser: boolean;

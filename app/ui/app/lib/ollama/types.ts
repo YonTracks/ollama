@@ -294,6 +294,14 @@ export interface SecurityWarning {
   message: string;
 }
 
+export type AppDataEncryptionState =
+  | "plain"
+  | "enabled"
+  | "encrypted"
+  | "key_missing"
+  | "key_invalid"
+  | "unknown";
+
 export interface SecurityStatusResponse {
   mode: "desktop";
   coreApiBase: string;
@@ -306,6 +314,11 @@ export interface SecurityStatusResponse {
   localOnlyOfflineMode: boolean;
   cloudDisabled: boolean;
   cloudSource: CloudStatusSource;
+  appDataEncrypted: boolean;
+  appDataEncryptionState: AppDataEncryptionState;
+  appDataEncryptionKeySet: boolean;
+  appDataEncryptionDisabled: boolean;
+  appDataEncryptionError?: string;
   networkExposureAllowed: boolean;
   modelMutationProxyEnabled: boolean;
   pushProxyEnabled: boolean;

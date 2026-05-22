@@ -842,6 +842,63 @@ func TestSecurityStatusWarnsOnUnsafeConfiguration(t *testing.T) {
 	}
 }
 
+func TestSecurityStatusReportsAppDataEncryptionKeyFailure(t *testing.T) {
+	previousTimeout := securityStatusTimeout
+	securityStatusTimeout = time.Millisecond
+	t.Cleanup(func() { securityStatusTimeout = previousTimeout })
+
+	dbPath := filepath.Join(t.TempDir(), "db.sqlite")
+	t.Setenv("OLLAMA_APP_DATA_KEY", "correct horse battery staple")
+	t.Setenv("OLLAMA_APP_DATA_ENCRYPTION", "")
+
+	initialStore := &store.Store{DBPath: dbPath}
+	if _, err := initialStore.Settings(); err != nil {
+		t.Fatalf("initialize encrypted store: %v", err)
+	}
+	if err := initialStore.Close(); err != nil {
+		t.Fatalf("close encrypted store: %v", err)
+	}
+
+	t.Setenv("OLLAMA_APP_DATA_KEY", "wrong key")
+	lockedStore := &store.Store{DBPath: dbPath}
+	status := (&Server{Dev: true, Store: lockedStore}).securityStatus(t.Context())
+
+	if !status.AppDataEncrypted || status.AppDataEncryptionState != string(store.AppDataEncryptionStateKeyInvalid) {
+		t.Fatalf("unexpected app data encryption status: %#v", status)
+	}
+	if status.AppDataEncryptionError == "" {
+		t.Fatalf("expected app data encryption error, got %#v", status)
+	}
+	foundWarning := false
+	for _, warning := range status.Warnings {
+		if warning.Code == "app_data_encryption_key_invalid" {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("missing app data encryption warning in %#v", status.Warnings)
+	}
+
+	handler := (&Server{Token: "secret-token", Store: lockedStore}).Handler()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/settings", nil)
+	req.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusLocked {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusLocked, rr.Code, rr.Body.String())
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["code"] != "app_data_encryption_locked" || !strings.Contains(body["error"], "OLLAMA_APP_DATA_KEY") {
+		t.Fatalf("unexpected encryption error body: %#v", body)
+	}
+}
+
 func TestProxyDangerousRoutesBlockedByDefault(t *testing.T) {
 	t.Setenv("OLLAMA_PROXY_ALLOW_MODEL_MUTATION", "")
 	t.Setenv("OLLAMA_PROXY_ALLOW_PUSH", "")

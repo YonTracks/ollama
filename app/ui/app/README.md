@@ -57,7 +57,12 @@ in IndexedDB, stores standalone settings in local storage, and avoids `/api/v1/*
 Desktop-app-only settings are hidden in this mode.
 If the core server has `OLLAMA_API_TOKEN` set, enter that same value in
 Settings -> Connection -> Core API token for standalone browser/PWA use. The
-token is stored with standalone local settings in this browser profile.
+token is held in memory for the current browser session by default. Remember it
+to reconnect automatically after restart, or lock it with a passphrase if you
+prefer to unlock it manually. The token is not stored in standalone settings.
+Standalone chats are normal IndexedDB records by default. Settings -> Storage
+can enable passphrase-based browser chat encryption; this encrypts existing
+standalone chats and requires an unlock before encrypted chats can be updated.
 
 Do not use `go generate ./...` while a Next dev server is running. The generate
 step runs the static export, and on Windows the active dev server can keep

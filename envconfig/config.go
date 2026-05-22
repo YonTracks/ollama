@@ -282,6 +282,10 @@ var (
 	UseAuth = Bool("OLLAMA_AUTH")
 	// APIToken protects the local HTTP API with a static bearer token when set.
 	APIToken = String("OLLAMA_API_TOKEN")
+	// AppDataKey encrypts sensitive desktop app SQLite fields when set.
+	AppDataKey = String("OLLAMA_APP_DATA_KEY")
+	// AppDataEncryption controls desktop app SQLite encryption. Set to "off" with OLLAMA_APP_DATA_KEY to decrypt existing rows.
+	AppDataEncryption = String("OLLAMA_APP_DATA_ENCRYPTION")
 	// Enable Vulkan backend
 	EnableVulkan = Bool("OLLAMA_VULKAN")
 	// NoCloudEnv checks the OLLAMA_NO_CLOUD environment variable.
@@ -367,6 +371,8 @@ func AsMap() map[string]EnvVar {
 		"OLLAMA_GPU_OVERHEAD":               {"OLLAMA_GPU_OVERHEAD", GpuOverhead(), "Reserve a portion of VRAM per GPU (bytes)"},
 		"OLLAMA_ALLOW_NETWORK_EXPOSURE":     {"OLLAMA_ALLOW_NETWORK_EXPOSURE", AllowNetworkExposure(), "Allow ollama serve to bind to non-localhost addresses"},
 		"OLLAMA_API_TOKEN":                  {"OLLAMA_API_TOKEN", APIToken(), "Require this bearer token for the local HTTP API when set"},
+		"OLLAMA_APP_DATA_KEY":               {"OLLAMA_APP_DATA_KEY", AppDataKey(), "Encrypt sensitive desktop app SQLite fields when set"},
+		"OLLAMA_APP_DATA_ENCRYPTION":        {"OLLAMA_APP_DATA_ENCRYPTION", AppDataEncryption(), "Set to off with OLLAMA_APP_DATA_KEY to decrypt sensitive desktop app SQLite fields"},
 		"OLLAMA_HOST":                       {"OLLAMA_HOST", Host(), "IP Address for the ollama server (default 127.0.0.1:11434)"},
 		"OLLAMA_KEEP_ALIVE":                 {"OLLAMA_KEEP_ALIVE", KeepAlive(), "The duration that models stay loaded in memory (default \"5m\")"},
 		"OLLAMA_LLM_LIBRARY":                {"OLLAMA_LLM_LIBRARY", LLMLibrary(), "Set LLM library to bypass autodetection"},
@@ -457,6 +463,8 @@ func isSensitiveEnvName(name string) bool {
 	for _, marker := range []string{
 		"API_KEY",
 		"ACCESS_KEY",
+		"DATA_KEY",
+		"ENCRYPTION_KEY",
 		"PRIVATE_KEY",
 		"PASSWORD",
 		"PASSWD",

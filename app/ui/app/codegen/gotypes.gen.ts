@@ -686,6 +686,11 @@ export class SecurityStatusResponse {
     localOnlyOfflineMode: boolean;
     cloudDisabled: boolean;
     cloudSource: "env" | "config" | "both" | "none";
+    appDataEncrypted: boolean;
+    appDataEncryptionState: "plain" | "enabled" | "encrypted" | "key_missing" | "key_invalid" | "unknown";
+    appDataEncryptionKeySet: boolean;
+    appDataEncryptionDisabled: boolean;
+    appDataEncryptionError?: string;
     networkExposureAllowed: boolean;
     modelMutationProxyEnabled: boolean;
     pushProxyEnabled: boolean;
@@ -707,6 +712,11 @@ export class SecurityStatusResponse {
         this.localOnlyOfflineMode = source["localOnlyOfflineMode"];
         this.cloudDisabled = source["cloudDisabled"];
         this.cloudSource = source["cloudSource"];
+        this.appDataEncrypted = source["appDataEncrypted"];
+        this.appDataEncryptionState = source["appDataEncryptionState"];
+        this.appDataEncryptionKeySet = source["appDataEncryptionKeySet"];
+        this.appDataEncryptionDisabled = source["appDataEncryptionDisabled"];
+        this.appDataEncryptionError = source["appDataEncryptionError"];
         this.networkExposureAllowed = source["networkExposureAllowed"];
         this.modelMutationProxyEnabled = source["modelMutationProxyEnabled"];
         this.pushProxyEnabled = source["pushProxyEnabled"];

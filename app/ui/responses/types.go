@@ -127,6 +127,11 @@ type SecurityStatusResponse struct {
 	LocalOnlyOfflineMode      bool              `json:"localOnlyOfflineMode"`
 	CloudDisabled             bool              `json:"cloudDisabled"`
 	CloudSource               string            `json:"cloudSource" ts_type:"\"env\" | \"config\" | \"both\" | \"none\""`
+	AppDataEncrypted          bool              `json:"appDataEncrypted"`
+	AppDataEncryptionState    string            `json:"appDataEncryptionState" ts_type:"\"plain\" | \"enabled\" | \"encrypted\" | \"key_missing\" | \"key_invalid\" | \"unknown\""`
+	AppDataEncryptionKeySet   bool              `json:"appDataEncryptionKeySet"`
+	AppDataEncryptionDisabled bool              `json:"appDataEncryptionDisabled"`
+	AppDataEncryptionError    string            `json:"appDataEncryptionError,omitempty"`
 	NetworkExposureAllowed    bool              `json:"networkExposureAllowed"`
 	ModelMutationProxyEnabled bool              `json:"modelMutationProxyEnabled"`
 	PushProxyEnabled          bool              `json:"pushProxyEnabled"`

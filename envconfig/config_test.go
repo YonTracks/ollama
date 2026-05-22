@@ -151,6 +151,7 @@ func TestProxySecurityEnv(t *testing.T) {
 
 func TestValuesRedactsSecrets(t *testing.T) {
 	t.Setenv("OLLAMA_API_TOKEN", "super-secret")
+	t.Setenv("OLLAMA_APP_DATA_KEY", "sqlite-secret")
 	t.Setenv("OLLAMA_CUSTOM_SECRET", "custom-secret")
 	t.Setenv("HOME", "/Users/alice")
 	t.Setenv("HTTPS_PROXY", "http://user:pass@example.com:8080")
@@ -158,6 +159,9 @@ func TestValuesRedactsSecrets(t *testing.T) {
 	vals := Values()
 	if got := vals["OLLAMA_API_TOKEN"]; got != "<redacted>" {
 		t.Fatalf("OLLAMA_API_TOKEN = %q, want <redacted>", got)
+	}
+	if got := vals["OLLAMA_APP_DATA_KEY"]; got != "<redacted>" {
+		t.Fatalf("OLLAMA_APP_DATA_KEY = %q, want <redacted>", got)
 	}
 	if got := vals["HTTPS_PROXY"]; got != "http://redacted:redacted@example.com:8080" {
 		t.Fatalf("HTTPS_PROXY = %q, want redacted proxy URL", got)

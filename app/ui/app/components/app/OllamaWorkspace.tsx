@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertTriangle } from "lucide-react";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { SettingsDrawer } from "@/components/settings/SettingsDrawer";
@@ -29,6 +30,7 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
   const { showToast } = useToast();
   const settingsState = useLocalSettings(appMode.mode, appMode.ready);
   const { settings, updateSettings } = settingsState;
+  const appDataEncryptionError = appDataEncryptionMessage(settingsState.error);
   const connection = useOllamaConnection(
     appMode.mode,
     settings.coreApiBase,
@@ -328,6 +330,20 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
             }}
           />
 
+          {appDataEncryptionError ? (
+            <div className="border-b border-danger/30 bg-danger/10 px-4 py-3 text-danger">
+              <div className="mx-auto flex max-w-4xl items-start gap-3 text-sm">
+                <AlertTriangle className="mt-0.5 h-4 w-4 flex-none" />
+                <div className="min-w-0">
+                  <div className="font-medium">App data is locked</div>
+                  <div className="mt-0.5 text-xs leading-5 text-danger/90">
+                    {appDataEncryptionError}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           <ChatPanel
             activeChatId={activeChatId}
             connection={connection}
@@ -386,4 +402,23 @@ function quickSettingsToastDescription(updates: Partial<LocalSettings>) {
   }
 
   return "Your chat preferences are up to date.";
+}
+
+function appDataEncryptionMessage(message: string | null) {
+  if (!message) return null;
+
+  const normalized = message.toLowerCase();
+  if (
+    !normalized.includes("app data") &&
+    !normalized.includes("ollama_app_data_key") &&
+    !normalized.includes("message authentication failed")
+  ) {
+    return null;
+  }
+
+  if (normalized.includes("not unlock") || normalized.includes("message authentication failed")) {
+    return "OLLAMA_APP_DATA_KEY did not unlock the encrypted desktop data. Set the correct key, or start once with OLLAMA_APP_DATA_ENCRYPTION=off and the correct key to decrypt it.";
+  }
+
+  return "Set OLLAMA_APP_DATA_KEY to the correct key, then restart Ollama.";
 }

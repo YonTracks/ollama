@@ -17,7 +17,7 @@ import (
 
 // currentSchemaVersion defines the current database schema version.
 // Increment this when making schema changes that require migrations.
-const currentSchemaVersion = 21
+const currentSchemaVersion = 22
 
 // database wraps the SQLite connection.
 // SQLite handles its own locking for concurrent access:
@@ -26,7 +26,9 @@ const currentSchemaVersion = 21
 // - WAL mode allows readers to not block writers
 // This means we don't need application-level locks for database operations.
 type database struct {
-	conn *sql.DB
+	conn           *sql.DB
+	cipher         *dataCipher
+	encryptAppData bool
 }
 
 func newDatabase(dbPath string) (*database, error) {
@@ -42,12 +44,26 @@ func newDatabase(dbPath string) (*database, error) {
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
-	db := &database{conn: conn}
+	dataCipher, err := newDataCipherFromEnv()
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+
+	db := &database{
+		conn:           conn,
+		cipher:         dataCipher,
+		encryptAppData: appDataEncryptionEnabled() && dataCipher != nil,
+	}
 
 	// Initialize schema
 	if err := db.init(); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("initialize database: %w", err)
+	}
+	if err := db.reconcileAppDataEncryption(); err != nil {
+		conn.Close()
+		return nil, err
 	}
 
 	return db, nil
@@ -170,6 +186,11 @@ func (db *database) init() error {
 		email TEXT NOT NULL DEFAULT '',
 		plan TEXT NOT NULL DEFAULT '',
 		cached_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
+	CREATE TABLE IF NOT EXISTS app_metadata (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL DEFAULT ''
 	);
 	`, currentSchemaVersion)
 
@@ -320,6 +341,11 @@ func (db *database) migrate() error {
 				return fmt.Errorf("migrate v20 to v21: %w", err)
 			}
 			version = 21
+		case 21:
+			if err := db.migrateV21ToV22(); err != nil {
+				return fmt.Errorf("migrate v21 to v22: %w", err)
+			}
+			version = 22
 		default:
 			// If we have a version we don't recognize, just set it to current
 			// This might happen during development
@@ -754,6 +780,15 @@ func (db *database) getAllChats() ([]Chat, error) {
 			return nil, fmt.Errorf("scan chat: %w", err)
 		}
 
+		chat.Title, err = db.decryptString(chat.Title)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt chat title: %w", err)
+		}
+		firstUserContent, err = db.decryptString(firstUserContent)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt first message: %w", err)
+		}
+
 		chat.CreatedAt = createdAt
 
 		// Add a dummy first user message for the UI to display
@@ -801,6 +836,15 @@ func (db *database) getChatWithOptions(id string, loadAttachmentData bool) (*Cha
 		return nil, fmt.Errorf("query chat: %w", err)
 	}
 
+	chat.Title, err = db.decryptString(chat.Title)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt chat title: %w", err)
+	}
+	browserState, err = db.decryptNullString(browserState)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt browser state: %w", err)
+	}
+
 	chat.CreatedAt = createdAt
 	if browserState.Valid && browserState.String != "" {
 		var raw json.RawMessage
@@ -842,10 +886,18 @@ func (db *database) saveChat(chat Chat) error {
 	if chat.BrowserState != nil {
 		browserState = sql.NullString{String: string(chat.BrowserState), Valid: true}
 	}
+	title, err := db.encryptString(chat.Title)
+	if err != nil {
+		return fmt.Errorf("encrypt chat title: %w", err)
+	}
+	browserState, err = db.encryptNullString(browserState)
+	if err != nil {
+		return fmt.Errorf("encrypt browser state: %w", err)
+	}
 
 	_, err = tx.Exec(query,
 		chat.ID,
-		chat.Title,
+		title,
 		chat.CreatedAt,
 		browserState,
 	)
@@ -880,7 +932,12 @@ func (db *database) saveChat(chat Chat) error {
 
 // updateChatBrowserState updates only the browser_state for a chat
 func (db *database) updateChatBrowserState(chatID string, state json.RawMessage) error {
-	_, err := db.conn.Exec(`UPDATE chats SET browser_state = ? WHERE id = ?`, string(state), chatID)
+	encryptedState, err := db.encryptString(string(state))
+	if err != nil {
+		return fmt.Errorf("encrypt chat browser state: %w", err)
+	}
+
+	_, err = db.conn.Exec(`UPDATE chats SET browser_state = ? WHERE id = ?`, encryptedState, chatID)
 	if err != nil {
 		return fmt.Errorf("update chat browser state: %w", err)
 	}
@@ -906,6 +963,26 @@ func (db *database) migrateV20ToV21() error {
 	}
 
 	_, err = db.conn.Exec(`UPDATE settings SET schema_version = 21`)
+	if err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+
+	return nil
+}
+
+// migrateV21ToV22 adds an app metadata table for local store state.
+func (db *database) migrateV21ToV22() error {
+	_, err := db.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS app_metadata (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL DEFAULT ''
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("create app_metadata table: %w", err)
+	}
+
+	_, err = db.conn.Exec(`UPDATE settings SET schema_version = 22`)
 	if err != nil {
 		return fmt.Errorf("update schema version: %w", err)
 	}
@@ -973,10 +1050,38 @@ func (db *database) updateLastMessage(chatID string, msg Message) error {
 	if err != nil {
 		return err
 	}
+	content, err := db.encryptString(msg.Content)
+	if err != nil {
+		return fmt.Errorf("encrypt message content: %w", err)
+	}
+	thinking, err := db.encryptString(msg.Thinking)
+	if err != nil {
+		return fmt.Errorf("encrypt message thinking: %w", err)
+	}
+	toolResultJSON, err = db.encryptNullString(toolResultJSON)
+	if err != nil {
+		return fmt.Errorf("encrypt tool result: %w", err)
+	}
+	statsJSON, err = db.encryptNullString(statsJSON)
+	if err != nil {
+		return fmt.Errorf("encrypt response stats: %w", err)
+	}
+	contextNoticeJSON, err = db.encryptNullString(contextNoticeJSON)
+	if err != nil {
+		return fmt.Errorf("encrypt context notice: %w", err)
+	}
+	contextWarningsJSON, err = db.encryptNullString(contextWarningsJSON)
+	if err != nil {
+		return fmt.Errorf("encrypt context warnings: %w", err)
+	}
+	webSearchMetadataJSON, err = db.encryptNullString(webSearchMetadataJSON)
+	if err != nil {
+		return fmt.Errorf("encrypt web search metadata: %w", err)
+	}
 
 	result, err := tx.Exec(query,
-		msg.Content,
-		msg.Thinking,
+		content,
+		thinking,
 		modelName,
 		msg.UpdatedAt,
 		thinkingTimeStart,
@@ -1095,6 +1200,35 @@ func (db *database) getMessages(chatID string, loadAttachmentData bool) ([]Messa
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 
+		msg.Content, err = db.decryptString(msg.Content)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt message content: %w", err)
+		}
+		msg.Thinking, err = db.decryptString(msg.Thinking)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt message thinking: %w", err)
+		}
+		toolResult, err = db.decryptNullString(toolResult)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt tool result: %w", err)
+		}
+		stats, err = db.decryptNullString(stats)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt response stats: %w", err)
+		}
+		contextNotice, err = db.decryptNullString(contextNotice)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt context notice: %w", err)
+		}
+		contextWarnings, err = db.decryptNullString(contextWarnings)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt context warnings: %w", err)
+		}
+		webSearchMetadata, err = db.decryptNullString(webSearchMetadata)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt web search metadata: %w", err)
+		}
+
 		attachments, err := db.getAttachments(messageID, loadAttachmentData)
 		if err != nil {
 			return nil, fmt.Errorf("get attachments: %w", err)
@@ -1183,7 +1317,7 @@ func (db *database) getVectorMemoryItems(chatID string) ([]VectorMemoryItem, err
 	}
 	defer rows.Close()
 
-	items, err := scanVectorMemoryItems(rows)
+	items, err := db.scanVectorMemoryItems(rows)
 	if err != nil {
 		return nil, err
 	}
@@ -1205,7 +1339,7 @@ func (db *database) getVectorMemoryItemsAllChats() ([]VectorMemoryItem, error) {
 	}
 	defer rows.Close()
 
-	items, err := scanVectorMemoryItems(rows)
+	items, err := db.scanVectorMemoryItems(rows)
 	if err != nil {
 		return nil, fmt.Errorf("scan all vector memory items: %w", err)
 	}
@@ -1232,7 +1366,7 @@ func (db *database) getVectorMemoryItemsForChats(chatIDs []string) ([]VectorMemo
 	}
 	defer rows.Close()
 
-	items, err := scanVectorMemoryItems(rows)
+	items, err := db.scanVectorMemoryItems(rows)
 	if err != nil {
 		return nil, fmt.Errorf("scan selected vector memory items: %w", err)
 	}
@@ -1240,7 +1374,7 @@ func (db *database) getVectorMemoryItemsForChats(chatIDs []string) ([]VectorMemo
 	return items, nil
 }
 
-func scanVectorMemoryItems(rows *sql.Rows) ([]VectorMemoryItem, error) {
+func (db *database) scanVectorMemoryItems(rows *sql.Rows) ([]VectorMemoryItem, error) {
 	var items []VectorMemoryItem
 	for rows.Next() {
 		var item VectorMemoryItem
@@ -1261,6 +1395,23 @@ func scanVectorMemoryItems(rows *sql.Rows) ([]VectorMemoryItem, error) {
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan vector memory item: %w", err)
+		}
+
+		item.ChatTitle, err = db.decryptString(item.ChatTitle)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt vector chat title: %w", err)
+		}
+		item.Message.Content, err = db.decryptString(item.Message.Content)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt vector message content: %w", err)
+		}
+		item.Message.Thinking, err = db.decryptString(item.Message.Thinking)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt vector message thinking: %w", err)
+		}
+		toolResult, err = db.decryptNullString(toolResult)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt vector tool result: %w", err)
 		}
 
 		if modelName.Valid {
@@ -1468,12 +1619,40 @@ func (db *database) insertMessage(tx *sql.Tx, chatID string, msg Message) (int64
 	if err != nil {
 		return 0, err
 	}
+	content, err := db.encryptString(msg.Content)
+	if err != nil {
+		return 0, fmt.Errorf("encrypt message content: %w", err)
+	}
+	thinking, err := db.encryptString(msg.Thinking)
+	if err != nil {
+		return 0, fmt.Errorf("encrypt message thinking: %w", err)
+	}
+	toolResultJSON, err = db.encryptNullString(toolResultJSON)
+	if err != nil {
+		return 0, fmt.Errorf("encrypt tool result: %w", err)
+	}
+	statsJSON, err = db.encryptNullString(statsJSON)
+	if err != nil {
+		return 0, fmt.Errorf("encrypt response stats: %w", err)
+	}
+	contextNoticeJSON, err = db.encryptNullString(contextNoticeJSON)
+	if err != nil {
+		return 0, fmt.Errorf("encrypt context notice: %w", err)
+	}
+	contextWarningsJSON, err = db.encryptNullString(contextWarningsJSON)
+	if err != nil {
+		return 0, fmt.Errorf("encrypt context warnings: %w", err)
+	}
+	webSearchMetadataJSON, err = db.encryptNullString(webSearchMetadataJSON)
+	if err != nil {
+		return 0, fmt.Errorf("encrypt web search metadata: %w", err)
+	}
 
 	result, err := tx.Exec(query,
 		chatID,
 		msg.Role,
-		msg.Content,
-		msg.Thinking,
+		content,
+		thinking,
 		msg.Stream,
 		modelName,
 		msg.CreatedAt,
@@ -1629,6 +1808,14 @@ func (db *database) getAttachments(messageID int64, loadData bool) ([]File, erro
 		if err != nil {
 			return nil, fmt.Errorf("scan attachment: %w", err)
 		}
+		file.Filename, err = db.decryptString(file.Filename)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt attachment filename: %w", err)
+		}
+		file.Data, err = db.decryptBytes(file.Data)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt attachment data: %w", err)
+		}
 		attachments = append(attachments, file)
 	}
 
@@ -1667,6 +1854,14 @@ func (db *database) getToolCalls(messageID int64) ([]ToolCall, error) {
 		if err != nil {
 			return nil, fmt.Errorf("scan tool call: %w", err)
 		}
+		tc.Function.Arguments, err = db.decryptString(tc.Function.Arguments)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt tool arguments: %w", err)
+		}
+		functionResult, err = db.decryptNullString(functionResult)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt tool result: %w", err)
+		}
 
 		if functionResult.Valid && functionResult.String != "" {
 			// Parse the JSON result
@@ -1691,7 +1886,15 @@ func (db *database) insertAttachment(tx *sql.Tx, messageID int64, file File) err
 		INSERT INTO attachments (message_id, filename, data)
 		VALUES (?, ?, ?)
 	`
-	_, err := tx.Exec(query, messageID, file.Filename, file.Data)
+	filename, err := db.encryptString(file.Filename)
+	if err != nil {
+		return fmt.Errorf("encrypt attachment filename: %w", err)
+	}
+	data, err := db.encryptBytes(file.Data)
+	if err != nil {
+		return fmt.Errorf("encrypt attachment data: %w", err)
+	}
+	_, err = tx.Exec(query, messageID, filename, data)
 	return err
 }
 
@@ -1710,12 +1913,20 @@ func (db *database) insertToolCall(tx *sql.Tx, messageID int64, tc ToolCall) err
 		}
 		functionResult = sql.NullString{String: string(resultJSON), Valid: true}
 	}
+	functionArguments, err := db.encryptString(tc.Function.Arguments)
+	if err != nil {
+		return fmt.Errorf("encrypt tool arguments: %w", err)
+	}
+	functionResult, err = db.encryptNullString(functionResult)
+	if err != nil {
+		return fmt.Errorf("encrypt tool result: %w", err)
+	}
 
-	_, err := tx.Exec(query,
+	_, err = tx.Exec(query,
 		messageID,
 		tc.Type,
 		tc.Function.Name,
-		tc.Function.Arguments,
+		functionArguments,
 		functionResult,
 	)
 	return err
@@ -1891,6 +2102,18 @@ func (db *database) getUser() (*User, error) {
 		}
 		return nil, fmt.Errorf("get user: %w", err)
 	}
+	user.Name, err = db.decryptString(user.Name)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt user name: %w", err)
+	}
+	user.Email, err = db.decryptString(user.Email)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt user email: %w", err)
+	}
+	user.Plan, err = db.decryptString(user.Plan)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt user plan: %w", err)
+	}
 
 	return &user, nil
 }
@@ -1900,10 +2123,23 @@ func (db *database) setUser(user User) error {
 		return fmt.Errorf("before set: %w", err)
 	}
 
-	_, err := db.conn.Exec(`
+	name, err := db.encryptString(user.Name)
+	if err != nil {
+		return fmt.Errorf("encrypt user name: %w", err)
+	}
+	email, err := db.encryptString(user.Email)
+	if err != nil {
+		return fmt.Errorf("encrypt user email: %w", err)
+	}
+	plan, err := db.encryptString(user.Plan)
+	if err != nil {
+		return fmt.Errorf("encrypt user plan: %w", err)
+	}
+
+	_, err = db.conn.Exec(`
 		INSERT INTO users (name, email, plan, cached_at)
 		VALUES (?, ?, ?, ?)
-	`, user.Name, user.Email, user.Plan, user.CachedAt)
+	`, name, email, plan, user.CachedAt)
 	if err != nil {
 		return fmt.Errorf("set user: %w", err)
 	}

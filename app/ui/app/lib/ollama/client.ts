@@ -11,6 +11,7 @@ import type {
   ChatsResponse,
   CloudStatusResponse,
   CloudStatusSource,
+  AppDataEncryptionState,
   InferenceComputeResponse,
   OllamaModel,
   OllamaTagsResponse,
@@ -539,6 +540,11 @@ export async function getSecurityStatus(signal?: AbortSignal): Promise<SecurityS
   return {
     ...data,
     cloudSource: normalizeCloudStatusSource(data.cloudSource),
+    appDataEncrypted: Boolean(data.appDataEncrypted),
+    appDataEncryptionState: normalizeAppDataEncryptionState(data.appDataEncryptionState),
+    appDataEncryptionKeySet: Boolean(data.appDataEncryptionKeySet),
+    appDataEncryptionDisabled: Boolean(data.appDataEncryptionDisabled),
+    appDataEncryptionError: data.appDataEncryptionError || "",
     proxyAllowedUpstreams: Array.isArray(data.proxyAllowedUpstreams)
       ? data.proxyAllowedUpstreams
       : [],
@@ -637,6 +643,20 @@ function normalizeCloudStatusSource(source?: string): CloudStatusSource {
     return source;
   }
   return "none";
+}
+
+function normalizeAppDataEncryptionState(source?: string): AppDataEncryptionState {
+  if (
+    source === "plain" ||
+    source === "enabled" ||
+    source === "encrypted" ||
+    source === "key_missing" ||
+    source === "key_invalid" ||
+    source === "unknown"
+  ) {
+    return source;
+  }
+  return "unknown";
 }
 
 export async function* sendChat(

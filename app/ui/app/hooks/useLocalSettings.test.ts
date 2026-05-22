@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { getSettingsStorageKey, normalizeSettingsForMode } from "./useLocalSettings";
+import {
+  getSettingsStorageKey,
+  normalizeSettingsForMode,
+  settingsForStorage
+} from "./useLocalSettings";
 import type { LocalSettings } from "@/types/app";
 
 describe("local settings mode boundaries", () => {
@@ -61,6 +65,38 @@ describe("local settings mode boundaries", () => {
     ).toBe("");
   });
 
+  it("never writes the core API token into persisted settings", () => {
+    expect(
+      settingsForStorage(
+        {
+          ...baseSettings(),
+          coreApiToken: "test-token",
+          coreApiTokenStorage: "encrypted"
+        },
+        "standalone"
+      )
+    ).toMatchObject({
+      coreApiToken: "",
+      coreApiTokenStorage: "encrypted"
+    });
+  });
+
+  it("preserves browser token storage without writing the token into settings", () => {
+    expect(
+      settingsForStorage(
+        {
+          ...baseSettings(),
+          coreApiToken: "test-token",
+          coreApiTokenStorage: "browser"
+        },
+        "standalone"
+      )
+    ).toMatchObject({
+      coreApiToken: "",
+      coreApiTokenStorage: "browser"
+    });
+  });
+
   it("keeps desktop memory scope local to the desktop settings store", () => {
     const settings = normalizeSettingsForMode(
       {
@@ -83,6 +119,7 @@ function baseSettings(): LocalSettings {
     selectedModel: "",
     coreApiBase: "",
     coreApiToken: "",
+    coreApiTokenStorage: "session",
     sidebarOpen: true,
     expose: false,
     browser: false,

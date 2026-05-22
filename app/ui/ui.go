@@ -672,9 +672,19 @@ func (s *Server) handleError(w http.ResponseWriter, r *http.Request, e error) {
 		applyCORSHeaders(w, r)
 	}
 
+	status := http.StatusInternalServerError
+	body := map[string]string{"error": e.Error()}
+	if store.IsAppDataEncryptionError(e) {
+		status = http.StatusLocked
+		body = map[string]string{
+			"code":  "app_data_encryption_locked",
+			"error": store.AppDataEncryptionUserMessage(e),
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusInternalServerError)
-	json.NewEncoder(w).Encode(map[string]string{"error": e.Error()})
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(body)
 }
 
 func applyCORSHeaders(w http.ResponseWriter, r *http.Request) {
@@ -3856,6 +3866,10 @@ func (s *Server) securityStatus(ctx context.Context) responses.SecurityStatusRes
 			cloudSource = source
 		}
 	}
+	appDataStatus := store.AppDataEncryptionStatus{State: store.AppDataEncryptionStatePlain}
+	if s.Store != nil {
+		appDataStatus = s.Store.AppDataEncryptionStatus()
+	}
 
 	status := responses.SecurityStatusResponse{
 		Mode:                      "desktop",
@@ -3868,6 +3882,11 @@ func (s *Server) securityStatus(ctx context.Context) responses.SecurityStatusRes
 		LocalOnlyOfflineMode:      cloudDisabled,
 		CloudDisabled:             cloudDisabled,
 		CloudSource:               cloudSource,
+		AppDataEncrypted:          appDataStatus.Encrypted,
+		AppDataEncryptionState:    string(appDataStatus.State),
+		AppDataEncryptionKeySet:   appDataStatus.KeyConfigured,
+		AppDataEncryptionDisabled: appDataStatus.Disabled,
+		AppDataEncryptionError:    appDataStatus.Error,
 		NetworkExposureAllowed:    settings.Expose || envconfig.AllowNetworkExposure(),
 		ModelMutationProxyEnabled: envconfig.ProxyAllowModelMutation(),
 		PushProxyEnabled:          envconfig.ProxyAllowPush(),
@@ -3894,6 +3913,14 @@ func securityWarnings(status responses.SecurityStatusResponse, targetErr error) 
 		add("unsafe_upstream", "The configured Ollama upstream is not an allowed localhost HTTP endpoint.")
 	} else if !status.CoreAPIReachable {
 		add("core_unreachable", "The local Ollama core API is not reachable.")
+	}
+	switch status.AppDataEncryptionState {
+	case string(store.AppDataEncryptionStateKeyMissing):
+		add("app_data_encryption_key_missing", "App data is encrypted, but OLLAMA_APP_DATA_KEY is not set.")
+	case string(store.AppDataEncryptionStateKeyInvalid):
+		add("app_data_encryption_key_invalid", "App data is encrypted, but OLLAMA_APP_DATA_KEY did not unlock it.")
+	case string(store.AppDataEncryptionStateUnknown):
+		add("app_data_encryption_unknown", "The desktop app could not inspect app data encryption state.")
 	}
 	if !status.DesktopAuthEnabled {
 		add("desktop_auth_disabled", "Desktop API token checks are disabled in development mode.")

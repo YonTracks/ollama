@@ -5,6 +5,7 @@ import {
   getSettings,
   updateSettings as updateServerSettings
 } from "@/lib/ollama/client";
+import { loadBrowserCoreApiToken } from "@/lib/ollama/token-vault";
 import type { AppMode } from "@/lib/appMode";
 import type { Settings } from "@/lib/ollama/types";
 import type { LocalSettings } from "@/types/app";
@@ -17,6 +18,7 @@ const DEFAULT_SETTINGS: LocalSettings = {
   selectedModel: "",
   coreApiBase: "",
   coreApiToken: "",
+  coreApiTokenStorage: "session",
   sidebarOpen: true,
   expose: false,
   browser: false,
@@ -81,7 +83,16 @@ function readLocalSettings(mode: AppMode) {
       }, parsed),
       mode
     );
-    localStorage.setItem(getSettingsStorageKey(mode), JSON.stringify(normalized));
+    if (mode === "standalone" && normalized.coreApiTokenStorage === "browser") {
+      normalized.coreApiToken = loadBrowserCoreApiToken();
+      if (!normalized.coreApiToken) {
+        normalized.coreApiTokenStorage = "session";
+      }
+    }
+    localStorage.setItem(
+      getSettingsStorageKey(mode),
+      JSON.stringify(settingsForStorage(normalized, mode))
+    );
     return normalized;
   } catch {
     return getDefaultSettings();
@@ -93,6 +104,11 @@ function migrateLocalSettings(
   rawSettings: Partial<LocalSettings> = settings
 ): LocalSettings {
   const migrated: LocalSettings = { ...settings };
+
+  if ("coreApiToken" in rawSettings) {
+    migrated.coreApiToken = "";
+    migrated.coreApiTokenStorage = normalizeCoreApiTokenStorage(rawSettings.coreApiTokenStorage);
+  }
 
   if (!("webSearchMode" in rawSettings)) {
     migrated.webSearchMode = rawSettings.webSearchEnabled ? "manual" : "off";
@@ -159,6 +175,7 @@ export function normalizeSettingsForMode(settings: LocalSettings, mode: AppMode)
   const normalized = normalizeToolMode({
     ...settings,
     coreApiToken: typeof settings.coreApiToken === "string" ? settings.coreApiToken : "",
+    coreApiTokenStorage: normalizeCoreApiTokenStorage(settings.coreApiTokenStorage),
     webSearchMode,
     webSearchEnabled: webSearchMode === "manual" ? Boolean(settings.webSearchEnabled) : false,
     retrievalScope:
@@ -173,7 +190,8 @@ export function normalizeSettingsForMode(settings: LocalSettings, mode: AppMode)
   if (mode !== "standalone") {
     return {
       ...normalized,
-      coreApiToken: ""
+      coreApiToken: "",
+      coreApiTokenStorage: "session"
     };
   }
 
@@ -191,9 +209,21 @@ export function normalizeSettingsForMode(settings: LocalSettings, mode: AppMode)
   };
 }
 
+export function settingsForStorage(settings: LocalSettings, mode: AppMode): LocalSettings {
+  return {
+    ...normalizeSettingsForMode(settings, mode),
+    coreApiToken: ""
+  };
+}
+
 function normalizeWebSearchMode(value: LocalSettings["webSearchMode"]) {
   if (value === "manual" || value === "auto") return value;
   return "off";
+}
+
+function normalizeCoreApiTokenStorage(value: unknown): LocalSettings["coreApiTokenStorage"] {
+  if (value === "browser" || value === "encrypted") return value;
+  return "session";
 }
 
 function normalizeWebSearchProvider(value: LocalSettings["webSearchProvider"]) {
@@ -259,7 +289,10 @@ export function useLocalSettings(mode: AppMode, enabled = true) {
       const normalized = normalizeSettingsForMode(next, mode);
       setSettingsState(normalized);
       try {
-        localStorage.setItem(getSettingsStorageKey(mode), JSON.stringify(normalized));
+        localStorage.setItem(
+          getSettingsStorageKey(mode),
+          JSON.stringify(settingsForStorage(normalized, mode))
+        );
       } catch {
         // Local settings are a convenience cache only.
       }
@@ -282,7 +315,10 @@ export function useLocalSettings(mode: AppMode, enabled = true) {
       setSettingsState((current) => {
         const next = toLocalSettings(response.settings, current);
         try {
-          localStorage.setItem(getSettingsStorageKey(mode), JSON.stringify(next));
+          localStorage.setItem(
+            getSettingsStorageKey(mode),
+            JSON.stringify(settingsForStorage(next, mode))
+          );
         } catch {
           // Ignore local persistence failures.
         }
