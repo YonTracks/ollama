@@ -7,7 +7,12 @@ import type { AppMode } from "@/lib/appMode";
 import { useOnlineStatus } from "./useOnlineStatus";
 import type { ConnectionStatus } from "@/types/app";
 
-export function useOllamaConnection(mode: AppMode, coreApiBase?: string, enabled = true) {
+export function useOllamaConnection(
+  mode: AppMode,
+  coreApiBase?: string,
+  coreApiToken?: string,
+  enabled = true
+) {
   const online = useOnlineStatus();
   const [status, setStatus] = useState<ConnectionStatus>("checking");
   const [version, setVersion] = useState<string | null>(null);
@@ -27,7 +32,7 @@ export function useOllamaConnection(mode: AppMode, coreApiBase?: string, enabled
       try {
         const response =
           mode === "standalone"
-            ? await getStandaloneVersion(coreApiBase, signal)
+            ? await getStandaloneVersion(coreApiBase, coreApiToken, signal)
             : await getVersion(signal);
         setVersion(response.version);
         setStatus("connected");
@@ -46,7 +51,7 @@ export function useOllamaConnection(mode: AppMode, coreApiBase?: string, enabled
         return false;
       }
     },
-    [coreApiBase, enabled, mode, online]
+    [coreApiBase, coreApiToken, enabled, mode, online]
   );
 
   useEffect(() => {

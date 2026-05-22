@@ -29,6 +29,7 @@ interface ModelManagerProps {
   models: OllamaModel[];
   selectedModel: string;
   apiBase?: string;
+  apiToken?: string;
   onSelectModel(model: string, options?: ToastOptions): Promise<boolean | void> | boolean | void;
   onRefreshModels(options?: ToastOptions): Promise<boolean | void> | boolean | void;
 }
@@ -56,6 +57,7 @@ export function ModelManager({
   models,
   selectedModel,
   apiBase,
+  apiToken,
   onSelectModel,
   onRefreshModels
 }: ModelManagerProps) {
@@ -175,7 +177,7 @@ export function ModelManager({
 
     void runStreamOperation(
       "pull",
-      pullStandaloneModel(model, apiBase),
+      pullStandaloneModel(model, apiBase, apiToken),
       `${model} added`,
       model
     );
@@ -198,7 +200,7 @@ export function ModelManager({
           topP,
           repeatPenalty
         })
-      }, apiBase),
+      }, apiBase, apiToken),
       `${model} created`,
       model
     );
@@ -255,9 +257,9 @@ export function ModelManager({
       const digest = await sha256Digest(importFile);
 
       setStatus("Checking blob cache");
-      if (!(await standaloneBlobExists(digest, apiBase))) {
+      if (!(await standaloneBlobExists(digest, apiBase, apiToken))) {
         setStatus("Uploading GGUF");
-        await uploadStandaloneBlob(digest, importFile, apiBase);
+        await uploadStandaloneBlob(digest, importFile, apiBase, apiToken);
       }
 
       setStatus("Creating model");
@@ -266,7 +268,7 @@ export function ModelManager({
         files: {
           [importFile.name]: digest
         }
-      }, apiBase)) {
+      }, apiBase, apiToken)) {
         if (event.error) throw new Error(event.error);
         applyEvent(event);
       }
@@ -315,7 +317,7 @@ export function ModelManager({
     });
 
     try {
-      await deleteStandaloneModel(model, apiBase);
+      await deleteStandaloneModel(model, apiBase, apiToken);
       setSuccess(`${model} deleted`);
       showToast({
         id: "model-operation",

@@ -13,7 +13,12 @@ const SUGGESTED_MODELS: OllamaModel[] = [
   { name: "gpt-oss:20b", displayName: "gpt-oss:20b", local: false }
 ];
 
-export function useModels(enabled: boolean, mode: AppMode, coreApiBase?: string) {
+export function useModels(
+  enabled: boolean,
+  mode: AppMode,
+  coreApiBase?: string,
+  coreApiToken?: string
+) {
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<string | null>(null);
@@ -27,7 +32,7 @@ export function useModels(enabled: boolean, mode: AppMode, coreApiBase?: string)
       try {
         const nextModels =
           mode === "standalone"
-            ? await listStandaloneModels(coreApiBase, signal)
+            ? await listStandaloneModels(coreApiBase, coreApiToken, signal)
             : await listModels(signal);
         setModels(nextModels);
         return true;
@@ -40,7 +45,7 @@ export function useModels(enabled: boolean, mode: AppMode, coreApiBase?: string)
         setLoading(false);
       }
     },
-    [coreApiBase, enabled, mode]
+    [coreApiBase, coreApiToken, enabled, mode]
   );
 
   useEffect(() => {

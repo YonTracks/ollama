@@ -36,6 +36,7 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/ollama/ollama/envconfig"
 	_ "github.com/ollama/ollama/ml/backend/ggml/ggml/src/ggml-cpu"
 )
 
@@ -71,7 +72,7 @@ var OnceLoad = sync.OnceFunc(func() {
 	// Avoid potentially loading incompatible GGML libraries
 	paths, ok := os.LookupEnv("OLLAMA_LIBRARY_PATH")
 	if !ok {
-		slog.Debug("OLLAMA_LIBRARY_PATH not set, falling back to default", "search", value)
+		slog.Debug("OLLAMA_LIBRARY_PATH not set, falling back to default", "search", envconfig.RedactedValue("search", value))
 		paths = value
 	}
 
@@ -85,13 +86,13 @@ var OnceLoad = sync.OnceFunc(func() {
 		}
 
 		if abspath != filepath.Dir(exe) && !strings.Contains(abspath, filepath.FromSlash("lib/ollama")) {
-			slog.Debug("skipping path which is not part of ollama", "path", abspath)
+			slog.Debug("skipping path which is not part of ollama", "path", envconfig.RedactedValue("path", abspath))
 			continue
 		}
 
 		if _, ok := visited[abspath]; !ok {
 			func() {
-				slog.Debug("ggml backend load all from path", "path", abspath)
+				slog.Debug("ggml backend load all from path", "path", envconfig.RedactedValue("path", abspath))
 				cpath := C.CString(abspath)
 				defer C.free(unsafe.Pointer(cpath))
 				C.ggml_backend_load_all_from_path(cpath)

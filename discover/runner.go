@@ -95,12 +95,12 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 			var dirs []string
 			if dir != "" {
 				if requested != "" && !strings.HasPrefix(requested, "mlx_") && filepath.Base(dir) != requested {
-					slog.Debug("skipping available library at user's request", "requested", requested, "libDir", dir)
+					slog.Debug("skipping available library at user's request", "requested", requested, "libDir", envconfig.RedactedValue("libDir", dir))
 					continue
 				} else if jetpack != "" && filepath.Base(dir) != "cuda_"+jetpack {
 					continue
 				} else if jetpack == "" && strings.Contains(filepath.Base(dir), "cuda_jetpack") {
-					slog.Debug("jetpack not detected (set JETSON_JETPACK or OLLAMA_LLM_LIBRARY to override), skipping", "libDir", dir)
+					slog.Debug("jetpack not detected (set JETSON_JETPACK or OLLAMA_LLM_LIBRARY to override), skipping", "libDir", envconfig.RedactedValue("libDir", dir))
 					continue
 				} else if !envconfig.EnableVulkan() && strings.Contains(filepath.Base(dir), "vulkan") {
 					slog.Info("experimental Vulkan support disabled.  To enable, set OLLAMA_VULKAN=1")
@@ -142,7 +142,7 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 				supportedMu.Unlock()
 				continue
 			}
-			slog.Debug("verifying if device is supported", "library", libDir, "description", devices[i].Description, "compute", devices[i].Compute(), "id", devices[i].ID, "pci_id", devices[i].PCIID)
+			slog.Debug("verifying if device is supported", "library", envconfig.RedactedValue("library", libDir), "description", devices[i].Description, "compute", devices[i].Compute(), "id", envconfig.RedactedValue("id", devices[i].ID), "pci_id", envconfig.RedactedValue("pci_id", devices[i].PCIID))
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
@@ -150,9 +150,9 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 				devices[i].AddInitValidation(extraEnvs)
 				if len(bootstrapDevicesWithMetalRetry(ctx2ndPass, ctx, 30*time.Second, devices[i].LibraryPath, extraEnvs)) == 0 {
 					slog.Debug("filtering device which didn't fully initialize",
-						"id", devices[i].ID,
-						"libdir", devices[i].LibraryPath[len(devices[i].LibraryPath)-1],
-						"pci_id", devices[i].PCIID,
+						"id", envconfig.RedactedValue("id", devices[i].ID),
+						"libdir", envconfig.RedactedValue("libdir", devices[i].LibraryPath[len(devices[i].LibraryPath)-1]),
+						"pci_id", envconfig.RedactedValue("pci_id", devices[i].PCIID),
 						"library", devices[i].Library,
 					)
 					needsDelete[i] = true
@@ -179,7 +179,7 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 		postFilteredID := map[string]int{}
 		for i := 0; i < len(needsDelete); i++ {
 			if needsDelete[i] {
-				logutil.Trace("removing unsupported or overlapping GPU combination", "libDir", devices[i].LibraryPath[len(devices[i].LibraryPath)-1], "description", devices[i].Description, "compute", devices[i].Compute(), "pci_id", devices[i].PCIID)
+				logutil.Trace("removing unsupported or overlapping GPU combination", "libDir", envconfig.RedactedValue("libDir", devices[i].LibraryPath[len(devices[i].LibraryPath)-1]), "description", devices[i].Description, "compute", devices[i].Compute(), "pci_id", envconfig.RedactedValue("pci_id", devices[i].PCIID))
 				devices = append(devices[:i], devices[i+1:]...)
 				needsDelete = append(needsDelete[:i], needsDelete[i+1:]...)
 				i--
@@ -189,7 +189,7 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 				}
 				if _, err := strconv.Atoi(devices[i].ID); err == nil {
 					// Replace the numeric ID with the post-filtered IDs
-					slog.Debug("adjusting filtering IDs", "FilterID", devices[i].ID, "new_ID", strconv.Itoa(postFilteredID[devices[i].Library]))
+					slog.Debug("adjusting filtering IDs", "FilterID", envconfig.RedactedValue("FilterID", devices[i].ID), "new_ID", strconv.Itoa(postFilteredID[devices[i].Library]))
 					devices[i].FilterID = devices[i].ID
 					devices[i].ID = strconv.Itoa(postFilteredID[devices[i].Library])
 				}
@@ -224,14 +224,14 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 						typeStr = "iGPU"
 					}
 					slog.Debug("dropping duplicate device",
-						"id", droppedDevice.ID,
+						"id", envconfig.RedactedValue("id", droppedDevice.ID),
 						"library", droppedDevice.Library,
 						"compute", droppedDevice.Compute(),
 						"name", droppedDevice.Name,
 						"description", droppedDevice.Description,
 						"libdirs", strings.Join(droppedDevice.LibraryPath, ","),
 						"driver", droppedDevice.Driver(),
-						"pci_id", droppedDevice.PCIID,
+						"pci_id", envconfig.RedactedValue("pci_id", droppedDevice.PCIID),
 						"type", typeStr,
 						"total", format.HumanBytes2(droppedDevice.TotalMemory),
 						"available", format.HumanBytes2(droppedDevice.FreeMemory),
@@ -398,7 +398,7 @@ func filterOverlapByLibrary(supported map[string]map[string]map[string]int, need
 			for dev, i := range byLibDirs[libDir] {
 				if _, found := byLibDirs[newest][dev]; found {
 					slog.Debug("filtering device with overlapping libraries",
-						"id", dev,
+						"id", envconfig.RedactedValue("id", dev),
 						"library", libDir,
 						"delete_index", i,
 						"kept_library", newest,
@@ -430,7 +430,12 @@ func bootstrapDevicesWithMetalRetry(firstAttemptCtx, retryParentCtx context.Cont
 	runDiscovery := func(ctx context.Context, extraEnvs map[string]string) ([]ml.DeviceInfo, *llm.StatusWriter, int, error) {
 		start := time.Now()
 		defer func() {
-			slog.Debug("bootstrap discovery took", "duration", time.Since(start), "OLLAMA_LIBRARY_PATH", ollamaLibDirs, "extra_envs", extraEnvs)
+			slog.Debug(
+				"bootstrap discovery took",
+				"duration", time.Since(start),
+				"OLLAMA_LIBRARY_PATH", envconfig.RedactedValue("OLLAMA_LIBRARY_PATH", ollamaLibDirs),
+				"extra_envs", envconfig.RedactedEnvMap(extraEnvs),
+			)
 		}()
 		return bootstrapDevicesWithStatus(ctx, ollamaLibDirs, extraEnvs)
 	}
@@ -457,9 +462,21 @@ func bootstrapDevicesWithMetalRetry(firstAttemptCtx, retryParentCtx context.Cont
 	if err != nil {
 		if exitCode >= 0 {
 			// Expected during bootstrapping while we filter out unsupported GPUs.
-			logutil.Trace("runner exited", "OLLAMA_LIBRARY_PATH", ollamaLibDirs, "extra_envs", extraEnvs, "code", exitCode, "detail", status.LastError())
+			logutil.Trace(
+				"runner exited",
+				"OLLAMA_LIBRARY_PATH", envconfig.RedactedValue("OLLAMA_LIBRARY_PATH", ollamaLibDirs),
+				"extra_envs", envconfig.RedactedEnvMap(extraEnvs),
+				"code", exitCode,
+				"detail", status.LastError(),
+			)
 		} else {
-			slog.Info("failure during GPU discovery", "OLLAMA_LIBRARY_PATH", ollamaLibDirs, "extra_envs", extraEnvs, "error", err, "detail", status.LastError())
+			slog.Info(
+				"failure during GPU discovery",
+				"OLLAMA_LIBRARY_PATH", envconfig.RedactedValue("OLLAMA_LIBRARY_PATH", ollamaLibDirs),
+				"extra_envs", envconfig.RedactedEnvMap(extraEnvs),
+				"error", err,
+				"detail", status.LastError(),
+			)
 		}
 	}
 

@@ -110,6 +110,27 @@ function coreUrl(path: string, apiBase?: string) {
   return `${getCoreApiBase(apiBase)}/api/${endpoint}`;
 }
 
+function requestHeaders(headers?: HeadersInit, apiToken?: string) {
+  const next = new Headers(headers);
+  const token = apiToken?.trim();
+  if (token) next.set("Authorization", `Bearer ${token}`);
+  return next;
+}
+
+function tokenAndSignal(tokenOrSignal?: string | AbortSignal, signal?: AbortSignal) {
+  if (typeof tokenOrSignal === "string") {
+    return {
+      apiToken: tokenOrSignal,
+      signal
+    };
+  }
+
+  return {
+    apiToken: undefined,
+    signal: tokenOrSignal ?? signal
+  };
+}
+
 async function readError(response: Response) {
   const text = await response.text();
   if (!text) return response.statusText || "Request failed";
@@ -140,17 +161,18 @@ function toStandaloneError(error: unknown) {
 async function fetchCoreJson<T>(
   path: string,
   apiBase?: string,
-  init?: RequestInit
+  init?: RequestInit,
+  apiToken?: string
 ): Promise<T> {
   try {
+    const headers = requestHeaders(init?.headers, apiToken);
+    headers.set("Accept", "application/json");
+    if (init?.body) headers.set("Content-Type", "application/json");
+
     const response = await fetch(coreUrl(path, apiBase), {
       ...init,
       cache: "no-store",
-      headers: {
-        Accept: "application/json",
-        ...(init?.body ? { "Content-Type": "application/json" } : {}),
-        ...init?.headers
-      }
+      headers
     });
 
     if (!response.ok) {
@@ -176,16 +198,36 @@ function isVisibleModel(model: OllamaModel) {
   return !families.every((family) => family.toLowerCase().includes("bert"));
 }
 
-export async function getStandaloneVersion(apiBase?: string, signal?: AbortSignal) {
-  return fetchCoreJson<OllamaVersion>("/api/version", apiBase, { signal });
+export async function getStandaloneVersion(
+  apiBase?: string,
+  apiTokenOrSignal?: string | AbortSignal,
+  signal?: AbortSignal
+) {
+  const request = tokenAndSignal(apiTokenOrSignal, signal);
+  return fetchCoreJson<OllamaVersion>(
+    "/api/version",
+    apiBase,
+    { signal: request.signal },
+    request.apiToken
+  );
 }
 
 function isChatUnsupportedError(message: string) {
   return /does not support chat/i.test(message);
 }
 
-export async function listStandaloneModels(apiBase?: string, signal?: AbortSignal) {
-  const data = await fetchCoreJson<OllamaTagsResponse>("/api/tags", apiBase, { signal });
+export async function listStandaloneModels(
+  apiBase?: string,
+  apiTokenOrSignal?: string | AbortSignal,
+  signal?: AbortSignal
+) {
+  const request = tokenAndSignal(apiTokenOrSignal, signal);
+  const data = await fetchCoreJson<OllamaTagsResponse>(
+    "/api/tags",
+    apiBase,
+    { signal: request.signal },
+    request.apiToken
+  );
   return (data.models ?? [])
     .map<OllamaModel>((model) => {
       const name = normalizeModelName(model.name || model.model || "");
@@ -264,16 +306,18 @@ async function postCore(
   path: string,
   apiBase: string | undefined,
   body: unknown,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  apiToken?: string
 ) {
   try {
+    const headers = requestHeaders(undefined, apiToken);
+    headers.set("Accept", "application/x-ndjson, application/json");
+    headers.set("Content-Type", "application/json");
+
     return await fetch(coreUrl(path, apiBase), {
       method: "POST",
       cache: "no-store",
-      headers: {
-        Accept: "application/x-ndjson, application/json",
-        "Content-Type": "application/json"
-      },
+      headers,
       body: JSON.stringify(body),
       signal
     });
@@ -287,7 +331,8 @@ async function statsFromFinalChunk(
   model: string,
   chunk: OllamaUsageMetrics,
   fallbackNumCtx: number | null | undefined,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  apiToken?: string
 ) {
   const metrics = usageMetricsFromChunk(chunk);
   if (!hasUsageMetrics(metrics)) return undefined;
@@ -296,6 +341,7 @@ async function statsFromFinalChunk(
     baseUrl: getCoreApiBase(apiBase),
     model,
     fallbackNumCtx,
+    apiToken,
     signal
   });
 
@@ -331,9 +377,10 @@ async function* streamCoreOperation(
   path: string,
   apiBase: string | undefined,
   body: unknown,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  apiToken?: string
 ): AsyncGenerator<ModelOperationEvent> {
-  const response = await postCore(path, apiBase, body, signal);
+  const response = await postCore(path, apiBase, body, signal, apiToken);
 
   if (!response.ok) {
     throw new OllamaClientError(await readError(response), {
@@ -354,16 +401,26 @@ async function* streamCoreOperation(
 export function pullStandaloneModel(
   model: string,
   apiBase?: string,
+  apiTokenOrSignal?: string | AbortSignal,
   signal?: AbortSignal
 ) {
-  return streamCoreOperation("/api/pull", apiBase, { model, stream: true }, signal);
+  const request = tokenAndSignal(apiTokenOrSignal, signal);
+  return streamCoreOperation(
+    "/api/pull",
+    apiBase,
+    { model, stream: true },
+    request.signal,
+    request.apiToken
+  );
 }
 
 export function createStandaloneModel(
   request: CreateStandaloneModelRequest,
   apiBase?: string,
+  apiTokenOrSignal?: string | AbortSignal,
   signal?: AbortSignal
 ) {
+  const apiRequest = tokenAndSignal(apiTokenOrSignal, signal);
   return streamCoreOperation(
     "/api/create",
     apiBase,
@@ -371,27 +428,31 @@ export function createStandaloneModel(
       ...request,
       stream: request.stream ?? true
     },
-    signal
+    apiRequest.signal,
+    apiRequest.apiToken
   );
 }
 
 export async function deleteStandaloneModel(
   model: string,
   apiBase?: string,
+  apiTokenOrSignal?: string | AbortSignal,
   signal?: AbortSignal
 ) {
+  const request = tokenAndSignal(apiTokenOrSignal, signal);
   let response: Response;
 
   try {
+    const headers = requestHeaders(undefined, request.apiToken);
+    headers.set("Accept", "application/json");
+    headers.set("Content-Type", "application/json");
+
     response = await fetch(coreUrl("/api/delete", apiBase), {
       method: "DELETE",
       cache: "no-store",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json"
-      },
+      headers,
       body: JSON.stringify({ model }),
-      signal
+      signal: request.signal
     });
   } catch (error) {
     throw toStandaloneError(error);
@@ -408,13 +469,16 @@ export async function deleteStandaloneModel(
 export async function standaloneBlobExists(
   digest: string,
   apiBase?: string,
+  apiTokenOrSignal?: string | AbortSignal,
   signal?: AbortSignal
 ) {
+  const request = tokenAndSignal(apiTokenOrSignal, signal);
   try {
     const response = await fetch(coreUrl(`/api/blobs/${digest}`, apiBase), {
       method: "HEAD",
       cache: "no-store",
-      signal
+      headers: requestHeaders(undefined, request.apiToken),
+      signal: request.signal
     });
     return response.ok;
   } catch (error) {
@@ -426,17 +490,20 @@ export async function uploadStandaloneBlob(
   digest: string,
   file: Blob,
   apiBase?: string,
+  apiTokenOrSignal?: string | AbortSignal,
   signal?: AbortSignal
 ) {
+  const request = tokenAndSignal(apiTokenOrSignal, signal);
   try {
+    const headers = requestHeaders(undefined, request.apiToken);
+    headers.set("Content-Type", "application/octet-stream");
+
     const response = await fetch(coreUrl(`/api/blobs/${digest}`, apiBase), {
       method: "POST",
       cache: "no-store",
-      headers: {
-        "Content-Type": "application/octet-stream"
-      },
+      headers,
       body: file,
-      signal
+      signal: request.signal
     });
 
     if (!response.ok) {
@@ -458,7 +525,8 @@ async function* sendStandaloneGenerate(
   imageOptions: ImageGenerationOptions = {},
   fallbackNumCtx?: number | null,
   contextSettingsInput?: Partial<OllamaContextSettings>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  apiToken?: string
 ): AsyncGenerator<ChatStreamEvent> {
   const contextSettings = normalizeContextSettings({
     ...contextSettingsInput,
@@ -481,7 +549,7 @@ async function* sendStandaloneGenerate(
     think
   }, contextSettings);
 
-  const response = await postCore("/api/generate", apiBase, request, signal);
+  const response = await postCore("/api/generate", apiBase, request, signal, apiToken);
 
   if (!response.ok) {
     throw new OllamaClientError(await readError(response), {
@@ -541,7 +609,14 @@ async function* sendStandaloneGenerate(
         if (thinkingStart && !thinkingEnd) thinkingEnd = new Date().toISOString();
         yield doneEvent(
           thinkingEnd,
-          await statsFromFinalChunk(apiBase, model, chunk, contextSettings.numCtx, signal),
+          await statsFromFinalChunk(
+            apiBase,
+            model,
+            chunk,
+            contextSettings.numCtx,
+            signal,
+            apiToken
+          ),
           {
             mode: contextSettings.mode,
             action: "none",
@@ -564,7 +639,8 @@ export async function* sendStandaloneChat(
   imageOptions: ImageGenerationOptions = {},
   fallbackNumCtx?: number | null,
   contextSettingsInput?: Partial<OllamaContextSettings>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  apiToken?: string
 ): AsyncGenerator<ChatStreamEvent> {
   const contextSettings = normalizeContextSettings({
     ...contextSettingsInput,
@@ -580,7 +656,8 @@ export async function* sendStandaloneChat(
       imageOptions,
       contextSettings.numCtx,
       contextSettings,
-      signal
+      signal,
+      apiToken
     );
     return;
   }
@@ -597,7 +674,7 @@ export async function* sendStandaloneChat(
     think
   }, contextSettings);
 
-  const response = await postCore("/api/chat", apiBase, request, signal);
+  const response = await postCore("/api/chat", apiBase, request, signal, apiToken);
 
   if (!response.ok) {
     const errorMessage = await readError(response);
@@ -610,7 +687,8 @@ export async function* sendStandaloneChat(
         imageOptions,
         contextSettings.numCtx,
         contextSettings,
-        signal
+        signal,
+        apiToken
       );
       return;
     }
@@ -665,7 +743,14 @@ export async function* sendStandaloneChat(
         if (thinkingStart && !thinkingEnd) thinkingEnd = new Date().toISOString();
         yield doneEvent(
           thinkingEnd,
-          await statsFromFinalChunk(apiBase, model, chunk, contextSettings.numCtx, signal),
+          await statsFromFinalChunk(
+            apiBase,
+            model,
+            chunk,
+            contextSettings.numCtx,
+            signal,
+            apiToken
+          ),
           prepared.contextNotice,
           contextSettings
         );

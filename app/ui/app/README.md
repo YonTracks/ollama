@@ -55,6 +55,9 @@ Then run:
 Standalone mode uses `/api/version`, `/api/tags`, and `/api/chat`, stores chats
 in IndexedDB, stores standalone settings in local storage, and avoids `/api/v1/*`.
 Desktop-app-only settings are hidden in this mode.
+If the core server has `OLLAMA_API_TOKEN` set, enter that same value in
+Settings -> Connection -> Core API token for standalone browser/PWA use. The
+token is stored with standalone local settings in this browser profile.
 
 Do not use `go generate ./...` while a Next dev server is running. The generate
 step runs the static export, and on Windows the active dev server can keep

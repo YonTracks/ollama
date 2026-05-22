@@ -196,15 +196,17 @@ func configureMLXSubprocessEnv(cmd *exec.Cmd, libraryPaths []string) {
 	if existingPath, ok := os.LookupEnv(pathEnv); ok {
 		pathEnvPaths = append(pathEnvPaths, filepath.SplitList(existingPath)...)
 	}
-	setSubprocessEnv(cmd, pathEnv, strings.Join(pathEnvPaths, string(filepath.ListSeparator)))
-	slog.Debug("mlx subprocess library path", pathEnv, strings.Join(pathEnvPaths, string(filepath.ListSeparator)))
+	pathEnvValue := strings.Join(pathEnvPaths, string(filepath.ListSeparator))
+	setSubprocessEnv(cmd, pathEnv, pathEnvValue)
+	slog.Debug("mlx subprocess library path", pathEnv, envconfig.RedactedValue(pathEnv, pathEnvValue))
 
 	ollamaLibraryPaths := append([]string{}, libraryPaths...)
 	if existingPath, ok := os.LookupEnv("OLLAMA_LIBRARY_PATH"); ok {
 		ollamaLibraryPaths = append(ollamaLibraryPaths, filepath.SplitList(existingPath)...)
 	}
-	setSubprocessEnv(cmd, "OLLAMA_LIBRARY_PATH", strings.Join(ollamaLibraryPaths, string(filepath.ListSeparator)))
-	slog.Debug("mlx subprocess library path", "OLLAMA_LIBRARY_PATH", strings.Join(ollamaLibraryPaths, string(filepath.ListSeparator)))
+	ollamaLibraryPathValue := strings.Join(ollamaLibraryPaths, string(filepath.ListSeparator))
+	setSubprocessEnv(cmd, "OLLAMA_LIBRARY_PATH", ollamaLibraryPathValue)
+	slog.Debug("mlx subprocess library path", "OLLAMA_LIBRARY_PATH", envconfig.RedactedValue("OLLAMA_LIBRARY_PATH", ollamaLibraryPathValue))
 }
 
 func setSubprocessEnv(cmd *exec.Cmd, key, value string) {

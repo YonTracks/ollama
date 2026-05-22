@@ -8,6 +8,7 @@ export type WebSearchMode = "off" | "manual" | "auto";
 export interface LocalSettings {
   selectedModel: string;
   coreApiBase: string;
+  coreApiToken: string;
   sidebarOpen: boolean;
   expose: boolean;
   browser: boolean;

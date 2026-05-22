@@ -10,7 +10,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -417,23 +419,55 @@ func AsMap() map[string]EnvVar {
 func Values() map[string]string {
 	vals := make(map[string]string)
 	for k, v := range AsMap() {
-		vals[k] = redactedValue(v.Name, v.Value)
+		vals[k] = RedactedValue(v.Name, v.Value)
 	}
 	return vals
 }
 
-func redactedValue(name string, value any) string {
+func RedactedValue(name string, value any) string {
 	s := fmt.Sprintf("%v", value)
-	switch strings.ToUpper(name) {
-	case "OLLAMA_API_TOKEN":
+	upperName := strings.ToUpper(name)
+	if isSensitiveEnvName(upperName) {
 		if s == "" {
 			return ""
 		}
 		return "<redacted>"
-	case "HTTP_PROXY", "HTTPS_PROXY":
-		return redactProxyValue(s)
 	}
-	return s
+
+	switch upperName {
+	case "HTTP_PROXY", "HTTPS_PROXY":
+		return redactRevealingInfo(redactProxyValue(s))
+	}
+	return redactRevealingInfo(s)
+}
+
+func RedactedEnvMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+
+	redacted := make(map[string]string, len(values))
+	for k, v := range values {
+		redacted[k] = RedactedValue(k, v)
+	}
+	return redacted
+}
+
+func isSensitiveEnvName(name string) bool {
+	for _, marker := range []string{
+		"API_KEY",
+		"ACCESS_KEY",
+		"PRIVATE_KEY",
+		"PASSWORD",
+		"PASSWD",
+		"SECRET",
+		"TOKEN",
+	} {
+		if strings.Contains(name, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func redactProxyValue(value string) string {
@@ -447,6 +481,76 @@ func redactProxyValue(value string) string {
 		u.User = url.User("redacted")
 	}
 	return u.String()
+}
+
+func redactLocalUserInfo(value string) string {
+	for _, path := range localUserPathCandidates() {
+		value = replaceAllFold(value, path, "<home>")
+	}
+	return value
+}
+
+func redactRevealingInfo(value string) string {
+	value = redactLocalUserInfo(value)
+	value = replacePattern(value, `(?i)\bGPU-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b`, "GPU-<redacted>")
+	return replacePattern(value, `(?i)\b[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]\b`, "<pci>")
+}
+
+func localUserPathCandidates() []string {
+	seen := map[string]struct{}{}
+	var paths []string
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if len(value) < 4 {
+			return
+		}
+
+		variants := []string{value, filepath.Clean(value), filepath.ToSlash(value)}
+		if runtime.GOOS == "windows" {
+			variants = append(variants, strings.ReplaceAll(value, "/", `\`))
+		}
+
+		for _, variant := range variants {
+			if len(variant) < 4 {
+				continue
+			}
+			if _, ok := seen[variant]; ok {
+				continue
+			}
+			seen[variant] = struct{}{}
+			paths = append(paths, variant)
+		}
+	}
+
+	if home, err := os.UserHomeDir(); err == nil {
+		add(home)
+	}
+	add(os.Getenv("USERPROFILE"))
+	if drive, path := os.Getenv("HOMEDRIVE"), os.Getenv("HOMEPATH"); drive != "" && path != "" {
+		add(drive + path)
+	}
+	add(os.Getenv("HOME"))
+
+	sort.Slice(paths, func(i, j int) bool {
+		return len(paths[i]) > len(paths[j])
+	})
+	return paths
+}
+
+func replaceAllFold(value, old, replacement string) string {
+	re, err := regexp.Compile("(?i)" + regexp.QuoteMeta(old))
+	if err != nil {
+		return strings.ReplaceAll(value, old, replacement)
+	}
+	return re.ReplaceAllString(value, replacement)
+}
+
+func replacePattern(value, pattern, replacement string) string {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return value
+	}
+	return re.ReplaceAllString(value, replacement)
 }
 
 // Var returns an environment variable stripped of leading and trailing quotes or spaces

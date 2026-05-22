@@ -152,6 +152,7 @@ export function SettingsDrawer({
   const modelManagerApiBase = standalone
     ? settings.coreApiBase || undefined
     : getApiBase() || SAME_ORIGIN_CORE_API_BASE;
+  const modelManagerApiToken = standalone ? settings.coreApiToken : undefined;
   const selectedMemoryChatIds = useMemo(
     () => settings.retrievalChatIds ?? [],
     [settings.retrievalChatIds]
@@ -558,6 +559,7 @@ export function SettingsDrawer({
       await handleUpdate({
         selectedModel: "",
         coreApiBase: "",
+        coreApiToken: "",
         webSearchMode: "off",
         webSearchEnabled: false,
         webSearchProvider: "off",
@@ -785,6 +787,22 @@ export function SettingsDrawer({
                         className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm focus:focus-ring"
                       />
                     </div>
+                    <div className="rounded-md border border-border bg-panel-strong px-3 py-3">
+                      <label htmlFor="core-api-token" className="mb-2 block text-sm font-medium">
+                        Core API token
+                      </label>
+                      <input
+                        id="core-api-token"
+                        type="password"
+                        value={settings.coreApiToken}
+                        placeholder="Bearer token"
+                        autoComplete="off"
+                        spellCheck={false}
+                        onChange={(event) => onUpdateSettings({ coreApiToken: event.target.value })}
+                        onBlur={() => onRefreshConnection()}
+                        className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm focus:focus-ring"
+                      />
+                    </div>
                     <Notice tone="warning">
                       Standalone mode uses the core Ollama API and stores chats in this browser.
                     </Notice>
@@ -964,6 +982,7 @@ export function SettingsDrawer({
 
               <ModelManager
                 apiBase={modelManagerApiBase}
+                apiToken={modelManagerApiToken}
                 models={models}
                 selectedModel={selectedModel}
                 onSelectModel={onSelectModel}
@@ -1767,6 +1786,11 @@ function SecurityStatusPanel({
             Icon={connection.status === "connected" ? CheckCircle2 : AlertCircle}
           />
           <StatusChip label="Desktop API not used" tone="info" Icon={Server} />
+          <StatusChip
+            label={settings.coreApiToken.trim() ? "Core token set" : "Core token not set"}
+            tone={settings.coreApiToken.trim() ? "success" : "info"}
+            Icon={settings.coreApiToken.trim() ? CheckCircle2 : Shield}
+          />
           <StatusChip label="Browser storage" tone="info" Icon={Database} />
           <StatusChip label={searchLabel} tone={settings.webSearchMode === "off" ? "success" : "info"} Icon={Search} />
           <StatusChip label={memoryLabel} tone="info" Icon={BrainCircuit} />

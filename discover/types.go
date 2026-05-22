@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/ml"
 )
@@ -40,15 +41,15 @@ func LogDetails(devices []ml.DeviceInfo) {
 			typeStr = "iGPU"
 		}
 		slog.Info("inference compute",
-			"id", dev.ID,
-			"filter_id", dev.FilterID,
+			"id", envconfig.RedactedValue("id", dev.ID),
+			"filter_id", envconfig.RedactedValue("filter_id", dev.FilterID),
 			"library", dev.Library,
 			"compute", dev.Compute(),
 			"name", dev.Name,
 			"description", dev.Description,
 			"libdirs", strings.Join(libs, ","),
 			"driver", dev.Driver(),
-			"pci_id", dev.PCIID,
+			"pci_id", envconfig.RedactedValue("pci_id", dev.PCIID),
 			"type", typeStr,
 			"total", format.HumanBytes2(dev.TotalMemory),
 			"available", format.HumanBytes2(dev.FreeMemory),

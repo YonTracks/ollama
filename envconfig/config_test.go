@@ -151,6 +151,8 @@ func TestProxySecurityEnv(t *testing.T) {
 
 func TestValuesRedactsSecrets(t *testing.T) {
 	t.Setenv("OLLAMA_API_TOKEN", "super-secret")
+	t.Setenv("OLLAMA_CUSTOM_SECRET", "custom-secret")
+	t.Setenv("HOME", "/Users/alice")
 	t.Setenv("HTTPS_PROXY", "http://user:pass@example.com:8080")
 
 	vals := Values()
@@ -159,6 +161,32 @@ func TestValuesRedactsSecrets(t *testing.T) {
 	}
 	if got := vals["HTTPS_PROXY"]; got != "http://redacted:redacted@example.com:8080" {
 		t.Fatalf("HTTPS_PROXY = %q, want redacted proxy URL", got)
+	}
+	if got := RedactedValue("OLLAMA_CUSTOM_SECRET", "custom-secret"); got != "<redacted>" {
+		t.Fatalf("OLLAMA_CUSTOM_SECRET = %q, want <redacted>", got)
+	}
+	if got := RedactedValue("OLLAMA_MODELS", "/Users/alice/.ollama/models"); got != "<home>/.ollama/models" {
+		t.Fatalf("OLLAMA_MODELS = %q, want home path redacted", got)
+	}
+	if got := RedactedValue("CUDA_VISIBLE_DEVICES", "GPU-ff81c5c3-1705-5338-5a99-ebf6ae2dfea2"); got != "GPU-<redacted>" {
+		t.Fatalf("CUDA_VISIBLE_DEVICES = %q, want GPU ID redacted", got)
+	}
+	if got := RedactedValue("pci_id", "0000:0b:00.0"); got != "<pci>" {
+		t.Fatalf("pci_id = %q, want PCI ID redacted", got)
+	}
+	redactedMap := RedactedEnvMap(map[string]string{
+		"OLLAMA_API_TOKEN":     "super-secret",
+		"OLLAMA_MODELS":        "/Users/alice/.ollama/models",
+		"CUDA_VISIBLE_DEVICES": "GPU-ff81c5c3-1705-5338-5a99-ebf6ae2dfea2",
+	})
+	if got := redactedMap["OLLAMA_API_TOKEN"]; got != "<redacted>" {
+		t.Fatalf("redacted map OLLAMA_API_TOKEN = %q, want <redacted>", got)
+	}
+	if got := redactedMap["OLLAMA_MODELS"]; got != "<home>/.ollama/models" {
+		t.Fatalf("redacted map OLLAMA_MODELS = %q, want home path redacted", got)
+	}
+	if got := redactedMap["CUDA_VISIBLE_DEVICES"]; got != "GPU-<redacted>" {
+		t.Fatalf("redacted map CUDA_VISIBLE_DEVICES = %q, want GPU ID redacted", got)
 	}
 }
 

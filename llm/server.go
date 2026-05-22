@@ -57,7 +57,7 @@ func (e filteredEnv) LogValue() slog.Value {
 					"LD_LIBRARY_PATH",
 					"DYLD_LIBRARY_PATH",
 				}, key):
-				attrs = append(attrs, slog.String(key, value))
+				attrs = append(attrs, slog.String(key, envconfig.RedactedValue(key, value)))
 			}
 		}
 	}
@@ -430,7 +430,7 @@ func StartRunner(ollamaEngine bool, modelPath string, gpuLibs []string, out io.W
 		}
 	}
 
-	slog.Info("starting runner", "cmd", cmd)
+	slog.Info("starting runner", "cmd", envconfig.RedactedValue("cmd", cmd.String()))
 	slog.Debug("subprocess", "", filteredEnv(cmd.Env))
 
 	if err = cmd.Start(); err != nil {

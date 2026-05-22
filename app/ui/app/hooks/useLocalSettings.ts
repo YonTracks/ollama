@@ -16,6 +16,7 @@ const CONTEXT_DEFAULTS_VERSION = 2;
 const DEFAULT_SETTINGS: LocalSettings = {
   selectedModel: "",
   coreApiBase: "",
+  coreApiToken: "",
   sidebarOpen: true,
   expose: false,
   browser: false,
@@ -73,13 +74,15 @@ function readLocalSettings(mode: AppMode) {
     if (!raw) return defaults;
 
     const parsed = JSON.parse(raw) as Partial<LocalSettings>;
-    return normalizeSettingsForMode(
+    const normalized = normalizeSettingsForMode(
       migrateLocalSettings({
         ...defaults,
         ...parsed
       }, parsed),
       mode
     );
+    localStorage.setItem(getSettingsStorageKey(mode), JSON.stringify(normalized));
+    return normalized;
   } catch {
     return getDefaultSettings();
   }
@@ -155,6 +158,7 @@ export function normalizeSettingsForMode(settings: LocalSettings, mode: AppMode)
   const webSearchMode = normalizeWebSearchMode(settings.webSearchMode);
   const normalized = normalizeToolMode({
     ...settings,
+    coreApiToken: typeof settings.coreApiToken === "string" ? settings.coreApiToken : "",
     webSearchMode,
     webSearchEnabled: webSearchMode === "manual" ? Boolean(settings.webSearchEnabled) : false,
     retrievalScope:
@@ -166,7 +170,12 @@ export function normalizeSettingsForMode(settings: LocalSettings, mode: AppMode)
     retrievalExcludedChatIds: uniqueStrings(settings.retrievalExcludedChatIds)
   });
 
-  if (mode !== "standalone") return normalized;
+  if (mode !== "standalone") {
+    return {
+      ...normalized,
+      coreApiToken: ""
+    };
+  }
 
   return {
     ...normalized,

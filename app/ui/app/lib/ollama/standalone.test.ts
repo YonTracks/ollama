@@ -3,6 +3,7 @@ import {
   createStandaloneModel,
   deleteStandaloneModel,
   getCoreApiBase,
+  getStandaloneVersion,
   listStandaloneModels,
   pullStandaloneModel,
   sendStandaloneChat,
@@ -27,6 +28,55 @@ describe("standalone Ollama client", () => {
     expect(getCoreApiBase()).toBe("http://127.0.0.1:11435");
     expect(getCoreApiBase(SAME_ORIGIN_CORE_API_BASE)).toBe("");
     expect(getCoreApiBase("http://192.168.1.20:11434/")).toBe("http://192.168.1.20:11434");
+  });
+
+  it("sends the configured bearer token to standalone core API requests", async () => {
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      void init;
+      if (url.endsWith("/version")) {
+        return Promise.resolve(new Response(JSON.stringify({ version: "0.24.0" }), { status: 200 }));
+      }
+      if (url.endsWith("/tags")) {
+        return Promise.resolve(new Response(JSON.stringify({ models: [] }), { status: 200 }));
+      }
+      if (url.endsWith("/chat")) {
+        return Promise.resolve(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode('{"done":true}\n'));
+                controller.close();
+              }
+            }),
+            { status: 200 }
+          )
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getStandaloneVersion(undefined, "test-token");
+    await listStandaloneModels(undefined, "test-token");
+    for await (const event of sendStandaloneChat(
+      undefined,
+      "llama3.2",
+      [{ id: "msg", role: "user", content: "hi", status: "complete" }],
+      false,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      "test-token"
+    )) {
+      void event;
+    }
+
+    expect(fetchMock.mock.calls.map((call) => authorizationHeader(call[1]))).toEqual([
+      "Bearer test-token",
+      "Bearer test-token",
+      "Bearer test-token"
+    ]);
   });
 
   it("lists models from the core /api/tags endpoint", async () => {
@@ -426,3 +476,7 @@ describe("standalone Ollama client", () => {
     expect(events).toContainEqual(expect.objectContaining({ content: "done" }));
   });
 });
+
+function authorizationHeader(init?: RequestInit) {
+  return new Headers(init?.headers).get("Authorization");
+}

@@ -329,7 +329,7 @@ func (c *Client) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo
 		if !found {
 			cmd.Env = append(cmd.Env, libPathEnvVar+"="+pathEnvVal)
 		}
-		slog.Debug("mlx subprocess library path", libPathEnvVar, pathEnvVal)
+		slog.Debug("mlx subprocess library path", libPathEnvVar, envconfig.RedactedValue(libPathEnvVar, pathEnvVal))
 	}
 
 	// Point MLX's JIT compiler at our bundled CUDA runtime headers.
@@ -341,7 +341,7 @@ func (c *Client) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo
 			if _, err := os.Stat(filepath.Join(d, "include")); err == nil {
 				setEnv(cmd, "CUDA_PATH", d)
 				setEnv(cmd, "CUDA_HOME", d)
-				slog.Debug("mlx subprocess CUDA headers", "CUDA_PATH", d)
+				slog.Debug("mlx subprocess CUDA headers", "CUDA_PATH", envconfig.RedactedValue("CUDA_PATH", d))
 				break
 			}
 		}

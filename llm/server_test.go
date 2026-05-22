@@ -13,6 +13,42 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
+func TestFilteredEnvRedactsSensitiveValues(t *testing.T) {
+	t.Setenv("HOME", "/Users/alice")
+
+	value := filteredEnv([]string{
+		"OLLAMA_API_TOKEN=test-token-123",
+		"OLLAMA_MODELS=/Users/alice/.ollama/models",
+		"OLLAMA_HOST=127.0.0.1:11434",
+		"PATH=/Users/alice/bin:/usr/bin",
+		"CUDA_VISIBLE_DEVICES=GPU-ff81c5c3-1705-5338-5a99-ebf6ae2dfea2",
+		"UNRELATED_TOKEN=should-not-be-logged",
+	}).LogValue()
+
+	var b strings.Builder
+	for _, attr := range value.Group() {
+		fmt.Fprintf(&b, "%s=%s\n", attr.Key, attr.Value.String())
+	}
+	got := b.String()
+
+	for _, leaked := range []string{"test-token-123", "/Users/alice", "GPU-ff81c5c3-1705-5338-5a99-ebf6ae2dfea2", "should-not-be-logged"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("filtered env leaked %q in %q", leaked, got)
+		}
+	}
+	for _, want := range []string{
+		"OLLAMA_API_TOKEN=<redacted>",
+		"OLLAMA_MODELS=<home>/.ollama/models",
+		"PATH=<home>/bin:/usr/bin",
+		"CUDA_VISIBLE_DEVICES=GPU-<redacted>",
+		"OLLAMA_HOST=127.0.0.1:11434",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("filtered env = %q, want to contain %q", got, want)
+		}
+	}
+}
+
 func TestLLMServerFitGPU(t *testing.T) {
 	minMemory := 457 * format.MebiByte
 

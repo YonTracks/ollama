@@ -39,6 +39,28 @@ describe("local settings mode boundaries", () => {
     });
   });
 
+  it("keeps the core API token standalone-only", () => {
+    expect(
+      normalizeSettingsForMode(
+        {
+          ...baseSettings(),
+          coreApiToken: "test-token"
+        },
+        "standalone"
+      ).coreApiToken
+    ).toBe("test-token");
+
+    expect(
+      normalizeSettingsForMode(
+        {
+          ...baseSettings(),
+          coreApiToken: "test-token"
+        },
+        "desktop"
+      ).coreApiToken
+    ).toBe("");
+  });
+
   it("keeps desktop memory scope local to the desktop settings store", () => {
     const settings = normalizeSettingsForMode(
       {
@@ -60,6 +82,7 @@ function baseSettings(): LocalSettings {
   return {
     selectedModel: "",
     coreApiBase: "",
+    coreApiToken: "",
     sidebarOpen: true,
     expose: false,
     browser: false,

@@ -91,11 +91,17 @@ export async function getOllamaContextLimit(params: {
   baseUrl: string;
   model: string;
   fallbackNumCtx?: number | null;
+  apiToken?: string;
   signal?: AbortSignal;
 }): Promise<number | null> {
   try {
+    const headers = new Headers();
+    const token = params.apiToken?.trim();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+
     const res = await fetch(joinApiUrl(params.baseUrl, "/api/ps"), {
       cache: "no-store",
+      headers,
       signal: params.signal
     });
 

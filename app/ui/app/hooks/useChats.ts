@@ -47,6 +47,7 @@ interface UseChatOptions {
   chatId: string | null;
   mode: AppMode;
   coreApiBase?: string;
+  coreApiToken?: string;
   selectedModel: string;
   settings: LocalSettings;
   enabled: boolean;
@@ -522,6 +523,7 @@ export function useChatSession({
   chatId,
   mode,
   coreApiBase,
+  coreApiToken,
   selectedModel,
   settings,
   enabled,
@@ -670,7 +672,8 @@ export function useChatSession({
             toImageGenerationOptions(settings),
             contextSettings.numCtx,
             contextSettings,
-            controller.signal
+            controller.signal,
+            coreApiToken
           )) {
             if (event.eventName === "error") {
               const contextError = contextErrorMessage(event.error, settings);
@@ -888,6 +891,7 @@ export function useChatSession({
     [
       chatId,
       coreApiBase,
+      coreApiToken,
       messages,
       mode,
       onChatCreated,

@@ -32,6 +32,7 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
   const connection = useOllamaConnection(
     appMode.mode,
     settings.coreApiBase,
+    settings.coreApiToken,
     appMode.ready
   );
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
@@ -40,7 +41,12 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
 
   const connected = appMode.ready && connection.status === "connected";
   const localDataEnabled = appMode.ready && (appMode.standalone || connected);
-  const modelState = useModels(connected, appMode.mode, settings.coreApiBase);
+  const modelState = useModels(
+    connected,
+    appMode.mode,
+    settings.coreApiBase,
+    settings.coreApiToken
+  );
   const chatList = useChatList(localDataEnabled, appMode.mode);
 
   const selectedModel = useMemo(() => {
@@ -90,6 +96,7 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
     chatId: activeChatId,
     mode: appMode.mode,
     coreApiBase: settings.coreApiBase,
+    coreApiToken: settings.coreApiToken,
     selectedModel,
     settings,
     enabled: localDataEnabled,
