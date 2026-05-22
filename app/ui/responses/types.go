@@ -110,6 +110,10 @@ type SettingsResponse struct {
 	Settings store.Settings `json:"settings"`
 }
 
+type AppDataResetResponse struct {
+	BackupPaths []string `json:"backupPaths"`
+}
+
 type SecurityWarning struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -128,9 +132,10 @@ type SecurityStatusResponse struct {
 	CloudDisabled             bool              `json:"cloudDisabled"`
 	CloudSource               string            `json:"cloudSource" ts_type:"\"env\" | \"config\" | \"both\" | \"none\""`
 	AppDataEncrypted          bool              `json:"appDataEncrypted"`
-	AppDataEncryptionState    string            `json:"appDataEncryptionState" ts_type:"\"plain\" | \"enabled\" | \"encrypted\" | \"key_missing\" | \"key_invalid\" | \"unknown\""`
+	AppDataEncryptionState    string            `json:"appDataEncryptionState" ts_type:"\"plain\" | \"enabled\" | \"encrypted\" | \"legacy_encrypted\" | \"key_missing\" | \"key_invalid\" | \"unknown\""`
 	AppDataEncryptionKeySet   bool              `json:"appDataEncryptionKeySet"`
 	AppDataEncryptionDisabled bool              `json:"appDataEncryptionDisabled"`
+	AppDataEncryptionLegacy   bool              `json:"appDataEncryptionLegacy"`
 	AppDataEncryptionError    string            `json:"appDataEncryptionError,omitempty"`
 	NetworkExposureAllowed    bool              `json:"networkExposureAllowed"`
 	ModelMutationProxyEnabled bool              `json:"modelMutationProxyEnabled"`

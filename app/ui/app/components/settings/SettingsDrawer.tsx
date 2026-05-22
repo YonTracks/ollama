@@ -36,6 +36,7 @@ import {
   getCloudStatus,
   getInferenceCompute,
   getSecurityStatus,
+  resetAppData,
   updateCloudSetting
 } from "@/lib/ollama/client";
 import {
@@ -156,6 +157,11 @@ export function SettingsDrawer({
   const [confirmDeleteChats, setConfirmDeleteChats] = useState(false);
   const [deletingChats, setDeletingChats] = useState(false);
   const [deleteChatsError, setDeleteChatsError] = useState<string | null>(null);
+  const [confirmResetAppData, setConfirmResetAppData] = useState(false);
+  const [resettingAppData, setResettingAppData] = useState(false);
+  const [resetAppDataError, setResetAppDataError] = useState<string | null>(null);
+  const [resetAppDataBackup, setResetAppDataBackup] = useState<string | null>(null);
+  const [advancedRecoveryOpen, setAdvancedRecoveryOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<SettingsTabId>("general");
   const [memoryChatSearch, setMemoryChatSearch] = useState("");
   const [excludedMemorySearch, setExcludedMemorySearch] = useState("");
@@ -183,6 +189,8 @@ export function SettingsDrawer({
   const cloudOverriddenByEnv = cloudStatus?.source === "env" || cloudStatus?.source === "both";
   const cloudEnabled = !(cloudStatus?.disabled ?? false);
   const cloudToggleDisabled = cloudLoading || cloudOverriddenByEnv || connection.status !== "connected";
+  const appDataLocked = isAppDataLocked(securityStatus, settingsError, securityStatusError);
+  const recoveryOpen = appDataLocked || advancedRecoveryOpen;
 
   const effectiveContextLength = settings.contextLength || defaultContextLength || CONTEXT_LENGTH_OPTIONS[0];
   const effectiveApiBase = standalone
@@ -269,6 +277,9 @@ export function SettingsDrawer({
     if (!open) {
       setConfirmDeleteChats(false);
       setDeleteChatsError(null);
+      setConfirmResetAppData(false);
+      setResetAppDataError(null);
+      setAdvancedRecoveryOpen(false);
       return;
     }
 
@@ -899,6 +910,42 @@ export function SettingsDrawer({
     }
   };
 
+  const handleConfirmResetAppData = async () => {
+    setResettingAppData(true);
+    setResetAppDataError(null);
+    setResetAppDataBackup(null);
+
+    try {
+      const result = await resetAppData();
+      const firstBackup = result.backupPaths[0] ?? "No previous database was found.";
+      setConfirmResetAppData(false);
+      setAdvancedRecoveryOpen(false);
+      setResetAppDataBackup(firstBackup);
+      showToast({
+        id: "reset-app-data",
+        title: "App data reset",
+        description: result.backupPaths.length
+          ? "The previous database was moved to a backup file."
+          : "A fresh local database is ready.",
+        tone: "success",
+        duration: 7000
+      });
+      window.setTimeout(() => window.location.reload(), 900);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to reset app data";
+      setResetAppDataError(message);
+      showToast({
+        id: "reset-app-data",
+        title: "Could not reset app data",
+        description: message,
+        tone: "danger",
+        duration: 7000
+      });
+    } finally {
+      setResettingAppData(false);
+    }
+  };
+
   if (!open) return null;
 
   return (
@@ -994,6 +1041,10 @@ export function SettingsDrawer({
           {userError ? <Notice tone="danger">{userError}</Notice> : null}
           {securityStatusError ? <Notice tone="danger">{securityStatusError}</Notice> : null}
           {deleteChatsError ? <Notice tone="danger">{deleteChatsError}</Notice> : null}
+          {resetAppDataError ? <Notice tone="danger">{resetAppDataError}</Notice> : null}
+          {resetAppDataBackup ? (
+            <Notice tone="success">App data reset. Backup saved at {resetAppDataBackup}</Notice>
+          ) : null}
           {restartNotice ? (
             <Notice tone="warning">Saved. Ollama is restarting to apply this change.</Notice>
           ) : null}
@@ -1932,6 +1983,100 @@ export function SettingsDrawer({
                     )}
                   </div>
                 </div>
+
+                {!standalone ? (
+                  <div
+                    className={cn(
+                      "rounded-md border px-3 py-3",
+                      appDataLocked
+                        ? "border-danger/30 bg-danger/10"
+                        : "border-border bg-panel-strong"
+                    )}
+                  >
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="flex min-w-0 gap-3">
+                        <span
+                          className={cn(
+                            "mt-0.5 flex h-6 w-6 flex-none items-center justify-center",
+                            appDataLocked ? "text-danger" : "text-accent"
+                          )}
+                        >
+                          <Database className="h-4 w-4" />
+                        </span>
+                        <div className="min-w-0">
+                          <div className={cn("text-sm font-medium", appDataLocked && "text-danger")}>
+                            Advanced recovery
+                          </div>
+                          <div className="mt-0.5 text-xs text-muted-foreground">
+                            {appDataLocked
+                              ? "Encrypted desktop data is locked. Reset can create a fresh database while preserving a backup."
+                              : "Recovery tools for locked or damaged desktop app data."}
+                          </div>
+                        </div>
+                      </div>
+                      {!appDataLocked ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAdvancedRecoveryOpen((open) => !open);
+                            setConfirmResetAppData(false);
+                          }}
+                          className="h-9 flex-none rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring"
+                        >
+                          {advancedRecoveryOpen ? "Hide" : "Show"}
+                        </button>
+                      ) : null}
+                    </div>
+
+                    {recoveryOpen ? (
+                      <div className="mt-3 rounded-md border border-danger/30 bg-background/70 px-3 py-3">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium text-danger">Reset desktop app data</div>
+                            <div className="mt-0.5 text-xs text-muted-foreground">
+                              Move the local app database to a backup and create a fresh one. Models are not removed.
+                            </div>
+                            {confirmResetAppData ? (
+                              <div className="mt-2 text-xs text-danger">
+                                Encrypted chats and settings in the current database will not be readable without the old key.
+                              </div>
+                            ) : null}
+                          </div>
+
+                          {confirmResetAppData ? (
+                            <div className="flex flex-none gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setConfirmResetAppData(false)}
+                                disabled={resettingAppData}
+                                className="h-9 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring disabled:opacity-55"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void handleConfirmResetAppData()}
+                                disabled={resettingAppData}
+                                className="h-9 rounded-md border border-danger/50 bg-danger px-3 text-sm font-medium text-background transition hover:bg-danger/90 focus:focus-ring disabled:opacity-55"
+                              >
+                                {resettingAppData ? "Resetting..." : "Confirm"}
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmResetAppData(true)}
+                              disabled={resettingAppData}
+                              className="h-9 flex-none rounded-md border border-danger/40 px-3 text-sm font-medium text-danger transition hover:bg-danger/10 focus:focus-ring disabled:opacity-55"
+                            >
+                              Reset data
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </SettingsSection>
 
               <div className="flex justify-end pb-2">
@@ -2338,10 +2483,20 @@ function appDataEncryptionChip(
   switch (status.appDataEncryptionState) {
     case "encrypted":
       return { label: "App data encrypted", tone: "success" as const, Icon: Shield };
+    case "legacy_encrypted":
+      return { label: "Legacy encryption", tone: "warning" as const, Icon: Shield };
     case "key_missing":
-      return { label: "Encryption key missing", tone: "danger" as const, Icon: AlertCircle };
+      return {
+        label: status.appDataEncryptionLegacy ? "Legacy key missing" : "Encryption key missing",
+        tone: "danger" as const,
+        Icon: AlertCircle
+      };
     case "key_invalid":
-      return { label: "Wrong encryption key", tone: "danger" as const, Icon: AlertCircle };
+      return {
+        label: status.appDataEncryptionLegacy ? "Wrong legacy key" : "Wrong encryption key",
+        tone: "danger" as const,
+        Icon: AlertCircle
+      };
     case "enabled":
       return { label: "Encryption ready", tone: "info" as const, Icon: Shield };
     case "plain":
@@ -2389,6 +2544,24 @@ function appDataEncryptionMessage(message: string | null) {
     return "App data is encrypted, but OLLAMA_APP_DATA_KEY did not unlock it. Set the correct key, or start once with OLLAMA_APP_DATA_ENCRYPTION=off and the correct key to decrypt app data.";
   }
   return "App data is encrypted. Set OLLAMA_APP_DATA_KEY to the correct key, then restart Ollama.";
+}
+
+function isAppDataLocked(
+  status: SecurityStatusResponse | null,
+  settingsError: string | null,
+  securityStatusError: string | null
+) {
+  if (
+    status?.appDataEncryptionState === "key_missing" ||
+    status?.appDataEncryptionState === "key_invalid"
+  ) {
+    return true;
+  }
+
+  return Boolean(
+    appDataEncryptionMessage(settingsError) ||
+      appDataEncryptionMessage(securityStatusError)
+  );
 }
 
 function memoryScopeLabel(scope: LocalSettings["retrievalScope"]) {

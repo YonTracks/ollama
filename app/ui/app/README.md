@@ -63,6 +63,11 @@ prefer to unlock it manually. The token is not stored in standalone settings.
 Standalone chats are normal IndexedDB records by default. Settings -> Storage
 can enable passphrase-based browser chat encryption; this encrypts existing
 standalone chats and requires an unlock before encrypted chats can be updated.
+Desktop app data encryption is controlled by `OLLAMA_APP_DATA_KEY` before
+launch. The Security Status panel reports whether SQLite app data is plain,
+encrypted, legacy encrypted, or locked by a missing/wrong key. Settings -> Data
+can reset a locked desktop database by moving it to a timestamped backup and
+creating a fresh database without removing models.
 
 Do not use `go generate ./...` while a Next dev server is running. The generate
 step runs the static export, and on Windows the active dev server can keep

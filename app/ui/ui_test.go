@@ -897,6 +897,34 @@ func TestSecurityStatusReportsAppDataEncryptionKeyFailure(t *testing.T) {
 	if body["code"] != "app_data_encryption_locked" || !strings.Contains(body["error"], "OLLAMA_APP_DATA_KEY") {
 		t.Fatalf("unexpected encryption error body: %#v", body)
 	}
+
+	resetReq := httptest.NewRequest(http.MethodPost, "/api/v1/app-data/reset", nil)
+	resetReq.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
+	resetRR := httptest.NewRecorder()
+
+	handler.ServeHTTP(resetRR, resetReq)
+
+	if resetRR.Code != http.StatusOK {
+		t.Fatalf("expected reset status %d, got %d body=%q", http.StatusOK, resetRR.Code, resetRR.Body.String())
+	}
+	var resetBody responses.AppDataResetResponse
+	if err := json.NewDecoder(resetRR.Body).Decode(&resetBody); err != nil {
+		t.Fatalf("decode reset body: %v", err)
+	}
+	if len(resetBody.BackupPaths) == 0 {
+		t.Fatalf("expected reset to return backup paths, got %#v", resetBody)
+	}
+
+	settingsReq := httptest.NewRequest(http.MethodGet, "/api/v1/settings", nil)
+	settingsReq.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
+	settingsRR := httptest.NewRecorder()
+	handler.ServeHTTP(settingsRR, settingsReq)
+	if settingsRR.Code != http.StatusOK {
+		t.Fatalf("expected settings after reset status %d, got %d body=%q", http.StatusOK, settingsRR.Code, settingsRR.Body.String())
+	}
+	if err := lockedStore.Close(); err != nil {
+		t.Fatalf("close reset store: %v", err)
+	}
 }
 
 func TestProxyDangerousRoutesBlockedByDefault(t *testing.T) {

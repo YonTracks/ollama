@@ -11,6 +11,7 @@ import type {
   ChatsResponse,
   CloudStatusResponse,
   CloudStatusSource,
+  AppDataResetResponse,
   AppDataEncryptionState,
   InferenceComputeResponse,
   OllamaModel,
@@ -527,6 +528,15 @@ export async function updateSettings(settings: Settings): Promise<SettingsRespon
   });
 }
 
+export async function resetAppData(): Promise<AppDataResetResponse> {
+  const data = await fetchJson<AppDataResetResponse>("/api/v1/app-data/reset", {
+    method: "POST"
+  });
+  return {
+    backupPaths: Array.isArray(data.backupPaths) ? data.backupPaths : []
+  };
+}
+
 export async function getCloudStatus(signal?: AbortSignal): Promise<CloudStatusResponse> {
   const data = await fetchJson<CloudStatusResponse>("/api/v1/cloud", { signal });
   return {
@@ -544,6 +554,7 @@ export async function getSecurityStatus(signal?: AbortSignal): Promise<SecurityS
     appDataEncryptionState: normalizeAppDataEncryptionState(data.appDataEncryptionState),
     appDataEncryptionKeySet: Boolean(data.appDataEncryptionKeySet),
     appDataEncryptionDisabled: Boolean(data.appDataEncryptionDisabled),
+    appDataEncryptionLegacy: Boolean(data.appDataEncryptionLegacy),
     appDataEncryptionError: data.appDataEncryptionError || "",
     proxyAllowedUpstreams: Array.isArray(data.proxyAllowedUpstreams)
       ? data.proxyAllowedUpstreams
@@ -650,6 +661,7 @@ function normalizeAppDataEncryptionState(source?: string): AppDataEncryptionStat
     source === "plain" ||
     source === "enabled" ||
     source === "encrypted" ||
+    source === "legacy_encrypted" ||
     source === "key_missing" ||
     source === "key_invalid" ||
     source === "unknown"

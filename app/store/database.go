@@ -44,16 +44,8 @@ func newDatabase(dbPath string) (*database, error) {
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
-	dataCipher, err := newDataCipherFromEnv()
-	if err != nil {
-		conn.Close()
-		return nil, err
-	}
-
 	db := &database{
-		conn:           conn,
-		cipher:         dataCipher,
-		encryptAppData: appDataEncryptionEnabled() && dataCipher != nil,
+		conn: conn,
 	}
 
 	// Initialize schema
@@ -61,7 +53,7 @@ func newDatabase(dbPath string) (*database, error) {
 		conn.Close()
 		return nil, fmt.Errorf("initialize database: %w", err)
 	}
-	if err := db.reconcileAppDataEncryption(); err != nil {
+	if err := db.configureAppDataEncryption(); err != nil {
 		conn.Close()
 		return nil, err
 	}

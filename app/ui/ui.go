@@ -537,6 +537,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/settings", handle(s.getSettings))
 	mux.Handle("POST /api/v1/settings", handle(s.settings))
 	mux.Handle("GET /api/v1/security", handle(s.getSecurityStatus))
+	mux.Handle("POST /api/v1/app-data/reset", handle(s.resetAppData))
 	mux.Handle("GET /api/v1/cloud", handle(s.getCloudSetting))
 	mux.Handle("POST /api/v1/cloud", handle(s.cloudSetting))
 	mux.Handle("GET /api/v1/user", handle(s.getUser))
@@ -3838,6 +3839,21 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) error {
 	})
 }
 
+func (s *Server) resetAppData(w http.ResponseWriter, r *http.Request) error {
+	if s.Store == nil {
+		return fmt.Errorf("app data store is not configured")
+	}
+	result, err := s.Store.ResetAppData()
+	if err != nil {
+		return fmt.Errorf("reset app data: %w", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(responses.AppDataResetResponse{
+		BackupPaths: result.BackupPaths,
+	})
+}
+
 func (s *Server) getSecurityStatus(w http.ResponseWriter, r *http.Request) error {
 	w.Header().Set("Content-Type", "application/json")
 	return json.NewEncoder(w).Encode(s.securityStatus(r.Context()))
@@ -3886,6 +3902,7 @@ func (s *Server) securityStatus(ctx context.Context) responses.SecurityStatusRes
 		AppDataEncryptionState:    string(appDataStatus.State),
 		AppDataEncryptionKeySet:   appDataStatus.KeyConfigured,
 		AppDataEncryptionDisabled: appDataStatus.Disabled,
+		AppDataEncryptionLegacy:   appDataStatus.Legacy,
 		AppDataEncryptionError:    appDataStatus.Error,
 		NetworkExposureAllowed:    settings.Expose || envconfig.AllowNetworkExposure(),
 		ModelMutationProxyEnabled: envconfig.ProxyAllowModelMutation(),
@@ -3915,6 +3932,8 @@ func securityWarnings(status responses.SecurityStatusResponse, targetErr error) 
 		add("core_unreachable", "The local Ollama core API is not reachable.")
 	}
 	switch status.AppDataEncryptionState {
+	case string(store.AppDataEncryptionStateLegacy):
+		add("app_data_encryption_legacy", "App data is using legacy fixed-salt encryption and will be upgraded after a successful unlock.")
 	case string(store.AppDataEncryptionStateKeyMissing):
 		add("app_data_encryption_key_missing", "App data is encrypted, but OLLAMA_APP_DATA_KEY is not set.")
 	case string(store.AppDataEncryptionStateKeyInvalid):

@@ -664,6 +664,14 @@ export class SettingsResponse {
 	    return a;
 	}
 }
+export class AppDataResetResponse {
+    backupPaths: string[];
+
+    constructor(source: any = {}) {
+        if ('string' === typeof source) source = JSON.parse(source);
+        this.backupPaths = source["backupPaths"];
+    }
+}
 export class SecurityWarning {
     code: string;
     message: string;
@@ -687,9 +695,10 @@ export class SecurityStatusResponse {
     cloudDisabled: boolean;
     cloudSource: "env" | "config" | "both" | "none";
     appDataEncrypted: boolean;
-    appDataEncryptionState: "plain" | "enabled" | "encrypted" | "key_missing" | "key_invalid" | "unknown";
+    appDataEncryptionState: "plain" | "enabled" | "encrypted" | "legacy_encrypted" | "key_missing" | "key_invalid" | "unknown";
     appDataEncryptionKeySet: boolean;
     appDataEncryptionDisabled: boolean;
+    appDataEncryptionLegacy: boolean;
     appDataEncryptionError?: string;
     networkExposureAllowed: boolean;
     modelMutationProxyEnabled: boolean;
@@ -716,6 +725,7 @@ export class SecurityStatusResponse {
         this.appDataEncryptionState = source["appDataEncryptionState"];
         this.appDataEncryptionKeySet = source["appDataEncryptionKeySet"];
         this.appDataEncryptionDisabled = source["appDataEncryptionDisabled"];
+        this.appDataEncryptionLegacy = source["appDataEncryptionLegacy"];
         this.appDataEncryptionError = source["appDataEncryptionError"];
         this.networkExposureAllowed = source["networkExposureAllowed"];
         this.modelMutationProxyEnabled = source["modelMutationProxyEnabled"];

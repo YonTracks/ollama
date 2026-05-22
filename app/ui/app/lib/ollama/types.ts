@@ -282,6 +282,10 @@ export interface SettingsResponse {
   settings: Settings;
 }
 
+export interface AppDataResetResponse {
+  backupPaths: string[];
+}
+
 export type CloudStatusSource = "env" | "config" | "both" | "none";
 
 export interface CloudStatusResponse {
@@ -298,6 +302,7 @@ export type AppDataEncryptionState =
   | "plain"
   | "enabled"
   | "encrypted"
+  | "legacy_encrypted"
   | "key_missing"
   | "key_invalid"
   | "unknown";
@@ -318,6 +323,7 @@ export interface SecurityStatusResponse {
   appDataEncryptionState: AppDataEncryptionState;
   appDataEncryptionKeySet: boolean;
   appDataEncryptionDisabled: boolean;
+  appDataEncryptionLegacy: boolean;
   appDataEncryptionError?: string;
   networkExposureAllowed: boolean;
   modelMutationProxyEnabled: boolean;

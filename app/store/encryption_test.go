@@ -4,8 +4,10 @@ package store
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -212,6 +214,51 @@ func TestDatabaseEncryptionReadsExistingPlaintextRows(t *testing.T) {
 	}
 }
 
+func TestDatabaseEncryptionEncryptsExistingPlaintextRowsWhenEnabled(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "store.db")
+	t.Setenv("OLLAMA_APP_DATA_KEY", "")
+	t.Setenv("OLLAMA_APP_DATA_ENCRYPTION", "")
+
+	db, err := newDatabase(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := NewChat("plain-before-key")
+	chat.Title = "Plain before key title"
+	chat.Messages = append(chat.Messages, NewMessage("user", "plain before key content", nil))
+	if err := db.saveChat(*chat); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("OLLAMA_APP_DATA_KEY", "correct horse battery staple")
+	db, err = newDatabase(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	var rawTitle, rawContent string
+	if err := db.conn.QueryRow(`SELECT title FROM chats WHERE id = ?`, chat.ID).Scan(&rawTitle); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.conn.QueryRow(`SELECT content FROM messages WHERE chat_id = ?`, chat.ID).Scan(&rawContent); err != nil {
+		t.Fatal(err)
+	}
+	assertEncryptedString(t, rawTitle, "Plain before key title")
+	assertEncryptedString(t, rawContent, "plain before key content")
+
+	retrieved, err := db.getChatWithOptions(chat.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retrieved.Title != "Plain before key title" || retrieved.Messages[0].Content != "plain before key content" {
+		t.Fatalf("expected encrypted existing rows to stay readable, got %#v", retrieved)
+	}
+}
+
 func TestDatabaseEncryptionCanBeDisabled(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "store.db")
 	t.Setenv("OLLAMA_APP_DATA_KEY", "correct horse battery staple")
@@ -365,6 +412,99 @@ func TestStoreAppDataEncryptionStatusReportsMissingAndWrongKey(t *testing.T) {
 	}
 }
 
+func TestDatabaseEncryptionUsesPerDatabaseSalt(t *testing.T) {
+	t.Setenv("OLLAMA_APP_DATA_KEY", "correct horse battery staple")
+	t.Setenv("OLLAMA_APP_DATA_ENCRYPTION", "")
+
+	firstDB, err := newDatabase(filepath.Join(t.TempDir(), "first.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSalt := readRawAppDataSalt(t, firstDB)
+	if err := firstDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	secondDB, err := newDatabase(filepath.Join(t.TempDir(), "second.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSalt := readRawAppDataSalt(t, secondDB)
+	if err := secondDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if firstSalt == "" || secondSalt == "" {
+		t.Fatalf("expected per-database salts, got first=%q second=%q", firstSalt, secondSalt)
+	}
+	if firstSalt == secondSalt {
+		t.Fatalf("expected unique per-database salts, both were %q", firstSalt)
+	}
+	if firstSalt == legacyAppDataKeySalt || secondSalt == legacyAppDataKeySalt {
+		t.Fatalf("expected stored salts to differ from legacy fixed salt")
+	}
+}
+
+func TestDatabaseEncryptionMigratesLegacyFixedSalt(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "store.db")
+	passphrase := "correct horse battery staple"
+	t.Setenv("OLLAMA_APP_DATA_KEY", "")
+	t.Setenv("OLLAMA_APP_DATA_ENCRYPTION", "")
+
+	db, err := newDatabase(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.cipher, err = newDataCipher(passphrase, []byte(legacyAppDataKeySalt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.encryptAppData = true
+	if err := db.setAppDataEncryptionMarker(); err != nil {
+		t.Fatal(err)
+	}
+	chat := NewChat("legacy-chat")
+	chat.Title = "Legacy secret title"
+	chat.Messages = append(chat.Messages, NewMessage("user", "legacy secret content", nil))
+	if err := db.saveChat(*chat); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRawAppDataSalt(t, db); got != "" {
+		t.Fatalf("expected legacy DB to have no per-database salt, got %q", got)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("OLLAMA_APP_DATA_KEY", "wrong key")
+	status := (&Store{DBPath: dbPath}).AppDataEncryptionStatus()
+	if !status.Encrypted || !status.Legacy || status.State != AppDataEncryptionStateKeyInvalid {
+		t.Fatalf("expected locked legacy status, got %#v", status)
+	}
+
+	t.Setenv("OLLAMA_APP_DATA_KEY", passphrase)
+	db, err = newDatabase(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if got := readRawAppDataSalt(t, db); got == "" {
+		t.Fatal("expected legacy DB to be migrated to a per-database salt")
+	}
+	status = (&Store{DBPath: dbPath, db: db}).AppDataEncryptionStatus()
+	if status.Legacy || status.State != AppDataEncryptionStateEncrypted {
+		t.Fatalf("expected migrated encrypted status, got %#v", status)
+	}
+	retrieved, err := db.getChatWithOptions(chat.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retrieved.Title != chat.Title || retrieved.Messages[0].Content != "legacy secret content" {
+		t.Fatalf("expected migrated chat to remain readable, got %#v", retrieved)
+	}
+}
+
 func TestDatabaseEncryptionDisableRequiresKeyForEncryptedRows(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "store.db")
 	t.Setenv("OLLAMA_APP_DATA_KEY", "correct horse battery staple")
@@ -396,6 +536,57 @@ func TestDatabaseEncryptionDisableRequiresKeyForEncryptedRows(t *testing.T) {
 	}
 }
 
+func TestStoreResetAppDataBacksUpLockedDatabase(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "store.db")
+	t.Setenv("OLLAMA_APP_DATA_KEY", "correct horse battery staple")
+	t.Setenv("OLLAMA_APP_DATA_ENCRYPTION", "")
+
+	initialStore := &Store{DBPath: dbPath}
+	chat := NewChat("locked-reset-chat")
+	chat.Title = "Locked reset title"
+	chat.Messages = append(chat.Messages, NewMessage("user", "locked reset content", nil))
+	if err := initialStore.SetChat(*chat); err != nil {
+		t.Fatal(err)
+	}
+	if err := initialStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("OLLAMA_APP_DATA_KEY", "")
+	lockedStore := &Store{DBPath: dbPath}
+	if _, err := lockedStore.Settings(); err == nil {
+		t.Fatal("expected encrypted database to be locked without key")
+	}
+
+	result, err := lockedStore.ResetAppData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.BackupPaths) == 0 {
+		t.Fatalf("expected reset to preserve a backup, got %#v", result)
+	}
+	if _, err := os.Stat(result.BackupPaths[0]); err != nil {
+		t.Fatalf("expected backup file to exist: %v", err)
+	}
+	settings, err := lockedStore.Settings()
+	if err != nil {
+		t.Fatalf("expected fresh database after reset: %v", err)
+	}
+	if settings.LastHomeView != "launch" {
+		t.Fatalf("expected fresh settings after reset, got %#v", settings)
+	}
+	chats, err := lockedStore.Chats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chats) != 0 {
+		t.Fatalf("expected fresh database to have no chats, got %#v", chats)
+	}
+	if err := lockedStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func assertEncryptedString(t *testing.T, value string, secret string) {
 	t.Helper()
 	if !strings.HasPrefix(value, encryptedTextPrefix) {
@@ -404,6 +595,19 @@ func assertEncryptedString(t *testing.T, value string, secret string) {
 	if strings.Contains(value, secret) {
 		t.Fatalf("encrypted value contains plaintext secret %q: %q", secret, value)
 	}
+}
+
+func readRawAppDataSalt(t *testing.T, db *database) string {
+	t.Helper()
+	var salt string
+	err := db.conn.QueryRow(`SELECT value FROM app_metadata WHERE key = ?`, appDataEncryptionSaltKey).Scan(&salt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ""
+		}
+		t.Fatal(err)
+	}
+	return salt
 }
 
 func assertEncryptedBlob(t *testing.T, value []byte, secret []byte) {

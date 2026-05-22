@@ -292,6 +292,10 @@ type Store struct {
 	db   *database
 }
 
+type AppDataResetResult struct {
+	BackupPaths []string
+}
+
 var defaultDBPath = func() string {
 	switch runtime.GOOS {
 	case "windows":
@@ -698,4 +702,67 @@ func (s *Store) Close() error {
 		return s.db.Close()
 	}
 	return nil
+}
+
+func (s *Store) ResetAppData() (AppDataResetResult, error) {
+	s.dbMu.Lock()
+	defer s.dbMu.Unlock()
+
+	var result AppDataResetResult
+	if s.db != nil {
+		if err := s.db.Close(); err != nil {
+			return result, fmt.Errorf("close app database: %w", err)
+		}
+		s.db = nil
+	}
+
+	dbPath := s.DBPath
+	if dbPath == "" {
+		dbPath = defaultDBPath
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		return result, fmt.Errorf("create db directory: %w", err)
+	}
+
+	suffix := ".locked-backup-" + time.Now().Format("20060102-150405")
+	for _, path := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		backup, ok, err := backupAppDataFile(path, suffix)
+		if err != nil {
+			return result, err
+		}
+		if ok {
+			result.BackupPaths = append(result.BackupPaths, backup)
+		}
+	}
+
+	database, err := newDatabase(dbPath)
+	if err != nil {
+		return result, fmt.Errorf("create fresh app database: %w", err)
+	}
+	s.db = database
+	return result, nil
+}
+
+func backupAppDataFile(path, suffix string) (string, bool, error) {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("inspect app data file %s: %w", filepath.Base(path), err)
+	}
+
+	backup := path + suffix
+	for i := 2; ; i++ {
+		if _, err := os.Stat(backup); os.IsNotExist(err) {
+			break
+		} else if err != nil {
+			return "", false, fmt.Errorf("inspect app data backup %s: %w", filepath.Base(backup), err)
+		}
+		backup = fmt.Sprintf("%s%s-%d", path, suffix, i)
+	}
+
+	if err := os.Rename(path, backup); err != nil {
+		return "", false, fmt.Errorf("backup app data file %s: %w", filepath.Base(path), err)
+	}
+	return backup, true, nil
 }
