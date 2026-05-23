@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -23,6 +24,7 @@ import (
 
 const (
 	encryptedTextPrefix            = "ollamaenc:v1:"
+	encryptedLookupPrefix          = "ollamahmac:v1:"
 	appDataEncryptionMetadataKey   = "app_data_encryption_sentinel"
 	appDataEncryptionSaltKey       = "app_data_encryption_salt"
 	appDataEncryptionSentinelValue = "ollama-app-data-encryption-v1"
@@ -94,7 +96,8 @@ var sensitiveAppDataBlobColumns = []appDataBlobColumn{
 }
 
 type dataCipher struct {
-	aead cipher.AEAD
+	aead      cipher.AEAD
+	lookupKey []byte
 }
 
 func appDataKeyPassphrase() string {
@@ -131,7 +134,11 @@ func newDataCipher(passphrase string, salt []byte) (*dataCipher, error) {
 		return nil, fmt.Errorf("create data cipher mode: %w", err)
 	}
 
-	return &dataCipher{aead: aead}, nil
+	lookupKeyHash := sha256.Sum256(append([]byte("ollama-app-data-lookup-v1:"), key...))
+	lookupKey := make([]byte, len(lookupKeyHash))
+	copy(lookupKey, lookupKeyHash[:])
+
+	return &dataCipher{aead: aead, lookupKey: lookupKey}, nil
 }
 
 func appDataEncryptionEnabled() bool {
@@ -213,8 +220,7 @@ func (s *Store) AppDataEncryptionStatus() AppDataEncryptionStatus {
 }
 
 type appDataEncryptionPresence struct {
-	marker        sql.NullString
-	encryptedRows bool
+	marker sql.NullString
 }
 
 func inspectAppDataEncryptionStatus(conn *sql.DB, cipher *dataCipher, status AppDataEncryptionStatus) AppDataEncryptionStatus {
@@ -231,7 +237,7 @@ func inspectAppDataEncryptionStatus(conn *sql.DB, cipher *dataCipher, status App
 		return status
 	}
 
-	status.Encrypted = presence.marker.Valid || presence.encryptedRows
+	status.Encrypted = presence.marker.Valid
 	status.Legacy = status.Encrypted && len(salt) == 0
 	if !status.Encrypted {
 		if status.KeyConfigured && !status.Disabled {
@@ -318,67 +324,13 @@ func inspectAppDataEncryptionPresence(conn *sql.DB) (appDataEncryptionPresence, 
 		}
 	}
 
-	hasRows, err := inspectEncryptedAppDataRows(conn)
-	if err != nil {
-		return presence, err
-	}
-	presence.encryptedRows = hasRows
 	return presence, nil
-}
-
-func inspectEncryptedAppDataRows(conn *sql.DB) (bool, error) {
-	for _, column := range sensitiveAppDataTextColumns {
-		ok, err := sqliteColumnExists(conn, column.table, column.column)
-		if err != nil {
-			return false, err
-		}
-		if !ok {
-			continue
-		}
-
-		var value int
-		err = conn.QueryRow(
-			fmt.Sprintf("SELECT 1 FROM %s WHERE %s LIKE ? LIMIT 1", column.table, column.column),
-			encryptedTextPrefix+"%",
-		).Scan(&value)
-		if err == nil {
-			return true, nil
-		}
-		if err != sql.ErrNoRows {
-			return false, err
-		}
-	}
-
-	for _, column := range sensitiveAppDataBlobColumns {
-		ok, err := sqliteColumnExists(conn, column.table, column.column)
-		if err != nil {
-			return false, err
-		}
-		if !ok {
-			continue
-		}
-
-		var value int
-		err = conn.QueryRow(
-			fmt.Sprintf("SELECT 1 FROM %s WHERE substr(%s, 1, ?) = ? LIMIT 1", column.table, column.column),
-			len(encryptedBlobPrefix),
-			encryptedBlobPrefix,
-		).Scan(&value)
-		if err == nil {
-			return true, nil
-		}
-		if err != sql.ErrNoRows {
-			return false, err
-		}
-	}
-
-	return false, nil
 }
 
 func validateAppDataEncryptionPresence(conn *sql.DB, cipher *dataCipher, presence appDataEncryptionPresence) error {
 	db := &database{conn: conn, cipher: cipher}
 	if presence.marker.Valid {
-		decrypted, err := db.decryptString(presence.marker.String)
+		decrypted, err := db.decryptStringStrict(presence.marker.String)
 		if err != nil {
 			return err
 		}
@@ -518,7 +470,7 @@ func (db *database) configureAppDataEncryption() error {
 	if err != nil {
 		return fmt.Errorf("inspect app data encryption: %w", err)
 	}
-	encrypted := presence.marker.Valid || presence.encryptedRows
+	encrypted := presence.marker.Valid
 
 	salt, err := readAppDataEncryptionSalt(db.conn)
 	if err != nil {
@@ -533,7 +485,23 @@ func (db *database) configureAppDataEncryption() error {
 		case encrypted:
 			db.cipher, err = newDataCipher(passphrase, []byte(legacyAppDataKeySalt))
 			legacy = true
-		case !disabled:
+		default:
+			db.cipher, err = newDataCipher(passphrase, []byte(legacyAppDataKeySalt))
+			if err != nil {
+				return err
+			}
+			hasLegacyRows, legacyErr := db.hasEncryptedAppDataRows()
+			if legacyErr != nil {
+				return legacyErr
+			}
+			if hasLegacyRows {
+				legacy = true
+				break
+			}
+			db.cipher = nil
+			if disabled {
+				break
+			}
 			salt, err = randomAppDataEncryptionSalt()
 			if err == nil {
 				err = db.setAppDataEncryptionSalt(salt)
@@ -619,6 +587,9 @@ func (db *database) reconcileAppDataEncryption() error {
 			if err := db.decryptAppDataAtRest(); err != nil {
 				return fmt.Errorf("decrypt app data: %w", err)
 			}
+			if err := db.decryptMessageEmbeddingsAtRest(); err != nil {
+				return err
+			}
 		}
 		if err := db.clearAppDataEncryptionMarker(); err != nil {
 			return err
@@ -639,8 +610,11 @@ func (db *database) reconcileAppDataEncryption() error {
 		if err := db.setAppDataEncryptionMarker(); err != nil {
 			return err
 		}
-		if err := db.encryptAppDataAtRest(); err != nil {
+		if err := db.encryptAppDataAtRest(marker.Valid || hasEncryptedRows); err != nil {
 			return fmt.Errorf("encrypt app data: %w", err)
+		}
+		if err := db.encryptMessageEmbeddingsAtRest(); err != nil {
+			return err
 		}
 	}
 
@@ -679,6 +653,21 @@ func (db *database) setAppDataEncryptionMarker() error {
 	return nil
 }
 
+func (db *database) messageEmbeddingLookupKey(contentHash string) (string, error) {
+	if !db.encryptAppData || db.cipher == nil {
+		return "", nil
+	}
+	if len(db.cipher.lookupKey) == 0 {
+		return "", ErrAppDataEncryptionKeyMissing
+	}
+
+	mac := hmac.New(sha256.New, db.cipher.lookupKey)
+	mac.Write([]byte("message-embedding-content-hash"))
+	mac.Write([]byte{0})
+	mac.Write([]byte(contentHash))
+	return encryptedLookupPrefix + base64.RawStdEncoding.EncodeToString(mac.Sum(nil)), nil
+}
+
 func (db *database) setAppDataEncryptionMarkerTx(tx *sql.Tx) error {
 	marker, err := db.encryptString(appDataEncryptionSentinelValue)
 	if err != nil {
@@ -709,7 +698,7 @@ func (db *database) clearAppDataEncryptionMarker() error {
 
 func (db *database) validateEncryptedAppData(marker sql.NullString) error {
 	if marker.Valid {
-		decrypted, err := db.decryptString(marker.String)
+		decrypted, err := db.decryptStringStrict(marker.String)
 		if err != nil {
 			return err
 		}
@@ -736,19 +725,36 @@ func (db *database) encryptString(value string) (string, error) {
 }
 
 func (db *database) decryptString(value string) (string, error) {
+	return db.decryptStringValue(value, false)
+}
+
+func (db *database) decryptStringStrict(value string) (string, error) {
+	return db.decryptStringValue(value, true)
+}
+
+func (db *database) decryptStringValue(value string, strict bool) (string, error) {
 	if value == "" || !strings.HasPrefix(value, encryptedTextPrefix) {
 		return value, nil
 	}
 	if db.cipher == nil {
+		if !strict {
+			return value, nil
+		}
 		return "", ErrAppDataEncryptionKeyMissing
 	}
 
 	encoded := strings.TrimPrefix(value, encryptedTextPrefix)
 	sealed, err := base64.RawStdEncoding.DecodeString(encoded)
 	if err != nil {
+		if !strict {
+			return value, nil
+		}
 		return "", fmt.Errorf("decode encrypted app data: %w", err)
 	}
 	if len(sealed) < db.cipher.aead.NonceSize() {
+		if !strict {
+			return value, nil
+		}
 		return "", fmt.Errorf("encrypted app data is truncated")
 	}
 
@@ -756,6 +762,9 @@ func (db *database) decryptString(value string) (string, error) {
 	ciphertext := sealed[db.cipher.aead.NonceSize():]
 	plaintext, err := db.cipher.aead.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
+		if !strict {
+			return value, nil
+		}
 		return "", ErrAppDataEncryptionKeyInvalid
 	}
 
@@ -804,15 +813,29 @@ func (db *database) encryptBytes(value []byte) ([]byte, error) {
 }
 
 func (db *database) decryptBytes(value []byte) ([]byte, error) {
+	return db.decryptBytesValue(value, false)
+}
+
+func (db *database) decryptBytesStrict(value []byte) ([]byte, error) {
+	return db.decryptBytesValue(value, true)
+}
+
+func (db *database) decryptBytesValue(value []byte, strict bool) ([]byte, error) {
 	if len(value) == 0 || !bytes.HasPrefix(value, encryptedBlobPrefix) {
 		return value, nil
 	}
 	if db.cipher == nil {
+		if !strict {
+			return value, nil
+		}
 		return nil, ErrAppDataEncryptionKeyMissing
 	}
 
 	sealed := value[len(encryptedBlobPrefix):]
 	if len(sealed) < db.cipher.aead.NonceSize() {
+		if !strict {
+			return value, nil
+		}
 		return nil, fmt.Errorf("encrypted app data is truncated")
 	}
 
@@ -820,6 +843,9 @@ func (db *database) decryptBytes(value []byte) ([]byte, error) {
 	ciphertext := sealed[db.cipher.aead.NonceSize():]
 	plaintext, err := db.cipher.aead.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
+		if !strict {
+			return value, nil
+		}
 		return nil, ErrAppDataEncryptionKeyInvalid
 	}
 
@@ -827,33 +853,63 @@ func (db *database) decryptBytes(value []byte) ([]byte, error) {
 }
 
 func (db *database) hasEncryptedAppDataRows() (bool, error) {
+	if db.cipher == nil {
+		return false, nil
+	}
+
 	for _, column := range sensitiveAppDataTextColumns {
-		var value string
-		err := db.conn.QueryRow(
-			fmt.Sprintf("SELECT %s FROM %s WHERE %s LIKE ? LIMIT 1", column.column, column.table, column.column),
+		rows, err := db.conn.Query(
+			fmt.Sprintf("SELECT %s FROM %s WHERE %s LIKE ?", column.column, column.table, column.column),
 			encryptedTextPrefix+"%",
-		).Scan(&value)
-		if err == nil {
-			return true, nil
-		}
-		if err != sql.ErrNoRows {
+		)
+		if err != nil {
 			return false, fmt.Errorf("check encrypted %s.%s: %w", column.table, column.column, err)
 		}
+
+		for rows.Next() {
+			var value string
+			if err := rows.Scan(&value); err != nil {
+				rows.Close()
+				return false, fmt.Errorf("scan encrypted %s.%s: %w", column.table, column.column, err)
+			}
+			if _, err := db.decryptStringStrict(value); err == nil {
+				rows.Close()
+				return true, nil
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return false, fmt.Errorf("iterate encrypted %s.%s: %w", column.table, column.column, err)
+		}
+		rows.Close()
 	}
 
 	for _, column := range sensitiveAppDataBlobColumns {
-		var value []byte
-		err := db.conn.QueryRow(
-			fmt.Sprintf("SELECT %s FROM %s WHERE substr(%s, 1, ?) = ? LIMIT 1", column.column, column.table, column.column),
+		rows, err := db.conn.Query(
+			fmt.Sprintf("SELECT %s FROM %s WHERE substr(%s, 1, ?) = ?", column.column, column.table, column.column),
 			len(encryptedBlobPrefix),
 			encryptedBlobPrefix,
-		).Scan(&value)
-		if err == nil {
-			return true, nil
-		}
-		if err != sql.ErrNoRows {
+		)
+		if err != nil {
 			return false, fmt.Errorf("check encrypted %s.%s: %w", column.table, column.column, err)
 		}
+
+		for rows.Next() {
+			var value []byte
+			if err := rows.Scan(&value); err != nil {
+				rows.Close()
+				return false, fmt.Errorf("scan encrypted %s.%s: %w", column.table, column.column, err)
+			}
+			if _, err := db.decryptBytesStrict(value); err == nil {
+				rows.Close()
+				return true, nil
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return false, fmt.Errorf("iterate encrypted %s.%s: %w", column.table, column.column, err)
+		}
+		rows.Close()
 	}
 
 	return false, nil
@@ -942,7 +998,7 @@ func (db *database) decryptAppDataAtRest() error {
 	return nil
 }
 
-func (db *database) encryptAppDataAtRest() error {
+func (db *database) encryptAppDataAtRest(hasExistingEncryptedRows bool) error {
 	if !db.encryptAppData || db.cipher == nil {
 		return nil
 	}
@@ -954,12 +1010,12 @@ func (db *database) encryptAppDataAtRest() error {
 	defer tx.Rollback()
 
 	for _, column := range sensitiveAppDataTextColumns {
-		if err := db.encryptTextColumn(tx, column.table, column.idColumn, column.column); err != nil {
+		if err := db.encryptTextColumn(tx, column.table, column.idColumn, column.column, hasExistingEncryptedRows); err != nil {
 			return err
 		}
 	}
 	for _, column := range sensitiveAppDataBlobColumns {
-		if err := db.encryptBlobColumn(tx, column.table, column.idColumn, column.column); err != nil {
+		if err := db.encryptBlobColumn(tx, column.table, column.idColumn, column.column, hasExistingEncryptedRows); err != nil {
 			return err
 		}
 	}
@@ -968,6 +1024,183 @@ func (db *database) encryptAppDataAtRest() error {
 		return fmt.Errorf("commit encrypt transaction: %w", err)
 	}
 	return nil
+}
+
+type messageEmbeddingRecord struct {
+	chatID            string
+	model             string
+	contentHash       string
+	contentHashLookup string
+	dimensions        int
+	embedding         []byte
+}
+
+func (db *database) encryptMessageEmbeddingsAtRest() error {
+	if !db.encryptAppData || db.cipher == nil {
+		return nil
+	}
+
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("begin encrypt vector memory transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := db.encryptMessageEmbeddingsTx(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit encrypt vector memory transaction: %w", err)
+	}
+	return nil
+}
+
+func (db *database) decryptMessageEmbeddingsAtRest() error {
+	if db.cipher == nil {
+		return nil
+	}
+
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("begin decrypt vector memory transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := db.decryptMessageEmbeddingsTx(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit decrypt vector memory transaction: %w", err)
+	}
+	return nil
+}
+
+func (db *database) encryptMessageEmbeddingsTx(tx *sql.Tx) error {
+	rows, err := db.collectMessageEmbeddingRows(tx)
+	if err != nil {
+		return err
+	}
+
+	encrypted := make([]messageEmbeddingRecord, 0, len(rows))
+	for _, row := range rows {
+		contentHash, err := db.decryptString(row.contentHash)
+		if err != nil {
+			return fmt.Errorf("decrypt vector memory content hash: %w", err)
+		}
+		embedding, err := db.decryptBytes(row.embedding)
+		if err != nil {
+			return fmt.Errorf("decrypt vector memory embedding: %w", err)
+		}
+		lookup, err := db.messageEmbeddingLookupKey(contentHash)
+		if err != nil {
+			return fmt.Errorf("create vector memory lookup key: %w", err)
+		}
+		encryptedHash, err := db.encryptString(contentHash)
+		if err != nil {
+			return fmt.Errorf("encrypt vector memory content hash: %w", err)
+		}
+		encryptedEmbedding, err := db.encryptBytes(embedding)
+		if err != nil {
+			return fmt.Errorf("encrypt vector memory embedding: %w", err)
+		}
+		encrypted = append(encrypted, messageEmbeddingRecord{
+			chatID:            row.chatID,
+			model:             row.model,
+			contentHash:       encryptedHash,
+			contentHashLookup: lookup,
+			dimensions:        row.dimensions,
+			embedding:         encryptedEmbedding,
+		})
+	}
+
+	return replaceMessageEmbeddingRowsTx(tx, encrypted)
+}
+
+func (db *database) decryptMessageEmbeddingsTx(tx *sql.Tx) error {
+	rows, err := db.collectMessageEmbeddingRows(tx)
+	if err != nil {
+		return err
+	}
+
+	decrypted := make([]messageEmbeddingRecord, 0, len(rows))
+	for _, row := range rows {
+		contentHash, err := db.decryptString(row.contentHash)
+		if err != nil {
+			return fmt.Errorf("decrypt vector memory content hash: %w", err)
+		}
+		embedding, err := db.decryptBytes(row.embedding)
+		if err != nil {
+			return fmt.Errorf("decrypt vector memory embedding: %w", err)
+		}
+		decrypted = append(decrypted, messageEmbeddingRecord{
+			chatID:      row.chatID,
+			model:       row.model,
+			contentHash: contentHash,
+			dimensions:  row.dimensions,
+			embedding:   embedding,
+		})
+	}
+
+	return replaceMessageEmbeddingRowsTx(tx, decrypted)
+}
+
+func (db *database) collectMessageEmbeddingRows(tx *sql.Tx) ([]messageEmbeddingRecord, error) {
+	rows, err := tx.Query(`
+		SELECT chat_id, model, content_hash, dimensions, embedding
+		FROM message_embeddings
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query vector memory embeddings: %w", err)
+	}
+	defer rows.Close()
+
+	var records []messageEmbeddingRecord
+	for rows.Next() {
+		var record messageEmbeddingRecord
+		if err := rows.Scan(&record.chatID, &record.model, &record.contentHash, &record.dimensions, &record.embedding); err != nil {
+			return nil, fmt.Errorf("scan vector memory embedding: %w", err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate vector memory embeddings: %w", err)
+	}
+	return records, nil
+}
+
+func replaceMessageEmbeddingRowsTx(tx *sql.Tx, records []messageEmbeddingRecord) error {
+	if _, err := tx.Exec(`DELETE FROM message_embeddings`); err != nil {
+		return fmt.Errorf("clear vector memory embeddings: %w", err)
+	}
+
+	for _, record := range dedupeMessageEmbeddingRows(records) {
+		if _, err := tx.Exec(`
+			INSERT INTO message_embeddings (chat_id, model, content_hash, content_hash_lookup, dimensions, embedding, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		`, record.chatID, record.model, record.contentHash, record.contentHashLookup, record.dimensions, record.embedding); err != nil {
+			return fmt.Errorf("rewrite vector memory embedding: %w", err)
+		}
+	}
+	return nil
+}
+
+func dedupeMessageEmbeddingRows(records []messageEmbeddingRecord) []messageEmbeddingRecord {
+	out := make([]messageEmbeddingRecord, 0, len(records))
+	indexByKey := make(map[string]int, len(records))
+	for _, record := range records {
+		cacheKey := record.contentHash
+		if record.contentHashLookup != "" {
+			cacheKey = record.contentHashLookup
+		}
+		key := strings.Join([]string{record.chatID, record.model, cacheKey}, "\x00")
+		if index, ok := indexByKey[key]; ok {
+			out[index] = record
+			continue
+		}
+		indexByKey[key] = len(out)
+		out = append(out, record)
+	}
+	return out
 }
 
 func (db *database) migrateLegacyAppDataEncryptionSalt() error {
@@ -1004,18 +1237,24 @@ func (db *database) migrateLegacyAppDataEncryptionSalt() error {
 			return err
 		}
 	}
+	if err = db.decryptMessageEmbeddingsTx(tx); err != nil {
+		return err
+	}
 
 	db.cipher = newCipher
 	db.encryptAppData = true
 	for _, column := range sensitiveAppDataTextColumns {
-		if err = db.encryptTextColumn(tx, column.table, column.idColumn, column.column); err != nil {
+		if err = db.encryptTextColumn(tx, column.table, column.idColumn, column.column, false); err != nil {
 			return err
 		}
 	}
 	for _, column := range sensitiveAppDataBlobColumns {
-		if err = db.encryptBlobColumn(tx, column.table, column.idColumn, column.column); err != nil {
+		if err = db.encryptBlobColumn(tx, column.table, column.idColumn, column.column, false); err != nil {
 			return err
 		}
+	}
+	if err = db.encryptMessageEmbeddingsTx(tx); err != nil {
+		return err
 	}
 	if err = setAppDataEncryptionSaltTx(tx, newSalt); err != nil {
 		return err
@@ -1030,7 +1269,7 @@ func (db *database) migrateLegacyAppDataEncryptionSalt() error {
 	return nil
 }
 
-func (db *database) encryptTextColumn(tx *sql.Tx, table, idColumn, column string) error {
+func (db *database) encryptTextColumn(tx *sql.Tx, table, idColumn, column string, hasExistingEncryptedRows bool) error {
 	rows, err := tx.Query(fmt.Sprintf("SELECT %s, %s FROM %s", idColumn, column, table))
 	if err != nil {
 		return fmt.Errorf("query plaintext %s.%s: %w", table, column, err)
@@ -1048,8 +1287,13 @@ func (db *database) encryptTextColumn(tx *sql.Tx, table, idColumn, column string
 			rows.Close()
 			return fmt.Errorf("scan plaintext %s.%s: %w", table, column, err)
 		}
-		if !value.Valid || value.String == "" || strings.HasPrefix(value.String, encryptedTextPrefix) {
+		if !value.Valid || value.String == "" {
 			continue
+		}
+		if hasExistingEncryptedRows && strings.HasPrefix(value.String, encryptedTextPrefix) {
+			if _, err := db.decryptStringStrict(value.String); err == nil {
+				continue
+			}
 		}
 
 		encrypted, err := db.encryptString(value.String)
@@ -1057,12 +1301,13 @@ func (db *database) encryptTextColumn(tx *sql.Tx, table, idColumn, column string
 			rows.Close()
 			return fmt.Errorf("encrypt %s.%s: %w", table, column, err)
 		}
-		if encrypted != value.String {
-			updates = append(updates, update{
-				id:    id,
-				value: sql.NullString{String: encrypted, Valid: true},
-			})
+		if encrypted == value.String {
+			continue
 		}
+		updates = append(updates, update{
+			id:    id,
+			value: sql.NullString{String: encrypted, Valid: true},
+		})
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -1083,7 +1328,7 @@ func (db *database) encryptTextColumn(tx *sql.Tx, table, idColumn, column string
 	return nil
 }
 
-func (db *database) encryptBlobColumn(tx *sql.Tx, table, idColumn, column string) error {
+func (db *database) encryptBlobColumn(tx *sql.Tx, table, idColumn, column string, hasExistingEncryptedRows bool) error {
 	rows, err := tx.Query(fmt.Sprintf("SELECT %s, %s FROM %s", idColumn, column, table))
 	if err != nil {
 		return fmt.Errorf("query plaintext %s.%s: %w", table, column, err)
@@ -1101,8 +1346,13 @@ func (db *database) encryptBlobColumn(tx *sql.Tx, table, idColumn, column string
 			rows.Close()
 			return fmt.Errorf("scan plaintext %s.%s: %w", table, column, err)
 		}
-		if len(value) == 0 || bytes.HasPrefix(value, encryptedBlobPrefix) {
+		if len(value) == 0 {
 			continue
+		}
+		if hasExistingEncryptedRows && bytes.HasPrefix(value, encryptedBlobPrefix) {
+			if _, err := db.decryptBytesStrict(value); err == nil {
+				continue
+			}
 		}
 
 		encrypted, err := db.encryptBytes(value)

@@ -550,6 +550,7 @@ func setupModelRecommendationsTestEnv(t *testing.T, noCloudEnv string) {
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("HOMEDRIVE", filepath.VolumeName(home))
 	t.Setenv("HOMEPATH", strings.TrimPrefix(home, filepath.VolumeName(home)))
+	t.Setenv("OLLAMA_API_TOKEN", "")
 
 	// Use explicit false rather than empty to avoid platform/env ambiguity.
 	if noCloudEnv == "" {

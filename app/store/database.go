@@ -17,7 +17,7 @@ import (
 
 // currentSchemaVersion defines the current database schema version.
 // Increment this when making schema changes that require migrations.
-const currentSchemaVersion = 22
+const currentSchemaVersion = 23
 
 // database wraps the SQLite connection.
 // SQLite handles its own locking for concurrent access:
@@ -153,6 +153,7 @@ func (db *database) init() error {
 		chat_id TEXT NOT NULL,
 		model TEXT NOT NULL,
 		content_hash TEXT NOT NULL,
+		content_hash_lookup TEXT NOT NULL DEFAULT '',
 		dimensions INTEGER NOT NULL,
 		embedding BLOB NOT NULL,
 		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -194,6 +195,9 @@ func (db *database) init() error {
 	// Check and upgrade schema version if needed
 	if err := db.migrate(); err != nil {
 		return fmt.Errorf("migrate schema: %w", err)
+	}
+	if err := db.ensureMessageEmbeddingLookupSchema(); err != nil {
+		return fmt.Errorf("ensure vector memory lookup schema: %w", err)
 	}
 
 	// Clean up orphaned records created before foreign key constraints were properly enforced
@@ -338,6 +342,11 @@ func (db *database) migrate() error {
 				return fmt.Errorf("migrate v21 to v22: %w", err)
 			}
 			version = 22
+		case 22:
+			if err := db.migrateV22ToV23(); err != nil {
+				return fmt.Errorf("migrate v22 to v23: %w", err)
+			}
+			version = 23
 		default:
 			// If we have a version we don't recognize, just set it to current
 			// This might happen during development
@@ -982,6 +991,46 @@ func (db *database) migrateV21ToV22() error {
 	return nil
 }
 
+// migrateV22ToV23 adds encrypted lookup support for cached vector embeddings.
+func (db *database) migrateV22ToV23() error {
+	if err := db.ensureMessageEmbeddingLookupSchema(); err != nil {
+		return err
+	}
+
+	if _, err := db.conn.Exec(`UPDATE settings SET schema_version = 23`); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+
+	return nil
+}
+
+func (db *database) ensureMessageEmbeddingLookupSchema() error {
+	if exists, err := sqliteTableExists(db.conn, "message_embeddings"); err != nil || !exists {
+		return err
+	}
+
+	ok, err := sqliteColumnExists(db.conn, "message_embeddings", "content_hash_lookup")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		if _, err := db.conn.Exec(`ALTER TABLE message_embeddings ADD COLUMN content_hash_lookup TEXT NOT NULL DEFAULT ''`); err != nil && !duplicateColumnError(err) {
+			return fmt.Errorf("add message_embeddings content_hash_lookup column: %w", err)
+		}
+	}
+
+	_, err = db.conn.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_message_embeddings_encrypted_lookup
+			ON message_embeddings(chat_id, model, content_hash_lookup)
+			WHERE content_hash_lookup <> '';
+	`)
+	if err != nil {
+		return fmt.Errorf("create encrypted vector memory lookup index: %w", err)
+	}
+
+	return nil
+}
+
 func (db *database) updateLastMessage(chatID string, msg Message) error {
 	tx, err := db.conn.Begin()
 	if err != nil {
@@ -1442,11 +1491,13 @@ func (db *database) getVectorMemoryEmbeddings(chatID, model string) ([]VectorMem
 		if err := rows.Scan(&item.ChatID, &item.ContentHash, &embeddingBytes); err != nil {
 			return nil, fmt.Errorf("scan vector memory embedding: %w", err)
 		}
-		embedding, err := decodeFloat32Vector(embeddingBytes)
+		ok, err := db.decodeVectorMemoryEmbedding(&item, embeddingBytes)
 		if err != nil {
+			return nil, err
+		}
+		if !ok {
 			continue
 		}
-		item.Embedding = embedding
 		embeddings = append(embeddings, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -1474,11 +1525,13 @@ func (db *database) getVectorMemoryEmbeddingsAllChats(model string) ([]VectorMem
 		if err := rows.Scan(&item.ChatID, &item.ContentHash, &embeddingBytes); err != nil {
 			return nil, fmt.Errorf("scan vector memory embedding: %w", err)
 		}
-		embedding, err := decodeFloat32Vector(embeddingBytes)
+		ok, err := db.decodeVectorMemoryEmbedding(&item, embeddingBytes)
 		if err != nil {
+			return nil, err
+		}
+		if !ok {
 			continue
 		}
-		item.Embedding = embedding
 		embeddings = append(embeddings, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -1513,11 +1566,13 @@ func (db *database) getVectorMemoryEmbeddingsForChats(model string, chatIDs []st
 		if err := rows.Scan(&item.ChatID, &item.ContentHash, &embeddingBytes); err != nil {
 			return nil, fmt.Errorf("scan vector memory embedding: %w", err)
 		}
-		embedding, err := decodeFloat32Vector(embeddingBytes)
+		ok, err := db.decodeVectorMemoryEmbedding(&item, embeddingBytes)
 		if err != nil {
+			return nil, err
+		}
+		if !ok {
 			continue
 		}
-		item.Embedding = embedding
 		embeddings = append(embeddings, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -1525,6 +1580,24 @@ func (db *database) getVectorMemoryEmbeddingsForChats(model string, chatIDs []st
 	}
 
 	return embeddings, nil
+}
+
+func (db *database) decodeVectorMemoryEmbedding(item *VectorMemoryEmbedding, embeddingBytes []byte) (bool, error) {
+	contentHash, err := db.decryptString(item.ContentHash)
+	if err != nil {
+		return false, fmt.Errorf("decrypt vector memory content hash: %w", err)
+	}
+	decodedBytes, err := db.decryptBytes(embeddingBytes)
+	if err != nil {
+		return false, fmt.Errorf("decrypt vector memory embedding: %w", err)
+	}
+	embedding, err := decodeFloat32Vector(decodedBytes)
+	if err != nil {
+		return false, nil
+	}
+	item.ContentHash = contentHash
+	item.Embedding = embedding
+	return true, nil
 }
 
 func sqlPlaceholders(count int) string {
@@ -1552,10 +1625,48 @@ func (db *database) upsertMessageEmbedding(chatID, model, contentHash string, em
 		return err
 	}
 
+	if db.encryptAppData {
+		lookup, err := db.messageEmbeddingLookupKey(contentHash)
+		if err != nil {
+			return err
+		}
+		encryptedHash, err := db.encryptString(contentHash)
+		if err != nil {
+			return fmt.Errorf("encrypt vector memory content hash: %w", err)
+		}
+		encryptedEmbedding, err := db.encryptBytes(encoded)
+		if err != nil {
+			return fmt.Errorf("encrypt vector memory embedding: %w", err)
+		}
+
+		tx, err := db.conn.Begin()
+		if err != nil {
+			return fmt.Errorf("begin vector memory embedding upsert: %w", err)
+		}
+		defer tx.Rollback()
+		if _, err := tx.Exec(`
+			DELETE FROM message_embeddings
+			WHERE chat_id = ? AND model = ? AND content_hash_lookup = ?
+		`, chatID, model, lookup); err != nil {
+			return fmt.Errorf("replace encrypted message embedding: %w", err)
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO message_embeddings (chat_id, model, content_hash, content_hash_lookup, dimensions, embedding, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		`, chatID, model, encryptedHash, lookup, len(embedding), encryptedEmbedding); err != nil {
+			return fmt.Errorf("insert encrypted message embedding: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit encrypted message embedding upsert: %w", err)
+		}
+		return nil
+	}
+
 	_, err = db.conn.Exec(`
-		INSERT INTO message_embeddings (chat_id, model, content_hash, dimensions, embedding, updated_at)
-		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO message_embeddings (chat_id, model, content_hash, content_hash_lookup, dimensions, embedding, updated_at)
+		VALUES (?, ?, ?, '', ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(chat_id, model, content_hash) DO UPDATE SET
+			content_hash_lookup = '',
 			dimensions = excluded.dimensions,
 			embedding = excluded.embedding,
 			updated_at = CURRENT_TIMESTAMP

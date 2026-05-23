@@ -412,6 +412,90 @@ func TestStoreAppDataEncryptionStatusReportsMissingAndWrongKey(t *testing.T) {
 	}
 }
 
+func TestDatabasePlaintextEncryptionPrefixDoesNotLockAppData(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "store.db")
+	prefixText := encryptedTextPrefix + "this is normal user text"
+	prefixBlob := []byte(encryptedTextPrefix + "this is normal attachment data")
+	t.Setenv("OLLAMA_APP_DATA_KEY", "")
+	t.Setenv("OLLAMA_APP_DATA_ENCRYPTION", "")
+
+	db, err := newDatabase(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := NewChat("prefix-chat")
+	chat.Title = prefixText
+	chat.Messages = append(chat.Messages, NewMessage("user", prefixText, &MessageOptions{
+		Attachments: []File{{
+			Filename: prefixText,
+			Data:     prefixBlob,
+		}},
+	}))
+	if err := db.saveChat(*chat); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	status := (&Store{DBPath: dbPath}).AppDataEncryptionStatus()
+	if status.Encrypted || status.State != AppDataEncryptionStatePlain {
+		t.Fatalf("expected plaintext prefix rows to remain plain, got %#v", status)
+	}
+
+	db, err = newDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("plaintext prefix rows should not lock the database: %v", err)
+	}
+	retrieved, err := db.getChatWithOptions(chat.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retrieved.Title != prefixText || retrieved.Messages[0].Content != prefixText {
+		t.Fatalf("expected plaintext prefix values to round-trip, got %#v", retrieved)
+	}
+	if !bytes.Equal(retrieved.Messages[0].Attachments[0].Data, prefixBlob) {
+		t.Fatalf("expected plaintext prefix blob to round-trip, got %q", retrieved.Messages[0].Attachments[0].Data)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("OLLAMA_APP_DATA_KEY", "correct horse battery staple")
+	db, err = newDatabase(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	var rawTitle, rawContent, rawFilename string
+	var rawAttachmentData []byte
+	if err := db.conn.QueryRow(`SELECT title FROM chats WHERE id = ?`, chat.ID).Scan(&rawTitle); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.conn.QueryRow(`SELECT content FROM messages WHERE chat_id = ?`, chat.ID).Scan(&rawContent); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.conn.QueryRow(`SELECT filename, data FROM attachments`).Scan(&rawFilename, &rawAttachmentData); err != nil {
+		t.Fatal(err)
+	}
+	assertEncryptedString(t, rawTitle, prefixText)
+	assertEncryptedString(t, rawContent, prefixText)
+	assertEncryptedString(t, rawFilename, prefixText)
+	assertEncryptedBlob(t, rawAttachmentData, prefixBlob)
+
+	retrieved, err = db.getChatWithOptions(chat.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retrieved.Title != prefixText || retrieved.Messages[0].Content != prefixText {
+		t.Fatalf("expected encrypted prefix values to round-trip, got %#v", retrieved)
+	}
+	if !bytes.Equal(retrieved.Messages[0].Attachments[0].Data, prefixBlob) {
+		t.Fatalf("expected encrypted prefix blob to round-trip, got %q", retrieved.Messages[0].Attachments[0].Data)
+	}
+}
+
 func TestDatabaseEncryptionUsesPerDatabaseSalt(t *testing.T) {
 	t.Setenv("OLLAMA_APP_DATA_KEY", "correct horse battery staple")
 	t.Setenv("OLLAMA_APP_DATA_ENCRYPTION", "")
@@ -502,6 +586,211 @@ func TestDatabaseEncryptionMigratesLegacyFixedSalt(t *testing.T) {
 	}
 	if retrieved.Title != chat.Title || retrieved.Messages[0].Content != "legacy secret content" {
 		t.Fatalf("expected migrated chat to remain readable, got %#v", retrieved)
+	}
+}
+
+func TestDatabaseEncryptionMigratesUnmarkedLegacyFixedSalt(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "store.db")
+	passphrase := "correct horse battery staple"
+	t.Setenv("OLLAMA_APP_DATA_KEY", "")
+	t.Setenv("OLLAMA_APP_DATA_ENCRYPTION", "")
+
+	db, err := newDatabase(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.cipher, err = newDataCipher(passphrase, []byte(legacyAppDataKeySalt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.encryptAppData = true
+	chat := NewChat("unmarked-legacy-chat")
+	chat.Title = "Unmarked legacy secret title"
+	chat.Messages = append(chat.Messages, NewMessage("user", "unmarked legacy secret content", nil))
+	if err := db.saveChat(*chat); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.upsertMessageEmbedding(chat.ID, "nomic-embed-text", "unmarked-legacy-content-hash", []float32{0.7, 0.8}); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRawAppDataSalt(t, db); got != "" {
+		t.Fatalf("expected unmarked legacy DB to have no per-database salt, got %q", got)
+	}
+	marker, err := db.appDataEncryptionMarker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if marker.Valid {
+		t.Fatalf("expected unmarked legacy DB to have no marker, got %q", marker.String)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("OLLAMA_APP_DATA_KEY", passphrase)
+	db, err = newDatabase(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if got := readRawAppDataSalt(t, db); got == "" {
+		t.Fatal("expected unmarked legacy DB to be migrated to a per-database salt")
+	}
+	status := (&Store{DBPath: dbPath, db: db}).AppDataEncryptionStatus()
+	if status.Legacy || status.State != AppDataEncryptionStateEncrypted {
+		t.Fatalf("expected unmarked legacy DB to migrate to encrypted status, got %#v", status)
+	}
+	retrieved, err := db.getChatWithOptions(chat.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retrieved.Title != chat.Title || retrieved.Messages[0].Content != "unmarked legacy secret content" {
+		t.Fatalf("expected migrated unmarked legacy chat to remain readable, got %#v", retrieved)
+	}
+	embeddings, err := db.getVectorMemoryEmbeddings(chat.ID, "nomic-embed-text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(embeddings) != 1 || embeddings[0].ContentHash != "unmarked-legacy-content-hash" {
+		t.Fatalf("expected migrated unmarked legacy embedding to remain readable, got %#v", embeddings)
+	}
+	assertEncryptedMessageEmbeddingRow(t, db, "unmarked-legacy-content-hash", []float32{0.7, 0.8})
+}
+
+func TestDatabaseEncryptionDisablesUnmarkedLegacyFixedSalt(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "store.db")
+	passphrase := "correct horse battery staple"
+	t.Setenv("OLLAMA_APP_DATA_KEY", "")
+	t.Setenv("OLLAMA_APP_DATA_ENCRYPTION", "")
+
+	db, err := newDatabase(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.cipher, err = newDataCipher(passphrase, []byte(legacyAppDataKeySalt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.encryptAppData = true
+	chat := NewChat("disable-unmarked-legacy-chat")
+	chat.Title = "Disable unmarked legacy title"
+	chat.Messages = append(chat.Messages, NewMessage("user", "disable unmarked legacy content", nil))
+	if err := db.saveChat(*chat); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.upsertMessageEmbedding(chat.ID, "nomic-embed-text", "disable-unmarked-legacy-content-hash", []float32{0.2, 0.9}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("OLLAMA_APP_DATA_KEY", passphrase)
+	t.Setenv("OLLAMA_APP_DATA_ENCRYPTION", "off")
+	db, err = newDatabase(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rawTitle, rawContent string
+	if err := db.conn.QueryRow(`SELECT title FROM chats WHERE id = ?`, chat.ID).Scan(&rawTitle); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.conn.QueryRow(`SELECT content FROM messages WHERE chat_id = ?`, chat.ID).Scan(&rawContent); err != nil {
+		t.Fatal(err)
+	}
+	assertPlainString(t, rawTitle, "Disable unmarked legacy title")
+	assertPlainString(t, rawContent, "disable unmarked legacy content")
+	if got := readRawAppDataSalt(t, db); got != "" {
+		t.Fatalf("expected disabled unmarked legacy DB to have no per-database salt, got %q", got)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("OLLAMA_APP_DATA_KEY", "")
+	t.Setenv("OLLAMA_APP_DATA_ENCRYPTION", "")
+	db, err = newDatabase(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	retrieved, err := db.getChatWithOptions(chat.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retrieved.Title != chat.Title || retrieved.Messages[0].Content != "disable unmarked legacy content" {
+		t.Fatalf("expected disabled unmarked legacy chat to remain readable, got %#v", retrieved)
+	}
+	embeddings, err := db.getVectorMemoryEmbeddings(chat.ID, "nomic-embed-text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(embeddings) != 1 || embeddings[0].ContentHash != "disable-unmarked-legacy-content-hash" {
+		t.Fatalf("expected disabled unmarked legacy embedding to remain readable, got %#v", embeddings)
+	}
+}
+
+func TestDatabaseEncryptionEncryptsVectorEmbeddingCache(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "store.db")
+	t.Setenv("OLLAMA_APP_DATA_KEY", "")
+	t.Setenv("OLLAMA_APP_DATA_ENCRYPTION", "")
+
+	db, err := newDatabase(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := NewChat("embedding-cache-chat")
+	chat.Messages = append(chat.Messages, NewMessage("user", "embedding cache secret", nil))
+	if err := db.saveChat(*chat); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.upsertMessageEmbedding(chat.ID, "nomic-embed-text", "secret-content-hash", []float32{0.1, 0.2, 0.3}); err != nil {
+		t.Fatal(err)
+	}
+	if got := countMessageEmbeddings(t, db); got != 1 {
+		t.Fatalf("expected plaintext embedding cache row, got %d", got)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("OLLAMA_APP_DATA_KEY", "correct horse battery staple")
+	db, err = newDatabase(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if got := countMessageEmbeddings(t, db); got != 1 {
+		t.Fatalf("expected encryption startup to preserve embedding cache, got %d rows", got)
+	}
+	assertEncryptedMessageEmbeddingRow(t, db, "secret-content-hash", []float32{0.1, 0.2, 0.3})
+
+	embeddings, err := db.getVectorMemoryEmbeddings(chat.ID, "nomic-embed-text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(embeddings) != 1 || embeddings[0].ContentHash != "secret-content-hash" {
+		t.Fatalf("expected encrypted embedding cache to round-trip, got %#v", embeddings)
+	}
+	if got := embeddings[0].Embedding; len(got) != 3 || got[0] != 0.1 || got[2] != 0.3 {
+		t.Fatalf("expected encrypted embedding vector to round-trip, got %#v", got)
+	}
+
+	if err := db.upsertMessageEmbedding(chat.ID, "nomic-embed-text", "secret-content-hash", []float32{0.4, 0.5, 0.6}); err != nil {
+		t.Fatal(err)
+	}
+	if got := countMessageEmbeddings(t, db); got != 1 {
+		t.Fatalf("expected encrypted embedding upsert to replace cache row, got %d rows", got)
+	}
+	assertEncryptedMessageEmbeddingRow(t, db, "secret-content-hash", []float32{0.4, 0.5, 0.6})
+	embeddings, err = db.getVectorMemoryEmbeddings(chat.ID, "nomic-embed-text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := embeddings[0].Embedding; len(got) != 3 || got[0] != 0.4 || got[2] != 0.6 {
+		t.Fatalf("expected encrypted embedding upsert to round-trip updated vector, got %#v", got)
 	}
 }
 
@@ -608,6 +897,36 @@ func readRawAppDataSalt(t *testing.T, db *database) string {
 		t.Fatal(err)
 	}
 	return salt
+}
+
+func countMessageEmbeddings(t *testing.T, db *database) int {
+	t.Helper()
+	var count int
+	if err := db.conn.QueryRow(`SELECT COUNT(*) FROM message_embeddings`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
+}
+
+func assertEncryptedMessageEmbeddingRow(t *testing.T, db *database, contentHash string, embedding []float32) {
+	t.Helper()
+	var rawContentHash, rawContentHashLookup string
+	var rawEmbedding []byte
+	if err := db.conn.QueryRow(`
+		SELECT content_hash, content_hash_lookup, embedding
+		FROM message_embeddings
+	`).Scan(&rawContentHash, &rawContentHashLookup, &rawEmbedding); err != nil {
+		t.Fatal(err)
+	}
+	assertEncryptedString(t, rawContentHash, contentHash)
+	if rawContentHashLookup == "" || strings.Contains(rawContentHashLookup, contentHash) {
+		t.Fatalf("expected opaque vector memory lookup key, got %q", rawContentHashLookup)
+	}
+	encoded, err := encodeFloat32Vector(embedding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEncryptedBlob(t, rawEmbedding, encoded)
 }
 
 func assertEncryptedBlob(t *testing.T, value []byte, secret []byte) {

@@ -2038,7 +2038,7 @@ export function SettingsDrawer({
                             </div>
                             {confirmResetAppData ? (
                               <div className="mt-2 text-xs text-danger">
-                                Encrypted chats and settings in the current database will not be readable without the old key.
+                                Encrypted chats and local app data in the current database will not be readable without the old key.
                               </div>
                             ) : null}
                           </div>

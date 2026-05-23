@@ -337,6 +337,8 @@ func TestStore(t *testing.T) {
 // setupTestStore creates a temporary store for testing
 func setupTestStore(t *testing.T) (*Store, func()) {
 	t.Helper()
+	t.Setenv("OLLAMA_APP_DATA_KEY", "")
+	t.Setenv("OLLAMA_APP_DATA_ENCRYPTION", "")
 
 	tmpDir := t.TempDir()
 

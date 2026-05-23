@@ -114,13 +114,17 @@ Storage can enable passphrase-based browser chat encryption, which rewrites
 existing standalone chats and keeps future saves encrypted while unlocked.
 
 For desktop app privacy at rest, set `OLLAMA_APP_DATA_KEY` before launching the
-taskbar app or `go run ./app/cmd/app -dev`. When present, sensitive SQLite
-fields such as chat titles, message content, tool results, attachments, browser
-state, and cached user profile data are encrypted with AES-GCM. Each database
-gets its own random plaintext salt; the salt and per-value nonces are stored
-with the encrypted data and are not secrets. Older fixed-salt encrypted
-databases remain readable with the correct key and are automatically migrated
-to a per-database salt after a successful unlock. Existing plaintext rows are
+taskbar app or `go run ./app/cmd/app -dev`. When present, sensitive SQLite app
+data such as chat titles, message content, tool results, attachments, browser
+state, and cached user profile data is encrypted with AES-GCM. This is
+field-level encryption for local app data, not full-database encryption. Some
+operational settings and schema metadata remain plaintext. Retrieval memory's
+persisted embedding cache is also protected: content hashes use a keyed lookup,
+and stored vector blobs are encrypted while encrypted app data is active. Each
+database gets its own random plaintext salt; the salt and per-value nonces are
+stored with the encrypted data and are not secrets. Older fixed-salt encrypted
+databases remain readable with the correct key and are automatically migrated to
+a per-database salt after a successful unlock. Existing plaintext rows are
 rewritten encrypted when encryption is enabled. Keep the same key available or
 encrypted rows cannot be read.
 To turn desktop SQLite encryption off, launch once with the same

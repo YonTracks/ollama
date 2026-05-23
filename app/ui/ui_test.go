@@ -1129,6 +1129,7 @@ func TestProxyLogsRedactSensitiveData(t *testing.T) {
 }
 
 func TestOllamaProxyDirectorStripsCredentials(t *testing.T) {
+	t.Setenv("OLLAMA_API_TOKEN", "")
 	target, err := url.Parse("http://127.0.0.1:11434")
 	if err != nil {
 		t.Fatalf("parse URL: %v", err)

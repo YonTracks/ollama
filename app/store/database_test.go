@@ -98,6 +98,73 @@ func TestSchemaMigrations(t *testing.T) {
 	})
 }
 
+func TestDatabaseInitMigratesV22MessageEmbeddingLookupColumnBeforeIndex(t *testing.T) {
+	t.Setenv("OLLAMA_APP_DATA_KEY", "")
+	t.Setenv("OLLAMA_APP_DATA_ENCRYPTION", "")
+
+	dbPath := filepath.Join(t.TempDir(), "v22.db")
+	conn, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = conn.Exec(`
+		CREATE TABLE settings (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			schema_version INTEGER NOT NULL DEFAULT 22
+		);
+		INSERT INTO settings (id, schema_version) VALUES (1, 22);
+		CREATE TABLE chats (
+			id TEXT PRIMARY KEY,
+			title TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			browser_state TEXT
+		);
+		CREATE TABLE message_embeddings (
+			chat_id TEXT NOT NULL,
+			model TEXT NOT NULL,
+			content_hash TEXT NOT NULL,
+			dimensions INTEGER NOT NULL,
+			embedding BLOB NOT NULL,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (chat_id, model, content_hash),
+			FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+		);
+	`)
+	if err != nil {
+		_ = conn.Close()
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := newDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("expected v22 database to migrate before creating lookup index: %v", err)
+	}
+	defer db.Close()
+
+	ok, err := sqliteColumnExists(db.conn, "message_embeddings", "content_hash_lookup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected content_hash_lookup column after migration")
+	}
+
+	var indexName string
+	if err := db.conn.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_message_embeddings_encrypted_lookup'`).Scan(&indexName); err != nil {
+		t.Fatalf("expected encrypted lookup index after migration: %v", err)
+	}
+	version, err := db.getSchemaVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != currentSchemaVersion {
+		t.Fatalf("expected schema version %d, got %d", currentSchemaVersion, version)
+	}
+}
+
 func TestMigrationV13ToV14ContextLength(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
