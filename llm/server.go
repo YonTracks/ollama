@@ -39,6 +39,10 @@ import (
 
 type filteredEnv []string
 
+var runnerSecretEnvKeys = []string{
+	"OLLAMA_API_TOKEN",
+}
+
 func (e filteredEnv) LogValue() slog.Value {
 	var attrs []slog.Attr
 	for _, env := range e {
@@ -62,6 +66,28 @@ func (e filteredEnv) LogValue() slog.Value {
 		}
 	}
 	return slog.GroupValue(attrs...)
+}
+
+func runnerEnv() []string {
+	return filterRunnerEnv(os.Environ())
+}
+
+func filterRunnerEnv(env []string) []string {
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			filtered = append(filtered, entry)
+			continue
+		}
+		if slices.ContainsFunc(runnerSecretEnvKeys, func(secretKey string) bool {
+			return strings.EqualFold(key, secretKey)
+		}) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
 
 type LlamaServer interface {
@@ -382,7 +408,7 @@ func StartRunner(ollamaEngine bool, modelPath string, gpuLibs []string, out io.W
 
 	cmd = exec.Command(exe, params...)
 
-	cmd.Env = os.Environ()
+	cmd.Env = runnerEnv()
 
 	if out != nil {
 		// os/exec serializes Write calls when shared

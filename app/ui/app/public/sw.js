@@ -1,4 +1,4 @@
-const CACHE_VERSION = "ollama-app-shell-v6";
+const CACHE_VERSION = "ollama-app-shell-v7";
 const STATIC_CACHE = `${CACHE_VERSION}:static`;
 const APP_SHELL = [
   "/",
@@ -23,6 +23,15 @@ const RUNTIME_CACHE_EXCLUDED_PATHS = [
   "/api/create",
   "/api/delete",
   "/api/blobs"
+];
+
+const SENSITIVE_CACHE_QUERY_PARAMS = [
+  "ollama_token",
+  "token",
+  "access_token",
+  "api_key",
+  "apikey",
+  "authorization"
 ];
 
 function matchesPathPrefix(pathname, prefix) {
@@ -52,6 +61,8 @@ function shouldCache(request) {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return false;
   if (isApiRequest(url)) return false;
+  if (SENSITIVE_CACHE_QUERY_PARAMS.some((param) => url.searchParams.has(param))) return false;
+  if (request.mode === "navigate" && url.search) return false;
   return isStaticAsset(url) || request.mode === "navigate";
 }
 

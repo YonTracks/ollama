@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { normalizeBraveResults } from "./brave";
 import { normalizeCustomResults, searchCustom, validateCustomSearchUrl } from "./custom";
 import { normalizeTavilyResults } from "./tavily";
@@ -119,6 +121,13 @@ describe("search result normalizers", () => {
     );
   });
 
+  it("blocks IPv4-mapped IPv6 custom search endpoints by default", async () => {
+    delete process.env.CUSTOM_SEARCH_ALLOW_LOCAL;
+    await expect(
+      validateCustomSearchUrl(new URL("http://[::ffff:7f00:1]/search"))
+    ).rejects.toThrow(/CUSTOM_SEARCH_ENDPOINT/);
+  });
+
   it("allows local custom search endpoints only with the explicit override", async () => {
     process.env.CUSTOM_SEARCH_ALLOW_LOCAL = "true";
     await expect(
@@ -127,23 +136,24 @@ describe("search result normalizers", () => {
   });
 
   it("does not follow custom search redirects", async () => {
-    process.env.CUSTOM_SEARCH_ENDPOINT = "http://93.184.216.34/search";
-    const fetchMock = vi.fn(() =>
-      Promise.resolve(
-        new Response(null, {
-          status: 302,
-          headers: { Location: "http://127.0.0.1:9999/search" }
-        })
-      )
-    );
-    vi.stubGlobal("fetch", fetchMock);
+    const server = createServer((_req, res) => {
+      res.writeHead(302, { Location: "http://127.0.0.1:9999/search" });
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 
-    await expect(
-      searchCustom({ provider: "custom", query: "ollama", count: 3, safe: true })
-    ).rejects.toThrow(/redirected/);
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.any(URL),
-      expect.objectContaining({ redirect: "manual" })
-    );
+    try {
+      const port = (server.address() as AddressInfo).port;
+      process.env.CUSTOM_SEARCH_ALLOW_LOCAL = "true";
+      process.env.CUSTOM_SEARCH_ENDPOINT = `http://127.0.0.1:${port}/search`;
+
+      await expect(
+        searchCustom({ provider: "custom", query: "ollama", count: 3, safe: true })
+      ).rejects.toThrow(/redirected/);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      );
+    }
   });
 });

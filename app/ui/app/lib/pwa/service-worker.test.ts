@@ -25,10 +25,18 @@ describe("service worker cache policy", () => {
     expect(source).not.toContain('cache.put("/", copy)');
   });
 
+  it("does not cache token-bearing or query-string navigations", () => {
+    const source = readFileSync(join(process.cwd(), "public", "sw.js"), "utf8");
+
+    expect(source).toContain('"ollama_token"');
+    expect(source).toContain("SENSITIVE_CACHE_QUERY_PARAMS.some");
+    expect(source).toContain('request.mode === "navigate" && url.search');
+  });
+
   it("uses a new cache version for app shell updates", () => {
     const source = readFileSync(join(process.cwd(), "public", "sw.js"), "utf8");
 
-    expect(source).toContain('const CACHE_VERSION = "ollama-app-shell-v6"');
+    expect(source).toContain('const CACHE_VERSION = "ollama-app-shell-v7"');
   });
 
   it("registers service worker updates without stale browser cache", () => {

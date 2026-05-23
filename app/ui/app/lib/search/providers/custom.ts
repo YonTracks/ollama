@@ -1,4 +1,6 @@
 import * as dns from "node:dns/promises";
+import * as http from "node:http";
+import * as https from "node:https";
 import * as net from "node:net";
 
 import { SearchProviderError, type ProviderSearchOptions, type SearchResult } from "../types";
@@ -9,6 +11,28 @@ type CustomResponse = {
 };
 
 type CustomResult = Record<string, unknown>;
+
+type ResolvedAddress = {
+  address: string;
+  family: 4 | 6;
+};
+
+const MAX_CUSTOM_SEARCH_RESPONSE_BYTES = 1024 * 1024;
+const BLOCKED_ADDRESS_RANGES = new net.BlockList();
+BLOCKED_ADDRESS_RANGES.addSubnet("0.0.0.0", 8, "ipv4");
+BLOCKED_ADDRESS_RANGES.addSubnet("10.0.0.0", 8, "ipv4");
+BLOCKED_ADDRESS_RANGES.addSubnet("127.0.0.0", 8, "ipv4");
+BLOCKED_ADDRESS_RANGES.addSubnet("100.64.0.0", 10, "ipv4");
+BLOCKED_ADDRESS_RANGES.addSubnet("169.254.0.0", 16, "ipv4");
+BLOCKED_ADDRESS_RANGES.addSubnet("172.16.0.0", 12, "ipv4");
+BLOCKED_ADDRESS_RANGES.addSubnet("192.168.0.0", 16, "ipv4");
+BLOCKED_ADDRESS_RANGES.addSubnet("224.0.0.0", 4, "ipv4");
+BLOCKED_ADDRESS_RANGES.addSubnet("240.0.0.0", 4, "ipv4");
+BLOCKED_ADDRESS_RANGES.addAddress("::", "ipv6");
+BLOCKED_ADDRESS_RANGES.addAddress("::1", "ipv6");
+BLOCKED_ADDRESS_RANGES.addSubnet("fc00::", 7, "ipv6");
+BLOCKED_ADDRESS_RANGES.addSubnet("fe80::", 10, "ipv6");
+BLOCKED_ADDRESS_RANGES.addSubnet("ff00::", 8, "ipv6");
 
 export async function searchCustom(options: ProviderSearchOptions) {
   const endpoint = process.env.CUSTOM_SEARCH_ENDPOINT?.trim();
@@ -23,19 +47,13 @@ export async function searchCustom(options: ProviderSearchOptions) {
   if (searchUrl.protocol !== "http:" && searchUrl.protocol !== "https:") {
     throw new SearchProviderError("CUSTOM_SEARCH_ENDPOINT must use http or https.", 400);
   }
-  await validateCustomSearchUrl(searchUrl);
+  const resolvedAddresses = await validateCustomSearchUrl(searchUrl);
 
   searchUrl.searchParams.set("q", options.query);
   searchUrl.searchParams.set("count", String(options.count));
   searchUrl.searchParams.set("safe", String(options.safe));
 
-  const response = await fetch(searchUrl, {
-    headers: {
-      Accept: "application/json"
-    },
-    redirect: "manual",
-    signal: options.signal
-  });
+  const response = await requestCustomSearch(searchUrl, resolvedAddresses, options.signal);
 
   if (response.status >= 300 && response.status < 400) {
     throw new SearchProviderError(
@@ -66,7 +84,7 @@ export async function validateCustomSearchUrl(searchUrl: URL) {
     if (isBlockedAddress(host)) {
       throw localEndpointError("points to a local or private address");
     }
-    return;
+    return [{ address: host, family: net.isIP(host) as 4 | 6 }];
   }
   if (host === "localhost" || host.endsWith(".localhost") || !host.includes(".")) {
     throw localEndpointError("points to a local or private host");
@@ -85,6 +103,10 @@ export async function validateCustomSearchUrl(searchUrl: URL) {
   if (addresses.some(({ address }) => isBlockedAddress(address))) {
     throw localEndpointError("resolves to a local or private address");
   }
+
+  return addresses
+    .map(({ address }) => ({ address, family: net.isIP(address) }))
+    .filter((target): target is ResolvedAddress => target.family === 4 || target.family === 6);
 }
 
 export function normalizeCustomResults(payload: unknown, count: number): SearchResult[] {
@@ -161,40 +183,85 @@ function localEndpointError(reason: string) {
 }
 
 function isBlockedAddress(address: string) {
-  const normalized = address.toLowerCase();
+  const normalized = address.toLowerCase().replace(/^\[(.*)\]$/, "$1");
   const family = net.isIP(normalized);
-  if (family === 4) return isBlockedIPv4(normalized);
-  if (family === 6) return isBlockedIPv6(normalized);
+  if (family === 4 || family === 6) {
+    return BLOCKED_ADDRESS_RANGES.check(normalized, family === 4 ? "ipv4" : "ipv6");
+  }
   return true;
 }
 
-function isBlockedIPv4(address: string) {
-  const parts = address.split(".").map((part) => Number.parseInt(part, 10));
-  if (
-    parts.length !== 4 ||
-    parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
-  ) {
-    return true;
-  }
-  const [a, b] = parts;
-  return (
-    a === 0 ||
-    a === 10 ||
-    a === 127 ||
-    (a === 100 && b >= 64 && b <= 127) ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    a >= 224
-  );
+async function requestCustomSearch(
+  searchUrl: URL,
+  resolvedAddresses: ResolvedAddress[] | undefined,
+  signal?: AbortSignal
+) {
+  const request = searchUrl.protocol === "https:" ? https.request : http.request;
+
+  return new Promise<Response>((resolve, reject) => {
+    const req = request(
+      searchUrl,
+      {
+        headers: { Accept: "application/json" },
+        lookup: resolvedAddresses?.length ? createPinnedLookup(resolvedAddresses) : undefined,
+        method: "GET",
+        signal
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        let size = 0;
+
+        res.on("data", (chunk: Buffer) => {
+          size += chunk.length;
+          if (size > MAX_CUSTOM_SEARCH_RESPONSE_BYTES) {
+            req.destroy(
+              new SearchProviderError("Custom search response is too large.", 502)
+            );
+            return;
+          }
+          chunks.push(chunk);
+        });
+
+        res.on("end", () => {
+          const body = Buffer.concat(chunks);
+          resolve(
+            new Response(body, {
+              status: res.statusCode ?? 502,
+              statusText: res.statusMessage
+            })
+          );
+        });
+      }
+    );
+
+    req.on("error", reject);
+    req.end();
+  });
 }
 
-function isBlockedIPv6(address: string) {
-  if (address === "::" || address === "::1") return true;
-  return (
-    address.startsWith("fc") ||
-    address.startsWith("fd") ||
-    address.startsWith("fe80:") ||
-    address.startsWith("ff")
-  );
+function createPinnedLookup(addresses: ResolvedAddress[]): http.RequestOptions["lookup"] {
+  return ((_hostname, options, callback) => {
+    const family =
+      typeof options === "object" && options && "family" in options
+        ? Number(options.family)
+        : 0;
+    const candidates =
+      family === 4 || family === 6
+        ? addresses.filter((address) => address.family === family)
+        : addresses;
+    const target = candidates[0];
+
+    if (!target) {
+      callback(
+        Object.assign(new Error("CUSTOM_SEARCH_ENDPOINT host resolved to no addresses."), {
+          code: "ENOTFOUND"
+        }),
+        "",
+        0
+      );
+      return;
+    }
+
+    callback(null, target.address, target.family);
+  }) as http.RequestOptions["lookup"];
 }

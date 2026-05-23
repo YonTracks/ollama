@@ -49,6 +49,34 @@ func TestFilteredEnvRedactsSensitiveValues(t *testing.T) {
 	}
 }
 
+func TestFilterRunnerEnvDropsAPIToken(t *testing.T) {
+	got := filterRunnerEnv([]string{
+		"PATH=/usr/bin",
+		"OLLAMA_API_TOKEN=test-token-123",
+		"ollama_api_token=lowercase-secret",
+		"OLLAMA_HOST=127.0.0.1:11434",
+		"OLLAMA_MODELS=/tmp/models",
+		"MALFORMED",
+	})
+
+	joined := strings.Join(got, "\n")
+	for _, leaked := range []string{"test-token-123", "lowercase-secret", "OLLAMA_API_TOKEN=", "ollama_api_token="} {
+		if strings.Contains(joined, leaked) {
+			t.Fatalf("runner env leaked %q in %q", leaked, joined)
+		}
+	}
+	for _, want := range []string{
+		"PATH=/usr/bin",
+		"OLLAMA_HOST=127.0.0.1:11434",
+		"OLLAMA_MODELS=/tmp/models",
+		"MALFORMED",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("runner env = %q, want to contain %q", joined, want)
+		}
+	}
+}
+
 func TestLLMServerFitGPU(t *testing.T) {
 	minMemory := 457 * format.MebiByte
 
