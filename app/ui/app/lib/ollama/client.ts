@@ -25,6 +25,8 @@ import type {
 
 const DEV_API_BASE = "http://127.0.0.1:3001";
 const OLLAMA_DOT_COM = "https://ollama.com";
+const DESKTOP_REQUEST_HEADER = "X-Ollama-Desktop-Request";
+const DESKTOP_REQUEST_HEADER_VALUE = "1";
 
 interface RawChatMessage {
   role?: string;
@@ -139,6 +141,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
       cache: "no-store",
       headers: {
+        [DESKTOP_REQUEST_HEADER]: DESKTOP_REQUEST_HEADER_VALUE,
         Accept: "application/json",
         ...(init?.body ? { "Content-Type": "application/json" } : {}),
         ...init?.headers
@@ -580,6 +583,7 @@ export async function fetchUser(signal?: AbortSignal): Promise<OllamaUser | null
       method: "GET",
       cache: "no-store",
       headers: {
+        [DESKTOP_REQUEST_HEADER]: DESKTOP_REQUEST_HEADER_VALUE,
         Accept: "application/json"
       },
       signal
@@ -605,6 +609,7 @@ export async function fetchConnectUrl(): Promise<string> {
       method: "GET",
       cache: "no-store",
       headers: {
+        [DESKTOP_REQUEST_HEADER]: DESKTOP_REQUEST_HEADER_VALUE,
         Accept: "application/json"
       }
     });
@@ -629,6 +634,7 @@ export async function disconnectUser(): Promise<void> {
       method: "POST",
       cache: "no-store",
       headers: {
+        [DESKTOP_REQUEST_HEADER]: DESKTOP_REQUEST_HEADER_VALUE,
         Accept: "application/json",
         "Content-Type": "application/json"
       }
@@ -683,6 +689,7 @@ export async function* sendChat(
       method: "POST",
       cache: "no-store",
       headers: {
+        [DESKTOP_REQUEST_HEADER]: DESKTOP_REQUEST_HEADER_VALUE,
         Accept: "text/jsonl",
         "Content-Type": "application/json"
       },

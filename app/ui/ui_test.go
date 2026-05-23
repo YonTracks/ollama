@@ -26,6 +26,10 @@ import (
 	"github.com/ollama/ollama/app/updater"
 )
 
+func markDesktopRequest(req *http.Request) {
+	req.Header.Set(desktopRequestHeader, desktopRequestHeaderSet)
+}
+
 func TestHandlePostApiSettings(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -219,6 +223,213 @@ func TestValidateCustomSearchEndpointAllowsLocalOverride(t *testing.T) {
 	}
 	if err := validateCustomSearchEndpoint(context.Background(), endpoint); err != nil {
 		t.Fatalf("validateCustomSearchEndpoint() error = %v", err)
+	}
+}
+
+func TestCustomSearchRedirectAndDialGuardsBlockLocalTargets(t *testing.T) {
+	t.Setenv("CUSTOM_SEARCH_ALLOW_LOCAL", "")
+
+	req := httptest.NewRequest(http.MethodGet, "http://198.51.100.10/search", nil)
+	req.URL.Host = "127.0.0.1:9999"
+	err := customSearchHTTPClient(time.Second).CheckRedirect(req, []*http.Request{
+		httptest.NewRequest(http.MethodGet, "http://198.51.100.10/search", nil),
+	})
+	if err == nil {
+		t.Fatal("expected local custom search redirect to be blocked")
+	}
+	if !strings.Contains(err.Error(), "CUSTOM_SEARCH_ENDPOINT") {
+		t.Fatalf("redirect error = %v, want CUSTOM_SEARCH_ENDPOINT message", err)
+	}
+
+	if _, err := customSearchDialTargets(context.Background(), "127.0.0.1:9999"); err == nil {
+		t.Fatal("expected local custom search dial target to be blocked")
+	}
+}
+
+func TestDesktopStateChangingRequestOriginGuard(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		requestURL string
+		setup      func(*http.Request)
+		wantErr    bool
+	}{
+		{
+			name:    "missing origin and header",
+			wantErr: true,
+		},
+		{
+			name: "same origin",
+			setup: func(r *http.Request) {
+				r.Header.Set("Origin", "http://127.0.0.1:61013")
+			},
+		},
+		{
+			name:       "ipv6 same origin",
+			requestURL: "http://[::1]:61013/api/v1/settings",
+			setup: func(r *http.Request) {
+				r.Header.Set("Origin", "http://[::1]:61013")
+			},
+		},
+		{
+			name: "same origin referer",
+			setup: func(r *http.Request) {
+				r.Header.Set("Referer", "http://127.0.0.1:61013/settings")
+			},
+		},
+		{
+			name: "desktop request header",
+			setup: func(r *http.Request) {
+				r.Header.Set(desktopRequestHeader, desktopRequestHeaderSet)
+			},
+		},
+		{
+			name:   "safe method without origin or header",
+			method: http.MethodGet,
+		},
+		{
+			name: "same host different port",
+			setup: func(r *http.Request) {
+				r.Header.Set("Origin", "http://127.0.0.1:5173")
+			},
+			wantErr: true,
+		},
+		{
+			name: "same host default port differs",
+			setup: func(r *http.Request) {
+				r.Header.Set("Origin", "http://127.0.0.1")
+			},
+			wantErr: true,
+		},
+		{
+			name: "cross origin with desktop header",
+			setup: func(r *http.Request) {
+				r.Header.Set("Origin", "http://127.0.0.1:3000")
+				r.Header.Set(desktopRequestHeader, desktopRequestHeaderSet)
+			},
+			wantErr: true,
+		},
+		{
+			name: "cross origin referer",
+			setup: func(r *http.Request) {
+				r.Header.Set("Referer", "http://127.0.0.1:3000/settings")
+			},
+			wantErr: true,
+		},
+		{
+			name: "malformed origin",
+			setup: func(r *http.Request) {
+				r.Header.Set("Origin", "http://[::1")
+			},
+			wantErr: true,
+		},
+		{
+			name: "malformed referer",
+			setup: func(r *http.Request) {
+				r.Header.Set("Referer", "://not-a-url")
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			method := tt.method
+			if method == "" {
+				method = http.MethodPost
+			}
+			requestURL := tt.requestURL
+			if requestURL == "" {
+				requestURL = "http://127.0.0.1:61013/api/v1/settings"
+			}
+			req := httptest.NewRequest(method, requestURL, nil)
+			if tt.setup != nil {
+				tt.setup(req)
+			}
+
+			err := validateDesktopStateChangingRequest(req)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected request to be rejected")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("validateDesktopStateChangingRequest() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestHandlerFailsClosedForExactAPIPath(t *testing.T) {
+	server := &Server{Token: "test-token"}
+	req := httptest.NewRequest(http.MethodGet, "/api", nil)
+	req.AddCookie(&http.Cookie{Name: "token", Value: "test-token"})
+	rr := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusNotFound)
+	}
+	if !strings.Contains(rr.Body.String(), "API route not found") {
+		t.Fatalf("body = %q, want API route not found", rr.Body.String())
+	}
+}
+
+func TestHandlerRejectsDesktopStateChangeWithoutOrigin(t *testing.T) {
+	server := &Server{Token: "test-token"}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/app-data/reset", nil)
+	req.AddCookie(&http.Cookie{Name: "token", Value: "test-token"})
+	rr := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+	if !strings.Contains(rr.Body.String(), "Request origin is required") {
+		t.Fatalf("body = %q, want origin error", rr.Body.String())
+	}
+}
+
+func TestCORSPreflightAllowsLocalDesktopRequestHeader(t *testing.T) {
+	t.Setenv("OLLAMA_CORS", "1")
+
+	server := &Server{Token: "test-token"}
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/settings", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", desktopRequestHeader)
+	rr := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%q", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:3000" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want localhost origin", got)
+	}
+	if !strings.Contains(rr.Header().Get("Access-Control-Allow-Headers"), desktopRequestHeader) {
+		t.Fatalf("Access-Control-Allow-Headers = %q, want %s", rr.Header().Get("Access-Control-Allow-Headers"), desktopRequestHeader)
+	}
+}
+
+func TestCORSPreflightRejectsDisallowedOrigin(t *testing.T) {
+	t.Setenv("OLLAMA_CORS", "1")
+
+	server := &Server{Token: "test-token"}
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/settings", nil)
+	req.Header.Set("Origin", "https://example.test")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", desktopRequestHeader)
+	rr := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
+	}
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want empty", got)
 	}
 }
 
@@ -899,6 +1110,7 @@ func TestSecurityStatusReportsAppDataEncryptionKeyFailure(t *testing.T) {
 	}
 
 	resetReq := httptest.NewRequest(http.MethodPost, "/api/v1/app-data/reset", nil)
+	markDesktopRequest(resetReq)
 	resetReq.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
 	resetRR := httptest.NewRecorder()
 
@@ -948,6 +1160,7 @@ func TestProxyDangerousRoutesBlockedByDefault(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
 			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(`{"model":"test"}`))
+			markDesktopRequest(req)
 			req.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
 			rr := httptest.NewRecorder()
 
@@ -1004,6 +1217,7 @@ func TestProxyAllowsSafeRoutesToLocalUpstream(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
 			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(`{"model":"test"}`))
+			markDesktopRequest(req)
 			req.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
 			rr := httptest.NewRecorder()
 
@@ -1033,6 +1247,7 @@ func TestProxyAllowsDangerousRoutesWithExplicitEnv(t *testing.T) {
 
 	handler := (&Server{Token: "secret-token"}).Handler()
 	req := httptest.NewRequest(http.MethodPost, "/api/pull", strings.NewReader(`{"model":"test"}`))
+	markDesktopRequest(req)
 	req.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
 	rr := httptest.NewRecorder()
 
@@ -1043,6 +1258,7 @@ func TestProxyAllowsDangerousRoutesWithExplicitEnv(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/api/push", strings.NewReader(`{"model":"test"}`))
+	markDesktopRequest(req)
 	req.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
 	rr = httptest.NewRecorder()
 
@@ -1054,6 +1270,7 @@ func TestProxyAllowsDangerousRoutesWithExplicitEnv(t *testing.T) {
 
 	t.Setenv("OLLAMA_PROXY_ALLOW_PUSH", "true")
 	req = httptest.NewRequest(http.MethodPost, "/api/push", strings.NewReader(`{"model":"test"}`))
+	markDesktopRequest(req)
 	req.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
 	rr = httptest.NewRecorder()
 
@@ -1083,6 +1300,7 @@ func TestProxyRejectsRemoteUpstream(t *testing.T) {
 func TestProxyRequestBodyLimit(t *testing.T) {
 	handler := (&Server{Token: "secret-token"}).Handler()
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(`{}`))
+	markDesktopRequest(req)
 	req.ContentLength = maxProxyRequestBytes + 1
 	req.AddCookie(&http.Cookie{Name: "token", Value: "secret-token"})
 	rr := httptest.NewRecorder()
@@ -1104,6 +1322,7 @@ func TestProxyLogsRedactSensitiveData(t *testing.T) {
 		strings.NewReader(`{"prompt":"secret prompt text","token":"secret-body-token","api_key":"secret-body-key"}`),
 	)
 	req.Header.Set("Authorization", "Bearer secret-authorization-token")
+	markDesktopRequest(req)
 	req.AddCookie(&http.Cookie{Name: "token", Value: "desktop-cookie-token"})
 	rr := httptest.NewRecorder()
 

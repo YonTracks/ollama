@@ -118,6 +118,8 @@ func TestGenerateRoutesAPITokenMiddleware(t *testing.T) {
 }
 
 func TestGenerateRoutesRequestBodyLimit(t *testing.T) {
+	t.Setenv("OLLAMA_API_TOKEN", "")
+
 	s := &Server{}
 	h, err := s.GenerateRoutes(nil)
 	if err != nil {
@@ -135,6 +137,7 @@ func TestGenerateRoutesRequestBodyLimit(t *testing.T) {
 
 func TestRoutes(t *testing.T) {
 	modelsDir := t.TempDir()
+	t.Setenv("OLLAMA_API_TOKEN", "")
 	t.Setenv("OLLAMA_MODELS", modelsDir)
 
 	type testCase struct {
@@ -596,6 +599,7 @@ func TestRoutes(t *testing.T) {
 }
 
 func TestDangerousRoutesRejectUnsafeNamesAndPaths(t *testing.T) {
+	t.Setenv("OLLAMA_API_TOKEN", "")
 	t.Setenv("OLLAMA_MODELS", t.TempDir())
 
 	s := &Server{modelCaches: &modelCaches{modelList: newModelListCache()}}
@@ -913,6 +917,7 @@ func TestShow(t *testing.T) {
 }
 
 func TestShowCopilotUserAgentOverwritesExistingBasename(t *testing.T) {
+	t.Setenv("OLLAMA_API_TOKEN", "")
 	t.Setenv("OLLAMA_MODELS", t.TempDir())
 
 	var s Server
@@ -974,6 +979,7 @@ func TestShowCopilotUserAgentOverwritesExistingBasename(t *testing.T) {
 }
 
 func TestShowCopilotUserAgentSetsBasenameWhenModelInfoIsEmpty(t *testing.T) {
+	t.Setenv("OLLAMA_API_TOKEN", "")
 	t.Setenv("OLLAMA_MODELS", t.TempDir())
 
 	var s Server

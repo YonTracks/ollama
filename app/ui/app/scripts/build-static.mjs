@@ -1,4 +1,4 @@
-import { cp, rename, rm, stat } from "node:fs/promises";
+import { cp, mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,12 +10,25 @@ const distDir = join(root, "dist");
 const nextDevDir = join(root, ".next", "dev");
 const apiDir = join(root, "app", "api");
 const disabledApiDir = join(root, ".api-disabled-for-static-export");
+const buildLockDir = join(root, ".static-export.lock");
+
+class BuildLockError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "BuildLockError";
+  }
+}
 
 let apiDisabled = false;
+let lockAcquired = false;
 let exitCode = 0;
+let fatalError;
 
 try {
-  await rm(disabledApiDir, { recursive: true, force: true });
+  await acquireBuildLock();
+  lockAcquired = true;
+
+  await recoverInterruptedStaticExport();
   await rm(nextDevDir, { recursive: true, force: true });
   if (await exists(apiDir)) {
     try {
@@ -51,14 +64,65 @@ try {
       await stat(join(distDir, required));
     }
   }
+} catch (error) {
+  if (error instanceof BuildLockError) {
+    console.error(error.message);
+    exitCode = 1;
+  } else {
+    fatalError = error;
+  }
 } finally {
   if (apiDisabled) {
     await rename(disabledApiDir, apiDir);
   }
+  if (lockAcquired) {
+    await rm(buildLockDir, { recursive: true, force: true });
+  }
+}
+
+if (fatalError) {
+  throw fatalError;
 }
 
 if (exitCode !== 0) {
   process.exit(exitCode);
+}
+
+async function acquireBuildLock() {
+  try {
+    await mkdir(buildLockDir);
+  } catch (error) {
+    if (hasCode(error, "EEXIST")) {
+      throw new BuildLockError(
+        [
+          "Another static export or standalone build appears to be running.",
+          `Lock directory: ${buildLockDir}`,
+          "Wait for it to finish, then run the build again.",
+          "If no build is running, remove the stale lock directory and retry."
+        ].join("\n")
+      );
+    }
+    throw error;
+  }
+
+  await writeFile(
+    join(buildLockDir, "owner.json"),
+    `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }, null, 2)}\n`
+  );
+}
+
+async function recoverInterruptedStaticExport() {
+  const apiExists = await exists(apiDir);
+  const disabledApiExists = await exists(disabledApiDir);
+
+  if (!apiExists && disabledApiExists) {
+    await rename(disabledApiDir, apiDir);
+    return;
+  }
+
+  if (apiExists && disabledApiExists) {
+    await rm(disabledApiDir, { recursive: true, force: true });
+  }
 }
 
 async function exists(path) {
@@ -71,7 +135,11 @@ async function exists(path) {
 }
 
 function isPermissionError(error) {
-  return Boolean(error && typeof error === "object" && "code" in error && error.code === "EPERM");
+  return hasCode(error, "EPERM");
+}
+
+function hasCode(error, code) {
+  return Boolean(error && typeof error === "object" && "code" in error && error.code === code);
 }
 
 console.log("Static Next.js export copied to dist/");

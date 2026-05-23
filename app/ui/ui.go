@@ -431,7 +431,11 @@ func (s *Server) ollamaProxy() http.Handler {
 
 type errHandlerFunc func(http.ResponseWriter, *http.Request) error
 
-const desktopTokenQueryParam = "ollama_token"
+const (
+	desktopTokenQueryParam  = "ollama_token"
+	desktopRequestHeader    = "X-Ollama-Desktop-Request"
+	desktopRequestHeaderSet = "1"
+)
 
 func (s *Server) Handler() http.Handler {
 	handle := func(f errHandlerFunc) http.Handler {
@@ -441,10 +445,15 @@ func (s *Server) Handler() http.Handler {
 
 			// Add CORS headers for dev work
 			if CORS() {
-				applyCORSHeaders(w, r)
+				corsAllowed := applyCORSHeaders(w, r)
 
 				// Handle preflight requests
 				if r.Method == "OPTIONS" {
+					if !corsAllowed {
+						w.WriteHeader(http.StatusForbidden)
+						_ = json.NewEncoder(w).Encode(map[string]string{"error": "CORS origin is not allowed"})
+						return
+					}
 					w.WriteHeader(http.StatusOK)
 					return
 				}
@@ -459,6 +468,11 @@ func (s *Server) Handler() http.Handler {
 				if !s.validDesktopCookie(r) {
 					w.WriteHeader(http.StatusForbidden)
 					json.NewEncoder(w).Encode(map[string]string{"error": "Token is required"})
+					return
+				}
+				if err := validateDesktopStateChangingRequest(r); err != nil {
+					w.WriteHeader(http.StatusForbidden)
+					json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 					return
 				}
 			}
@@ -586,11 +600,10 @@ func (s *Server) Handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "API route not found"})
 		return nil
 	})
-	mux.Handle("GET /api/", apiNotFound)
-	mux.Handle("POST /api/", apiNotFound)
-	mux.Handle("PUT /api/", apiNotFound)
-	mux.Handle("PATCH /api/", apiNotFound)
-	mux.Handle("DELETE /api/", apiNotFound)
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		mux.Handle(method+" /api", apiNotFound)
+		mux.Handle(method+" /api/", apiNotFound)
+	}
 
 	// React app - catch all non-API routes and serve the React app
 	app := handleHandler(s.appHandler())
@@ -635,7 +648,7 @@ func (s *Server) validDesktopCookie(r *http.Request) bool {
 }
 
 func (s *Server) exchangeDesktopToken(w http.ResponseWriter, r *http.Request) bool {
-	if r.Method != http.MethodGet || strings.HasPrefix(r.URL.Path, "/api/") {
+	if r.Method != http.MethodGet || r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
 		return false
 	}
 
@@ -666,11 +679,80 @@ func (s *Server) exchangeDesktopToken(w http.ResponseWriter, r *http.Request) bo
 	return true
 }
 
+func validateDesktopStateChangingRequest(r *http.Request) error {
+	if !isStateChangingMethod(r.Method) {
+		return nil
+	}
+
+	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+		if sameRequestOrigin(r, origin) {
+			return nil
+		}
+		return errors.New("Request origin is not allowed")
+	}
+
+	if referer := strings.TrimSpace(r.Header.Get("Referer")); referer != "" {
+		if sameRequestOrigin(r, referer) {
+			return nil
+		}
+		return errors.New("Request origin is not allowed")
+	}
+
+	if r.Header.Get(desktopRequestHeader) == desktopRequestHeaderSet {
+		return nil
+	}
+
+	return errors.New("Request origin is required")
+}
+
+func isStateChangingMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	default:
+		return true
+	}
+}
+
+func sameRequestOrigin(r *http.Request, rawOrigin string) bool {
+	origin, err := url.Parse(rawOrigin)
+	if err != nil || origin.Scheme == "" || origin.Host == "" {
+		return false
+	}
+
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+
+	return strings.EqualFold(origin.Scheme, scheme) &&
+		canonicalOriginHost(origin.Host, origin.Scheme) == canonicalOriginHost(r.Host, scheme)
+}
+
+func canonicalOriginHost(rawHost, scheme string) string {
+	host := rawHost
+	port := ""
+	if parsedHost, parsedPort, err := net.SplitHostPort(rawHost); err == nil {
+		host = parsedHost
+		port = parsedPort
+	}
+
+	host = strings.TrimSuffix(strings.ToLower(strings.Trim(host, "[]")), ".")
+	if port == "" {
+		if scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	return net.JoinHostPort(host, port)
+}
+
 // handleError renders appropriate error responses based on request type
 func (s *Server) handleError(w http.ResponseWriter, r *http.Request, e error) {
 	// Preserve CORS headers for API requests
 	if CORS() {
-		applyCORSHeaders(w, r)
+		_ = applyCORSHeaders(w, r)
 	}
 
 	status := http.StatusInternalServerError
@@ -688,17 +770,18 @@ func (s *Server) handleError(w http.ResponseWriter, r *http.Request, e error) {
 	json.NewEncoder(w).Encode(body)
 }
 
-func applyCORSHeaders(w http.ResponseWriter, r *http.Request) {
+func applyCORSHeaders(w http.ResponseWriter, r *http.Request) bool {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin == "" || !allowedCORSOrigin(origin) {
-		return
+		return false
 	}
 
 	w.Header().Set("Access-Control-Allow-Origin", origin)
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, HEAD, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, User-Agent, Accept, X-Requested-With")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, User-Agent, Accept, X-Requested-With, "+desktopRequestHeader)
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
 	w.Header().Add("Vary", "Origin")
+	return true
 }
 
 func allowedCORSOrigin(origin string) bool {
@@ -4436,7 +4519,7 @@ func (s *Server) searchCustom(ctx context.Context, options searchOptions) ([]res
 	endpoint.RawQuery = params.Encode()
 
 	var payload json.RawMessage
-	if err := s.fetchSearchJSON(ctx, options.Timeout, http.MethodGet, endpoint.String(), nil, nil, &payload); err != nil {
+	if err := s.fetchCustomSearchJSON(ctx, options.Timeout, http.MethodGet, endpoint.String(), nil, nil, &payload); err != nil {
 		return nil, err
 	}
 
@@ -4502,6 +4585,99 @@ func customSearchIPBlocked(ip net.IP) bool {
 }
 
 func (s *Server) fetchSearchJSON(ctx context.Context, timeout time.Duration, method, endpoint string, body any, headers map[string]string, target any) error {
+	return s.fetchSearchJSONWithClient(ctx, userAgentHTTPClient(timeout), timeout, method, endpoint, body, headers, target)
+}
+
+func (s *Server) fetchCustomSearchJSON(ctx context.Context, timeout time.Duration, method, endpoint string, body any, headers map[string]string, target any) error {
+	return s.fetchSearchJSONWithClient(ctx, customSearchHTTPClient(timeout), timeout, method, endpoint, body, headers, target)
+}
+
+func customSearchHTTPClient(timeout time.Duration) *http.Client {
+	client := &http.Client{
+		Timeout: timeout,
+		Transport: &userAgentTransport{
+			base: customSearchTransport(),
+		},
+	}
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return searchConfigurationError("CUSTOM_SEARCH_ENDPOINT redirected too many times.")
+		}
+		if err := validateCustomSearchEndpoint(req.Context(), req.URL); err != nil {
+			return searchConfigurationError(err.Error())
+		}
+		return nil
+	}
+	return client
+}
+
+func customSearchTransport() http.RoundTripper {
+	if allowLocalCustomSearch() {
+		return http.DefaultTransport
+	}
+
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return http.DefaultTransport
+	}
+
+	transport := base.Clone()
+	transport.Proxy = nil
+	dialer := &net.Dialer{}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		targets, err := customSearchDialTargets(ctx, address)
+		if err != nil {
+			return nil, err
+		}
+
+		var lastErr error
+		for _, target := range targets {
+			conn, err := dialer.DialContext(ctx, network, target)
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, searchConfigurationError("CUSTOM_SEARCH_ENDPOINT host resolved to no addresses.")
+	}
+	return transport
+}
+
+func customSearchDialTargets(ctx context.Context, address string) ([]string, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	host = strings.Trim(host, "[]")
+
+	if ip := net.ParseIP(host); ip != nil {
+		if customSearchIPBlocked(ip) {
+			return nil, searchConfigurationError("CUSTOM_SEARCH_ENDPOINT resolves to a local or private address. Set CUSTOM_SEARCH_ALLOW_LOCAL=true only for a trusted local search adapter.")
+		}
+		return []string{net.JoinHostPort(ip.String(), port)}, nil
+	}
+
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	targets := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		if customSearchIPBlocked(addr.IP) {
+			return nil, searchConfigurationError("CUSTOM_SEARCH_ENDPOINT resolves to a local or private address. Set CUSTOM_SEARCH_ALLOW_LOCAL=true only for a trusted local search adapter.")
+		}
+		targets = append(targets, net.JoinHostPort(addr.IP.String(), port))
+	}
+	if len(targets) == 0 {
+		return nil, searchConfigurationError("CUSTOM_SEARCH_ENDPOINT host resolved to no addresses.")
+	}
+	return targets, nil
+}
+
+func (s *Server) fetchSearchJSONWithClient(ctx context.Context, client *http.Client, timeout time.Duration, method, endpoint string, body any, headers map[string]string, target any) error {
 	searchCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -4528,11 +4704,13 @@ func (s *Server) fetchSearchJSON(ctx context.Context, timeout time.Duration, met
 		req.Header.Set(key, value)
 	}
 
-	client := userAgentHTTPClient(timeout)
 	resp, err := client.Do(req)
 	if err != nil {
 		if searchCtx.Err() != nil {
 			return errSearchTimeout
+		}
+		if errors.Is(err, errSearchConfiguration) {
+			return err
 		}
 		return errors.New("Web search provider is unreachable. Check your connection and provider settings.")
 	}

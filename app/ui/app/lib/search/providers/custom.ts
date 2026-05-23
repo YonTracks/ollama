@@ -33,8 +33,16 @@ export async function searchCustom(options: ProviderSearchOptions) {
     headers: {
       Accept: "application/json"
     },
+    redirect: "manual",
     signal: options.signal
   });
+
+  if (response.status >= 300 && response.status < 400) {
+    throw new SearchProviderError(
+      "CUSTOM_SEARCH_ENDPOINT redirected to another URL. Configure the final endpoint directly.",
+      400
+    );
+  }
 
   if (!response.ok) {
     throw new SearchProviderError(`Custom search returned HTTP ${response.status}.`, 502);

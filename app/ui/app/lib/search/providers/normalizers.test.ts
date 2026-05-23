@@ -1,7 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeBraveResults } from "./brave";
-import { normalizeCustomResults, validateCustomSearchUrl } from "./custom";
+import { normalizeCustomResults, searchCustom, validateCustomSearchUrl } from "./custom";
 import { normalizeTavilyResults } from "./tavily";
+
+afterEach(() => {
+  delete process.env.CUSTOM_SEARCH_ALLOW_LOCAL;
+  delete process.env.CUSTOM_SEARCH_ENDPOINT;
+  vi.unstubAllGlobals();
+});
 
 describe("search result normalizers", () => {
   it("normalizes Brave web results", () => {
@@ -118,6 +124,26 @@ describe("search result normalizers", () => {
     await expect(
       validateCustomSearchUrl(new URL("http://127.0.0.1:9999/search"))
     ).resolves.toBeUndefined();
-    delete process.env.CUSTOM_SEARCH_ALLOW_LOCAL;
+  });
+
+  it("does not follow custom search redirects", async () => {
+    process.env.CUSTOM_SEARCH_ENDPOINT = "http://93.184.216.34/search";
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(null, {
+          status: 302,
+          headers: { Location: "http://127.0.0.1:9999/search" }
+        })
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      searchCustom({ provider: "custom", query: "ollama", count: 3, safe: true })
+    ).rejects.toThrow(/redirected/);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.any(URL),
+      expect.objectContaining({ redirect: "manual" })
+    );
   });
 });
