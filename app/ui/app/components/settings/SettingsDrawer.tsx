@@ -47,7 +47,11 @@ import {
 import {
   disableStandaloneChatEncryption,
   enableStandaloneChatEncryption,
+  forgetRememberedStandaloneChatEncryption,
+  rememberStandaloneChatEncryption,
+  restoreRememberedStandaloneChatEncryption,
   standaloneChatEncryptionConfigured,
+  standaloneChatEncryptionRemembered,
   standaloneChatEncryptionUnlocked,
   supportsStandaloneChatEncryption,
   unlockStandaloneChatEncryption
@@ -121,6 +125,7 @@ interface SettingsDrawerProps {
   onUpdateSettings(updates: Partial<LocalSettings>): Promise<boolean | void> | boolean | void;
   onRefreshConnection(options?: ToastOptions): Promise<boolean | void> | boolean | void;
   onRefreshModels(options?: ToastOptions): Promise<boolean | void> | boolean | void;
+  onRefreshChats(options?: ToastOptions): Promise<boolean | void> | boolean | void;
   onDeleteAllChats(): Promise<number> | number;
 }
 
@@ -140,6 +145,7 @@ export function SettingsDrawer({
   onUpdateSettings,
   onRefreshConnection,
   onRefreshModels,
+  onRefreshChats,
   onDeleteAllChats
 }: SettingsDrawerProps) {
   const { showToast } = useToast();
@@ -178,6 +184,7 @@ export function SettingsDrawer({
   const [tokenVaultError, setTokenVaultError] = useState<string | null>(null);
   const [chatEncryptionConfigured, setChatEncryptionConfigured] = useState(false);
   const [chatEncryptionUnlocked, setChatEncryptionUnlocked] = useState(false);
+  const [chatEncryptionRemembered, setChatEncryptionRemembered] = useState(false);
   const [chatEncryptionPassphrase, setChatEncryptionPassphrase] = useState("");
   const [chatEncryptionBusy, setChatEncryptionBusy] = useState(false);
   const [chatEncryptionError, setChatEncryptionError] = useState<string | null>(null);
@@ -270,8 +277,17 @@ export function SettingsDrawer({
       void onUpdateSettings({ coreApiTokenStorage: "encrypted" });
     }
     setChatEncryptionConfigured(standaloneChatEncryptionConfigured());
+    setChatEncryptionRemembered(standaloneChatEncryptionRemembered());
     setChatEncryptionUnlocked(standaloneChatEncryptionUnlocked());
-  }, [onUpdateSettings, open, settings.coreApiTokenStorage, standalone]);
+    void restoreRememberedStandaloneChatEncryption()
+      .then((restored) => {
+        if (restored) {
+          setChatEncryptionUnlocked(standaloneChatEncryptionUnlocked());
+          void Promise.resolve(onRefreshChats({ silent: true }));
+        }
+      })
+      .catch(() => undefined);
+  }, [onRefreshChats, onUpdateSettings, open, settings.coreApiTokenStorage, standalone]);
 
   useEffect(() => {
     if (!open) {
@@ -542,6 +558,7 @@ export function SettingsDrawer({
   const refreshChatEncryptionState = () => {
     setChatEncryptionConfigured(standaloneChatEncryptionConfigured());
     setChatEncryptionUnlocked(standaloneChatEncryptionUnlocked());
+    setChatEncryptionRemembered(standaloneChatEncryptionRemembered());
   };
 
   const handleEnableChatEncryption = async () => {
@@ -551,6 +568,7 @@ export function SettingsDrawer({
       await enableStandaloneChatEncryption(chatEncryptionPassphrase);
       setChatEncryptionPassphrase("");
       refreshChatEncryptionState();
+      await Promise.resolve(onRefreshChats({ silent: true }));
       showToast({
         id: "browser-chat-encryption",
         title: "Browser chats encrypted",
@@ -579,6 +597,7 @@ export function SettingsDrawer({
       await unlockStandaloneChatEncryption(chatEncryptionPassphrase);
       setChatEncryptionPassphrase("");
       refreshChatEncryptionState();
+      await Promise.resolve(onRefreshChats({ silent: true }));
       showToast({
         id: "browser-chat-encryption",
         title: "Browser chats unlocked",
@@ -607,6 +626,7 @@ export function SettingsDrawer({
       await disableStandaloneChatEncryption();
       setChatEncryptionPassphrase("");
       refreshChatEncryptionState();
+      await Promise.resolve(onRefreshChats({ silent: true }));
       showToast({
         id: "browser-chat-encryption",
         title: "Browser chat encryption turned off",
@@ -619,6 +639,62 @@ export function SettingsDrawer({
       showToast({
         id: "browser-chat-encryption",
         title: "Browser chat encryption stayed on",
+        description: message,
+        tone: "danger",
+        duration: 7000
+      });
+    } finally {
+      setChatEncryptionBusy(false);
+    }
+  };
+
+  const handleRememberChatEncryption = async () => {
+    setChatEncryptionBusy(true);
+    setChatEncryptionError(null);
+    try {
+      await rememberStandaloneChatEncryption();
+      refreshChatEncryptionState();
+      await Promise.resolve(onRefreshChats({ silent: true }));
+      showToast({
+        id: "browser-chat-encryption",
+        title: "Browser chat unlock remembered",
+        description: "Encrypted standalone chats will unlock automatically in this browser profile.",
+        tone: "success"
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not remember browser chat unlock.";
+      setChatEncryptionError(message);
+      showToast({
+        id: "browser-chat-encryption",
+        title: "Browser chat unlock was not saved",
+        description: message,
+        tone: "danger",
+        duration: 7000
+      });
+    } finally {
+      setChatEncryptionBusy(false);
+    }
+  };
+
+  const handleRequireChatEncryptionPassphrase = async () => {
+    setChatEncryptionBusy(true);
+    setChatEncryptionError(null);
+    try {
+      forgetRememberedStandaloneChatEncryption();
+      refreshChatEncryptionState();
+      await Promise.resolve(onRefreshChats({ silent: true }));
+      showToast({
+        id: "browser-chat-encryption",
+        title: "Browser chats locked for restart",
+        description: "Encrypted standalone chats will require the passphrase after restart.",
+        tone: "success"
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not remove the saved chat unlock.";
+      setChatEncryptionError(message);
+      showToast({
+        id: "browser-chat-encryption",
+        title: "Browser chat unlock stayed remembered",
         description: message,
         tone: "danger",
         duration: 7000
@@ -1207,6 +1283,7 @@ export function SettingsDrawer({
                   encryptedTokenAvailable={encryptedTokenAvailable}
                   chatEncryptionConfigured={chatEncryptionConfigured}
                   chatEncryptionUnlocked={chatEncryptionUnlocked}
+                  chatEncryptionRemembered={chatEncryptionRemembered}
                 />
               </SettingsSection>
 
@@ -1857,7 +1934,9 @@ export function SettingsDrawer({
                       <div className="mt-0.5 text-xs text-muted-foreground">
                         {chatEncryptionConfigured
                           ? chatEncryptionUnlocked
-                            ? "Encrypted chats are unlocked for this session."
+                            ? chatEncryptionRemembered
+                              ? "Encrypted chats unlock automatically in this browser profile."
+                              : "Encrypted chats are unlocked for this session."
                             : "Encrypted chats are locked until you enter the passphrase."
                           : "Standalone chats are currently stored as normal IndexedDB records."}
                       </div>
@@ -1913,7 +1992,26 @@ export function SettingsDrawer({
                         Turn off
                       </button>
                     )}
+                    {chatEncryptionConfigured && chatEncryptionUnlocked ? (
+                      <button
+                        type="button"
+                        disabled={chatEncryptionBusy || !supportsStandaloneChatEncryption()}
+                        onClick={() =>
+                          void (chatEncryptionRemembered
+                            ? handleRequireChatEncryptionPassphrase()
+                            : handleRememberChatEncryption())
+                        }
+                        className="h-10 rounded-md border border-border px-3 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground focus:focus-ring disabled:opacity-55"
+                      >
+                        {chatEncryptionRemembered ? "Require passphrase" : "Remember unlock"}
+                      </button>
+                    ) : null}
                   </div>
+                  {chatEncryptionConfigured ? (
+                    <div className="text-xs text-muted-foreground">
+                      Remember stores a browser unlock key for automatic access. Require passphrase removes that saved key but keeps this session unlocked.
+                    </div>
+                  ) : null}
                   {chatEncryptionError ? (
                     <div className="text-xs text-danger">{chatEncryptionError}</div>
                   ) : null}
@@ -2305,7 +2403,8 @@ function SecurityStatusPanel({
   browserTokenAvailable,
   encryptedTokenAvailable,
   chatEncryptionConfigured,
-  chatEncryptionUnlocked
+  chatEncryptionUnlocked,
+  chatEncryptionRemembered
 }: {
   standalone: boolean;
   status: SecurityStatusResponse | null;
@@ -2316,15 +2415,20 @@ function SecurityStatusPanel({
   encryptedTokenAvailable: boolean;
   chatEncryptionConfigured: boolean;
   chatEncryptionUnlocked: boolean;
+  chatEncryptionRemembered: boolean;
 }) {
   const searchLabel = `Search ${settings.webSearchMode}`;
   const memoryLabel = `Memory ${memoryScopeLabel(settings.retrievalScope)}`;
   const tokenLabel = coreTokenStatusLabel(settings, browserTokenAvailable, encryptedTokenAvailable);
-  const chatStorageLabel = chatEncryptionConfigured
-    ? chatEncryptionUnlocked
-      ? "Browser chats encrypted"
-      : "Browser chats locked"
-    : "Browser chats plain";
+  const browserDataStatus = browserDataEncryptionChip(
+    chatEncryptionConfigured,
+    chatEncryptionUnlocked
+  );
+  const browserUnlockStatus = browserDataUnlockChip(
+    chatEncryptionConfigured,
+    chatEncryptionUnlocked,
+    chatEncryptionRemembered
+  );
 
   if (standalone) {
     return (
@@ -2342,11 +2446,15 @@ function SecurityStatusPanel({
             tone={settings.coreApiToken.trim() ? "success" : encryptedTokenAvailable ? "warning" : "info"}
             Icon={settings.coreApiToken.trim() ? CheckCircle2 : Shield}
           />
-          <StatusChip label="Browser storage" tone="info" Icon={Database} />
           <StatusChip
-            label={chatStorageLabel}
-            tone={chatEncryptionConfigured ? (chatEncryptionUnlocked ? "success" : "warning") : "info"}
-            Icon={chatEncryptionConfigured ? Shield : Database}
+            label={browserDataStatus.label}
+            tone={browserDataStatus.tone}
+            Icon={browserDataStatus.Icon}
+          />
+          <StatusChip
+            label={browserUnlockStatus.label}
+            tone={browserUnlockStatus.tone}
+            Icon={browserUnlockStatus.Icon}
           />
           <StatusChip label={searchLabel} tone={settings.webSearchMode === "off" ? "success" : "info"} Icon={Search} />
           <StatusChip label={memoryLabel} tone="info" Icon={BrainCircuit} />
@@ -2465,6 +2573,36 @@ function coreTokenStatusLabel(
     return "Core token locked";
   }
   return "Core token not set";
+}
+
+function browserDataEncryptionChip(
+  configured: boolean,
+  unlocked: boolean
+): StatusChipConfig {
+  if (!configured) {
+    return { label: "Browser data plain", tone: "info" as const, Icon: Database };
+  }
+  if (!unlocked) {
+    return { label: "Browser data locked", tone: "warning" as const, Icon: AlertCircle };
+  }
+  return { label: "Browser data encrypted", tone: "success" as const, Icon: Shield };
+}
+
+function browserDataUnlockChip(
+  configured: boolean,
+  unlocked: boolean,
+  remembered: boolean
+): StatusChipConfig {
+  if (!configured) {
+    return { label: "Browser encryption off", tone: "info" as const, Icon: Database };
+  }
+  if (!unlocked) {
+    return { label: "Passphrase required", tone: "warning" as const, Icon: Shield };
+  }
+  if (remembered) {
+    return { label: "Unlock remembered", tone: "success" as const, Icon: CheckCircle2 };
+  }
+  return { label: "Session unlocked", tone: "info" as const, Icon: Shield };
 }
 
 function appDataEncryptionChip(

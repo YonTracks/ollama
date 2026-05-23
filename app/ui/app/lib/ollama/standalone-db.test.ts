@@ -4,12 +4,15 @@ import {
   deleteStandaloneChatMessage,
   disableStandaloneChatEncryption,
   enableStandaloneChatEncryption,
+  forgetRememberedStandaloneChatEncryption,
   getStandaloneChat,
   listStandaloneChats,
   lockStandaloneChatEncryption,
+  rememberStandaloneChatEncryption,
   renameStandaloneChat,
   saveStandaloneChat,
   standaloneChatEncryptionConfigured,
+  standaloneChatEncryptionRemembered,
   standaloneChatEncryptionUnlocked,
   unlockStandaloneChatEncryption
 } from "./standalone-db";
@@ -77,12 +80,46 @@ describe("standalone IndexedDB chat persistence", () => {
     await expect(getStandaloneChat("chat-secret")).resolves.toMatchObject({
       chat: { id: "chat-secret", title: "Secret chat" }
     });
+    await expect(listStandaloneChats()).resolves.toMatchObject({
+      chatInfos: [{ id: "chat-secret", title: "Secret chat" }]
+    });
 
     await disableStandaloneChatEncryption();
     expect(standaloneChatEncryptionConfigured()).toBe(false);
     rawRecord = db.dumpRecords()[0] as { encrypted?: boolean };
     expect(rawRecord.encrypted).not.toBe(true);
     expect(JSON.stringify(rawRecord)).toContain("Secret chat");
+  });
+
+  it("can remember encrypted browser chat unlocks across restarts", async () => {
+    installFakeIndexedDb();
+    const storage = memoryStorage();
+    vi.stubGlobal("localStorage", storage);
+
+    await saveStandaloneChat(chatRecord("chat-remembered", "Remembered secret", "2026-05-20T00:00:00.000Z"));
+    await enableStandaloneChatEncryption("passphrase");
+    await rememberStandaloneChatEncryption();
+
+    expect(standaloneChatEncryptionRemembered()).toBe(true);
+
+    lockStandaloneChatEncryption();
+    expect(standaloneChatEncryptionUnlocked()).toBe(false);
+    await expect(getStandaloneChat("chat-remembered")).resolves.toMatchObject({
+      chat: { id: "chat-remembered", title: "Remembered secret" }
+    });
+    await expect(listStandaloneChats()).resolves.toMatchObject({
+      chatInfos: [{ id: "chat-remembered", title: "Remembered secret" }]
+    });
+    expect(standaloneChatEncryptionUnlocked()).toBe(true);
+
+    forgetRememberedStandaloneChatEncryption();
+    expect(standaloneChatEncryptionRemembered()).toBe(false);
+    lockStandaloneChatEncryption();
+    await expect(getStandaloneChat("chat-remembered")).rejects.toThrow("locked");
+    await unlockStandaloneChatEncryption("passphrase");
+    await expect(getStandaloneChat("chat-remembered")).resolves.toMatchObject({
+      chat: { id: "chat-remembered", title: "Remembered secret" }
+    });
   });
 });
 

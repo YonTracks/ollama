@@ -4,6 +4,7 @@ const DB_NAME = "ollama-app-standalone";
 const DB_VERSION = 1;
 const CHAT_STORE = "chats";
 const CHAT_ENCRYPTION_KEY = "ollama.app.standalone.chat-encryption.v1";
+const CHAT_ENCRYPTION_BROWSER_KEY = "ollama.app.standalone.chat-encryption.browser-key.v1";
 const CHAT_ENCRYPTION_VERSION = 1;
 const CHAT_ENCRYPTION_SENTINEL = "ollama standalone chat encryption";
 const CHAT_ENCRYPTION_ITERATIONS = 210000;
@@ -39,7 +40,16 @@ interface StandaloneChatEncryptionRecord {
   createdAt: string;
 }
 
+interface BrowserChatEncryptionKeyRecord {
+  version: 1;
+  storage: "browser";
+  algorithm: "AES-GCM";
+  key: string;
+  createdAt: string;
+}
+
 let standaloneChatEncryptionKey: CryptoKey | null = null;
+let standaloneChatEncryptionKeyBytes: Uint8Array | null = null;
 
 function ensureIndexedDb() {
   if (typeof indexedDB === "undefined") {
@@ -121,6 +131,10 @@ export function standaloneChatEncryptionUnlocked() {
   return Boolean(standaloneChatEncryptionKey);
 }
 
+export function standaloneChatEncryptionRemembered(storage?: Storage) {
+  return Boolean(readBrowserChatEncryptionKeyRecord(storage));
+}
+
 export async function enableStandaloneChatEncryption(
   passphrase: string,
   storage?: Storage
@@ -134,7 +148,8 @@ export async function enableStandaloneChatEncryption(
 
   const salt = randomBytes(16);
   const iv = randomBytes(12);
-  const key = await deriveStandaloneChatKey(trimmedPassphrase, salt);
+  const keyBytes = await deriveStandaloneChatKeyBytes(trimmedPassphrase, salt);
+  const key = await importStandaloneChatKey(keyBytes);
   const ciphertext = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv: bufferSource(iv) },
     key,
@@ -153,6 +168,7 @@ export async function enableStandaloneChatEncryption(
   };
 
   standaloneChatEncryptionKey = key;
+  standaloneChatEncryptionKeyBytes = keyBytes;
   const targetStorage = getBrowserStorage(storage);
   if (!targetStorage) throw new Error("Browser storage is not available.");
 
@@ -174,7 +190,8 @@ export async function unlockStandaloneChatEncryption(
   try {
     const salt = base64ToBytes(record.salt);
     const iv = base64ToBytes(record.iv);
-    const key = await deriveStandaloneChatKey(trimmedPassphrase, salt, record.iterations);
+    const keyBytes = await deriveStandaloneChatKeyBytes(trimmedPassphrase, salt, record.iterations);
+    const key = await importStandaloneChatKey(keyBytes);
     const plaintext = await crypto.subtle.decrypt(
       { name: "AES-GCM", iv: bufferSource(iv) },
       key,
@@ -184,23 +201,78 @@ export async function unlockStandaloneChatEncryption(
       throw new Error("invalid sentinel");
     }
     standaloneChatEncryptionKey = key;
+    standaloneChatEncryptionKeyBytes = keyBytes;
   } catch {
     throw new Error("Could not unlock browser chats. Check the passphrase.");
   }
 }
 
+export async function rememberStandaloneChatEncryption(storage?: Storage) {
+  ensureStandaloneChatCrypto();
+  if (!standaloneChatEncryptionConfigured(storage)) {
+    throw new Error("Browser chat encryption is not enabled.");
+  }
+  if (!standaloneChatEncryptionKey || !standaloneChatEncryptionKeyBytes) {
+    throw new Error("Unlock browser chat encryption before remembering it.");
+  }
+
+  const targetStorage = getBrowserStorage(storage);
+  if (!targetStorage) throw new Error("Browser storage is not available.");
+
+  const record: BrowserChatEncryptionKeyRecord = {
+    version: CHAT_ENCRYPTION_VERSION,
+    storage: "browser",
+    algorithm: "AES-GCM",
+    key: bytesToBase64(standaloneChatEncryptionKeyBytes),
+    createdAt: new Date().toISOString()
+  };
+  targetStorage.setItem(CHAT_ENCRYPTION_BROWSER_KEY, JSON.stringify(record));
+
+  if (!readBrowserChatEncryptionKeyRecord(storage)) {
+    throw new Error("Browser chat unlock key was not saved. Check browser storage permissions.");
+  }
+}
+
+export function forgetRememberedStandaloneChatEncryption(storage?: Storage) {
+  getBrowserStorage(storage)?.removeItem(CHAT_ENCRYPTION_BROWSER_KEY);
+}
+
+export async function restoreRememberedStandaloneChatEncryption(storage?: Storage) {
+  if (standaloneChatEncryptionKey) return true;
+
+  const encryptionRecord = readChatEncryptionRecord(storage);
+  const browserKeyRecord = readBrowserChatEncryptionKeyRecord(storage);
+  if (!encryptionRecord || !browserKeyRecord) return false;
+  ensureStandaloneChatCrypto();
+
+  try {
+    const keyBytes = base64ToBytes(browserKeyRecord.key);
+    const key = await importStandaloneChatKey(keyBytes);
+    await validateStandaloneChatKey(key, encryptionRecord);
+    standaloneChatEncryptionKey = key;
+    standaloneChatEncryptionKeyBytes = keyBytes;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function disableStandaloneChatEncryption(storage?: Storage) {
+  await restoreRememberedStandaloneChatEncryption(storage);
   if (standaloneChatEncryptionConfigured(storage) && !standaloneChatEncryptionKey) {
     throw new Error("Unlock browser chat encryption before turning it off.");
   }
 
   await rewriteStandaloneChatsForEncryption(false);
   standaloneChatEncryptionKey = null;
+  standaloneChatEncryptionKeyBytes = null;
+  forgetRememberedStandaloneChatEncryption(storage);
   getBrowserStorage(storage)?.removeItem(CHAT_ENCRYPTION_KEY);
 }
 
 export function lockStandaloneChatEncryption() {
   standaloneChatEncryptionKey = null;
+  standaloneChatEncryptionKeyBytes = null;
 }
 
 function nowIso() {
@@ -253,6 +325,7 @@ async function toStoredRecord(chat: Chat): Promise<StoredStandaloneChatRecord> {
   if (!standaloneChatEncryptionConfigured()) {
     return record;
   }
+  await restoreRememberedStandaloneChatEncryption();
   return encryptStandaloneChatRecord(record);
 }
 
@@ -287,6 +360,7 @@ function toChat(record: StandaloneChatRecord): Chat {
 }
 
 export async function listStandaloneChats(): Promise<ChatsResponse> {
+  await restoreRememberedStandaloneChatEncryption();
   const records = await withChatStore<StoredStandaloneChatRecord[]>("readonly", (store) => store.getAll());
   const chatInfos = await Promise.all(records.map(toStoredChatInfo));
   return {
@@ -296,6 +370,7 @@ export async function listStandaloneChats(): Promise<ChatsResponse> {
 }
 
 export async function getStandaloneChat(chatId: string): Promise<ChatResponse> {
+  await restoreRememberedStandaloneChatEncryption();
   const record = await withChatStore<StoredStandaloneChatRecord | undefined>("readonly", (store) =>
     store.get(chatId)
   );
@@ -379,6 +454,7 @@ async function toStoredChatInfo(record: StoredStandaloneChatRecord): Promise<Cha
   if (!isEncryptedStandaloneChatRecord(record)) {
     return toChatInfo(record);
   }
+  await restoreRememberedStandaloneChatEncryption();
   if (!standaloneChatEncryptionKey) {
     return toLockedChatInfo(record);
   }
@@ -394,6 +470,7 @@ async function toStoredChatInfo(record: StoredStandaloneChatRecord): Promise<Cha
 }
 
 async function rewriteStandaloneChatsForEncryption(encrypt: boolean) {
+  await restoreRememberedStandaloneChatEncryption();
   const records = await withChatStore<StoredStandaloneChatRecord[]>("readonly", (store) => store.getAll());
   const rewritten: StoredStandaloneChatRecord[] = [];
 
@@ -447,6 +524,7 @@ async function decryptStandaloneChatRecord(
   if (!isEncryptedStandaloneChatRecord(record)) {
     return record;
   }
+  await restoreRememberedStandaloneChatEncryption();
   if (!standaloneChatEncryptionKey) {
     throw new Error("Encrypted browser chat storage is locked.");
   }
@@ -521,13 +599,47 @@ function readChatEncryptionRecord(storage?: Storage) {
   }
 }
 
+function readBrowserChatEncryptionKeyRecord(storage?: Storage) {
+  const targetStorage = getBrowserStorage(storage);
+  if (!targetStorage) return null;
+
+  const raw = targetStorage.getItem(CHAT_ENCRYPTION_BROWSER_KEY);
+  if (!raw) return null;
+
+  try {
+    const record = JSON.parse(raw) as BrowserChatEncryptionKeyRecord;
+    if (
+      record.version !== CHAT_ENCRYPTION_VERSION ||
+      record.storage !== "browser" ||
+      record.algorithm !== "AES-GCM" ||
+      typeof record.key !== "string"
+    ) {
+      return null;
+    }
+    return record;
+  } catch {
+    return null;
+  }
+}
+
 function getBrowserStorage(storage?: Storage) {
   if (storage) return storage;
   if (typeof localStorage === "undefined") return null;
   return localStorage;
 }
 
-async function deriveStandaloneChatKey(
+async function validateStandaloneChatKey(key: CryptoKey, record: StandaloneChatEncryptionRecord) {
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: bufferSource(base64ToBytes(record.iv)) },
+    key,
+    bufferSource(base64ToBytes(record.ciphertext))
+  );
+  if (new TextDecoder().decode(plaintext) !== CHAT_ENCRYPTION_SENTINEL) {
+    throw new Error("invalid sentinel");
+  }
+}
+
+async function deriveStandaloneChatKeyBytes(
   passphrase: string,
   salt: Uint8Array,
   iterations = CHAT_ENCRYPTION_ITERATIONS
@@ -537,9 +649,9 @@ async function deriveStandaloneChatKey(
     bufferSource(new TextEncoder().encode(passphrase)),
     "PBKDF2",
     false,
-    ["deriveKey"]
+    ["deriveBits"]
   );
-  return crypto.subtle.deriveKey(
+  const bits = await crypto.subtle.deriveBits(
     {
       name: "PBKDF2",
       salt: bufferSource(salt),
@@ -547,6 +659,15 @@ async function deriveStandaloneChatKey(
       hash: "SHA-256"
     },
     material,
+    256
+  );
+  return new Uint8Array(bits);
+}
+
+async function importStandaloneChatKey(keyBytes: Uint8Array) {
+  return crypto.subtle.importKey(
+    "raw",
+    bufferSource(keyBytes),
     {
       name: "AES-GCM",
       length: 256

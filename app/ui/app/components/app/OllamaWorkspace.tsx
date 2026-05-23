@@ -108,6 +108,8 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
       modelState.refresh();
     }
   });
+  const refreshChatList = chatList.refresh;
+  const reloadActiveChat = chatSession.reload;
 
   const handleRefreshModels = useCallback(
     async (options?: ToastOptions) => {
@@ -145,6 +147,24 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
       return connected;
     },
     [connection, showToast]
+  );
+
+  const handleRefreshChats = useCallback(
+    async (options?: ToastOptions) => {
+      await refreshChatList();
+      await reloadActiveChat();
+      if (!options?.silent) {
+        showToast({
+          id: "chats-refresh",
+          title: "Chats refreshed",
+          description: "The conversation list is up to date.",
+          tone: "success",
+          duration: 2600
+        });
+      }
+      return true;
+    },
+    [refreshChatList, reloadActiveChat, showToast]
   );
 
   const handleSelectModel = useCallback(
@@ -371,6 +391,7 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
         onUpdateSettings={updateSettings}
         onRefreshConnection={handleRefreshConnection}
         onRefreshModels={handleRefreshModels}
+        onRefreshChats={handleRefreshChats}
         onDeleteAllChats={handleDeleteAllChats}
       />
     </div>

@@ -112,6 +112,9 @@ JSON.
 Standalone browser chats are normal IndexedDB records by default; Settings ->
 Storage can enable passphrase-based browser chat encryption, which rewrites
 existing standalone chats and keeps future saves encrypted while unlocked.
+Encrypted standalone chats can remember a browser unlock key for automatic
+access after restart, or require the passphrase again after restart if that
+saved unlock key is removed.
 
 For desktop app privacy at rest, set `OLLAMA_APP_DATA_KEY` before launching the
 taskbar app or `go run ./app/cmd/app -dev`. When present, sensitive SQLite app

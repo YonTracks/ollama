@@ -62,7 +62,9 @@ to reconnect automatically after restart, or lock it with a passphrase if you
 prefer to unlock it manually. The token is not stored in standalone settings.
 Standalone chats are normal IndexedDB records by default. Settings -> Storage
 can enable passphrase-based browser chat encryption; this encrypts existing
-standalone chats and requires an unlock before encrypted chats can be updated.
+standalone chats. Encrypted chats can be remembered with a browser unlock key
+for automatic access after restart, or left passphrase-locked so they require a
+manual unlock before they can be read or updated.
 Desktop app data encryption is controlled by `OLLAMA_APP_DATA_KEY` before
 launch. The Security Status panel reports whether sensitive SQLite app data is
 plain, encrypted, legacy encrypted, or locked by a missing/wrong key. This is
