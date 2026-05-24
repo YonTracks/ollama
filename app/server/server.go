@@ -20,6 +20,7 @@ import (
 
 	"github.com/ollama/ollama/app/logrotate"
 	"github.com/ollama/ollama/app/store"
+	"github.com/ollama/ollama/envconfig"
 )
 
 const (
@@ -245,7 +246,8 @@ func (s *Server) cmd(ctx context.Context) (*exec.Cmd, error) {
 	}
 
 	cmd := commandContext(ctx, s.bin, "serve")
-	cmd.Stdout, cmd.Stderr = s.log, s.log
+	logWriter := envconfig.RedactingWriter(s.log)
+	cmd.Stdout, cmd.Stderr = logWriter, logWriter
 
 	// Copy and mutate the environment to merge in settings the user has specified without dups
 	env := map[string]string{}

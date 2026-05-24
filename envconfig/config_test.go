@@ -1,10 +1,12 @@
 package envconfig
 
 import (
+	"bytes"
 	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -175,6 +177,9 @@ func TestValuesRedactsSecrets(t *testing.T) {
 	if got := RedactedValue("CUDA_VISIBLE_DEVICES", "GPU-ff81c5c3-1705-5338-5a99-ebf6ae2dfea2"); got != "GPU-<redacted>" {
 		t.Fatalf("CUDA_VISIBLE_DEVICES = %q, want GPU ID redacted", got)
 	}
+	if got := RedactedValue("gpu", "GPU-9abb57639fa80c50"); got != "GPU-<redacted>" {
+		t.Fatalf("gpu = %q, want GPU ID redacted", got)
+	}
 	if got := RedactedValue("pci_id", "0000:0b:00.0"); got != "<pci>" {
 		t.Fatalf("pci_id = %q, want PCI ID redacted", got)
 	}
@@ -191,6 +196,49 @@ func TestValuesRedactsSecrets(t *testing.T) {
 	}
 	if got := redactedMap["CUDA_VISIBLE_DEVICES"]; got != "GPU-<redacted>" {
 		t.Fatalf("redacted map CUDA_VISIBLE_DEVICES = %q, want GPU ID redacted", got)
+	}
+}
+
+func TestRedactsRawAndStructuredLogs(t *testing.T) {
+	t.Setenv("HOME", "/Users/alice")
+
+	raw := `load_backend: loaded CPU backend from /Users/alice/.ollama/lib/ggml-cpu.dll OLLAMA_API_TOKEN=test-token CUDA_VISIBLE_DEVICES=GPU-ff81c5c3-1705-5338-5a99-ebf6ae2dfea2 gpu=GPU-9abb57639fa80c50 pci=0000:0b:00.0` + "\n"
+	var rawBuf bytes.Buffer
+	if _, err := RedactingWriter(&rawBuf).Write([]byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	assertRedactedLog(t, rawBuf.String())
+
+	var structuredBuf bytes.Buffer
+	logger := logutil.NewLoggerWithReplaceAttr(&structuredBuf, slog.LevelDebug, RedactedAttr)
+	logger.Info("gpu memory",
+		"id", "GPU-ff81c5c3-1705-5338-5a99-ebf6ae2dfea2",
+		"gpu", "GPU-9abb57639fa80c50",
+		"path", "/Users/alice/.ollama/models",
+		"token", "test-token",
+		"pci_id", "0000:0b:00.0",
+	)
+	assertRedactedLog(t, structuredBuf.String())
+}
+
+func assertRedactedLog(t *testing.T, log string) {
+	t.Helper()
+
+	for _, leaked := range []string{
+		"/Users/alice",
+		"test-token",
+		"GPU-ff81c5c3-1705-5338-5a99-ebf6ae2dfea2",
+		"GPU-9abb57639fa80c50",
+		"0000:0b:00.0",
+	} {
+		if strings.Contains(log, leaked) {
+			t.Fatalf("log leaked %q in %q", leaked, log)
+		}
+	}
+	for _, want := range []string{"<home>", "<redacted>", "GPU-<redacted>", "<pci>"} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("log = %q, want to contain %q", log, want)
+		}
 	}
 }
 

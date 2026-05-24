@@ -298,7 +298,7 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 	}
 
 	gpuLibs := ml.LibraryPaths(gpus)
-	status := NewStatusWriter(os.Stderr)
+	status := NewStatusWriter(envconfig.RedactingWriter(os.Stderr))
 	cmd, port, err := StartRunner(
 		tok != nil,
 		modelPath,

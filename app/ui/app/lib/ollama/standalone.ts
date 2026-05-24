@@ -23,6 +23,8 @@ import type {
   OllamaUsageMetrics,
   OllamaContextSettings,
   OllamaModel,
+  OllamaModelMessage,
+  OllamaShowModelResponse,
   OllamaTagsResponse,
   ResponseStats,
   OllamaVersion
@@ -87,8 +89,16 @@ export interface CreateStandaloneModelRequest {
   model: string;
   from?: string;
   files?: Record<string, string>;
+  adapters?: Record<string, string>;
+  template?: string;
+  license?: string | string[];
   system?: string;
-  parameters?: Record<string, string | number | boolean>;
+  parameters?: Record<string, string | number | boolean | string[]>;
+  messages?: OllamaModelMessage[];
+  quantize?: string;
+  requires?: string;
+  renderer?: string;
+  parser?: string;
   stream?: boolean;
 }
 
@@ -243,6 +253,29 @@ export async function listStandaloneModels(
     })
     .filter((model) => model.name.length > 0)
     .filter(isVisibleModel);
+}
+
+export async function showStandaloneModel(
+  model: string,
+  apiBase?: string,
+  apiTokenOrSignal?: string | AbortSignal,
+  signal?: AbortSignal,
+  options: { verbose?: boolean } = {}
+) {
+  const request = tokenAndSignal(apiTokenOrSignal, signal);
+  return fetchCoreJson<OllamaShowModelResponse>(
+    "/api/show",
+    apiBase,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        model,
+        verbose: options.verbose || undefined
+      }),
+      signal: request.signal
+    },
+    request.apiToken
+  );
 }
 
 function toCoreMessages(messages: ChatMessage[]): CoreChatRequest["messages"] {

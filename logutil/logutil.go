@@ -12,10 +12,14 @@ import (
 const LevelTrace slog.Level = -8
 
 func NewLogger(w io.Writer, level slog.Level) *slog.Logger {
+	return NewLoggerWithReplaceAttr(w, level, nil)
+}
+
+func NewLoggerWithReplaceAttr(w io.Writer, level slog.Level, replaceAttr func([]string, slog.Attr) slog.Attr) *slog.Logger {
 	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{
 		Level:     level,
 		AddSource: true,
-		ReplaceAttr: func(_ []string, attr slog.Attr) slog.Attr {
+		ReplaceAttr: func(groups []string, attr slog.Attr) slog.Attr {
 			switch attr.Key {
 			case slog.LevelKey:
 				switch attr.Value.Any().(slog.Level) {
@@ -25,6 +29,9 @@ func NewLogger(w io.Writer, level slog.Level) *slog.Logger {
 			case slog.SourceKey:
 				source := attr.Value.Any().(*slog.Source)
 				source.File = filepath.Base(source.File)
+			}
+			if replaceAttr != nil {
+				attr = replaceAttr(groups, attr)
 			}
 			return attr
 		},

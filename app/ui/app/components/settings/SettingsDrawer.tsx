@@ -1430,6 +1430,7 @@ export function SettingsDrawer({
             ) : null}
 
               <ModelManager
+                standalone={standalone}
                 apiBase={modelManagerApiBase}
                 apiToken={modelManagerApiToken}
                 models={models}

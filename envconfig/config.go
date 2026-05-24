@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net"
@@ -442,9 +443,9 @@ func RedactedValue(name string, value any) string {
 
 	switch upperName {
 	case "HTTP_PROXY", "HTTPS_PROXY":
-		return redactRevealingInfo(redactProxyValue(s))
+		return RedactedLogText(redactProxyValue(s))
 	}
-	return redactRevealingInfo(s)
+	return RedactedLogText(s)
 }
 
 func RedactedEnvMap(values map[string]string) map[string]string {
@@ -457,6 +458,51 @@ func RedactedEnvMap(values map[string]string) map[string]string {
 		redacted[k] = RedactedValue(k, v)
 	}
 	return redacted
+}
+
+func RedactedAttr(_ []string, attr slog.Attr) slog.Attr {
+	if attr.Key == slog.SourceKey {
+		return attr
+	}
+
+	switch attr.Value.Kind() {
+	case slog.KindString:
+		attr.Value = slog.StringValue(RedactedValue(attr.Key, attr.Value.String()))
+	case slog.KindAny:
+		value := attr.Value.Any()
+		if value == nil {
+			return attr
+		}
+		rendered := fmt.Sprintf("%v", value)
+		redacted := RedactedValue(attr.Key, rendered)
+		if redacted != rendered || isSensitiveEnvName(strings.ToUpper(attr.Key)) {
+			attr.Value = slog.StringValue(redacted)
+		}
+	}
+
+	return attr
+}
+
+func RedactingWriter(out io.Writer) io.Writer {
+	if out == nil {
+		return io.Discard
+	}
+	return &redactingWriter{out: out}
+}
+
+type redactingWriter struct {
+	mu  sync.Mutex
+	out io.Writer
+}
+
+func (w *redactingWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if _, err := io.WriteString(w.out, RedactedLogText(string(p))); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 func isSensitiveEnvName(name string) bool {
@@ -476,6 +522,12 @@ func isSensitiveEnvName(name string) bool {
 		}
 	}
 	return false
+}
+
+func RedactedLogText(value string) string {
+	value = redactRevealingInfo(value)
+	value = replacePattern(value, `(?i)\b([A-Z0-9_]*(?:API_KEY|ACCESS_KEY|DATA_KEY|ENCRYPTION_KEY|PRIVATE_KEY|PASSWORD|PASSWD|SECRET|TOKEN)[A-Z0-9_]*=)(?:"[^"]*"|\S+)`, `${1}<redacted>`)
+	return value
 }
 
 func redactProxyValue(value string) string {
@@ -500,7 +552,7 @@ func redactLocalUserInfo(value string) string {
 
 func redactRevealingInfo(value string) string {
 	value = redactLocalUserInfo(value)
-	value = replacePattern(value, `(?i)\bGPU-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b`, "GPU-<redacted>")
+	value = replacePattern(value, `(?i)\bGPU-(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|[0-9a-f]{12,})\b`, "GPU-<redacted>")
 	return replacePattern(value, `(?i)\b[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]\b`, "<pci>")
 }
 

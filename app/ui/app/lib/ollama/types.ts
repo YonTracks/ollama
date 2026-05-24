@@ -5,6 +5,7 @@ export interface OllamaVersion {
 }
 
 export interface OllamaModelDetails {
+  parent_model?: string;
   family?: string;
   families?: string[];
   format?: string;
@@ -33,6 +34,28 @@ export interface OllamaModel {
   size?: number;
   details?: OllamaModelDetails;
   local: boolean;
+}
+
+export interface OllamaModelMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface OllamaShowModelResponse {
+  license?: string | string[];
+  modelfile?: string;
+  parameters?: string;
+  template?: string;
+  system?: string;
+  details?: OllamaModelDetails;
+  messages?: OllamaModelMessage[];
+  remote_model?: string;
+  remote_host?: string;
+  model_info?: Record<string, unknown>;
+  projector_info?: Record<string, unknown>;
+  capabilities?: string[];
+  modified_at?: string;
+  requires?: string;
 }
 
 export interface ChatInfo {

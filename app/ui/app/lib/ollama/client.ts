@@ -15,6 +15,7 @@ import type {
   AppDataEncryptionState,
   InferenceComputeResponse,
   OllamaModel,
+  OllamaShowModelResponse,
   OllamaTagsResponse,
   OllamaUser,
   OllamaVersion,
@@ -451,10 +452,17 @@ export async function listModels(signal?: AbortSignal): Promise<OllamaModel[]> {
     .filter(isVisibleModel);
 }
 
-export async function showModel(model: string, signal?: AbortSignal) {
-  return fetchJson<Record<string, unknown>>("/api/show", {
+export async function showModel(
+  model: string,
+  signal?: AbortSignal,
+  options: { verbose?: boolean } = {}
+) {
+  return fetchJson<OllamaShowModelResponse>("/api/show", {
     method: "POST",
-    body: JSON.stringify({ model }),
+    body: JSON.stringify({
+      model,
+      verbose: options.verbose || undefined
+    }),
     signal
   });
 }

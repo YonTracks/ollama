@@ -30,6 +30,7 @@ import (
 	"github.com/ollama/ollama/app/ui"
 	"github.com/ollama/ollama/app/updater"
 	"github.com/ollama/ollama/app/version"
+	"github.com/ollama/ollama/envconfig"
 )
 
 var (
@@ -130,12 +131,12 @@ func main() {
 	handler := slog.NewTextHandler(logFile, &slog.HandlerOptions{
 		Level:     level,
 		AddSource: true,
-		ReplaceAttr: func(_ []string, attr slog.Attr) slog.Attr {
+		ReplaceAttr: func(groups []string, attr slog.Attr) slog.Attr {
 			if attr.Key == slog.SourceKey {
 				source := attr.Value.Any().(*slog.Source)
 				source.File = filepath.Base(source.File)
 			}
-			return attr
+			return envconfig.RedactedAttr(groups, attr)
 		},
 	})
 
