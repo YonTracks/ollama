@@ -551,6 +551,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/settings", handle(s.getSettings))
 	mux.Handle("POST /api/v1/settings", handle(s.settings))
 	mux.Handle("GET /api/v1/security", handle(s.getSecurityStatus))
+	mux.Handle("GET /api/v1/admin-auth", handle(s.getAdminAuth))
+	mux.Handle("PUT /api/v1/admin-auth", handle(s.setAdminAuth))
+	mux.Handle("DELETE /api/v1/admin-auth", handle(s.deleteAdminAuth))
 	mux.Handle("POST /api/v1/app-data/reset", handle(s.resetAppData))
 	mux.Handle("GET /api/v1/cloud", handle(s.getCloudSetting))
 	mux.Handle("POST /api/v1/cloud", handle(s.cloudSetting))
@@ -3920,6 +3923,103 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) error {
 	return json.NewEncoder(w).Encode(responses.SettingsResponse{
 		Settings: settings,
 	})
+}
+
+type adminAuthRequest struct {
+	Record json.RawMessage `json:"record"`
+}
+
+type adminAuthResponse struct {
+	Configured bool            `json:"configured"`
+	Record     json.RawMessage `json:"record,omitempty"`
+}
+
+func (s *Server) getAdminAuth(w http.ResponseWriter, r *http.Request) error {
+	if s.Store == nil {
+		return fmt.Errorf("app data store is not configured")
+	}
+
+	record, err := s.Store.AdminAuthVerifier()
+	if err != nil {
+		return fmt.Errorf("failed to load admin auth: %w", err)
+	}
+
+	response := adminAuthResponse{Configured: record != ""}
+	if record != "" {
+		response.Record = json.RawMessage(record)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) setAdminAuth(w http.ResponseWriter, r *http.Request) error {
+	if s.Store == nil {
+		return fmt.Errorf("app data store is not configured")
+	}
+
+	var req adminAuthRequest
+	if err := decodeLimitedJSON(w, r, &req, maxSmallJSONBytes); err != nil {
+		return fmt.Errorf("invalid request body: %w", err)
+	}
+	if err := validateAdminAuthRecord(req.Record); err != nil {
+		return err
+	}
+
+	record := string(req.Record)
+	if err := s.Store.SetAdminAuthVerifier(record); err != nil {
+		return fmt.Errorf("failed to save admin auth: %w", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(adminAuthResponse{
+		Configured: true,
+		Record:     json.RawMessage(record),
+	})
+}
+
+func (s *Server) deleteAdminAuth(w http.ResponseWriter, r *http.Request) error {
+	if s.Store == nil {
+		return fmt.Errorf("app data store is not configured")
+	}
+
+	if err := s.Store.DeleteAdminAuthVerifier(); err != nil {
+		return fmt.Errorf("failed to delete admin auth: %w", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(adminAuthResponse{Configured: false})
+}
+
+func validateAdminAuthRecord(record json.RawMessage) error {
+	if len(record) == 0 {
+		return errors.New("admin auth record is required")
+	}
+	if len(record) > 4096 {
+		return errors.New("admin auth record is too large")
+	}
+
+	var parsed struct {
+		Version    int    `json:"version"`
+		Algorithm  string `json:"algorithm"`
+		Iterations int    `json:"iterations"`
+		Salt       string `json:"salt"`
+		Verifier   string `json:"verifier"`
+		CreatedAt  string `json:"createdAt"`
+	}
+	if err := json.Unmarshal(record, &parsed); err != nil {
+		return fmt.Errorf("admin auth record is invalid: %w", err)
+	}
+	if parsed.Version != 1 ||
+		parsed.Algorithm != "PBKDF2-SHA256" ||
+		parsed.Iterations < 100000 ||
+		parsed.Iterations > 1000000 ||
+		parsed.Salt == "" ||
+		parsed.Verifier == "" ||
+		parsed.CreatedAt == "" {
+		return errors.New("admin auth record is invalid")
+	}
+	return nil
 }
 
 func (s *Server) resetAppData(w http.ResponseWriter, r *http.Request) error {

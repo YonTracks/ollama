@@ -1,7 +1,8 @@
-const CACHE_VERSION = "ollama-app-shell-v7";
+const CACHE_VERSION = "ollama-app-shell-v8";
 const STATIC_CACHE = `${CACHE_VERSION}:static`;
 const APP_SHELL = [
   "/",
+  "/admin/",
   "/offline/",
   "/manifest.webmanifest",
   "/favicon.svg",

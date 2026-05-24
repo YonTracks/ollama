@@ -19,6 +19,7 @@ describe("service worker cache policy", () => {
   it("caches navigations by request URL so offline routes keep their own shell", () => {
     const source = readFileSync(join(process.cwd(), "public", "sw.js"), "utf8");
 
+    expect(source).toContain('"/admin/"');
     expect(source).toContain('"/favicon.svg"');
     expect(source).toContain("cache.put(request, copy)");
     expect(source).toContain('caches.match("/")');
@@ -36,7 +37,7 @@ describe("service worker cache policy", () => {
   it("uses a new cache version for app shell updates", () => {
     const source = readFileSync(join(process.cwd(), "public", "sw.js"), "utf8");
 
-    expect(source).toContain('const CACHE_VERSION = "ollama-app-shell-v7"');
+    expect(source).toContain('const CACHE_VERSION = "ollama-app-shell-v8"');
   });
 
   it("registers service worker updates without stale browser cache", () => {

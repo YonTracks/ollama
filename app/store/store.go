@@ -296,6 +296,8 @@ type AppDataResetResult struct {
 	BackupPaths []string
 }
 
+const adminAuthMetadataKey = "admin_auth_verifier_v1"
+
 var defaultDBPath = func() string {
 	switch runtime.GOOS {
 	case "windows":
@@ -518,6 +520,30 @@ func (s *Store) SetSettings(settings Settings) error {
 	}
 
 	return s.db.setSettings(settings)
+}
+
+func (s *Store) AdminAuthVerifier() (string, error) {
+	if err := s.ensureDB(); err != nil {
+		return "", err
+	}
+
+	return s.db.getAppMetadata(adminAuthMetadataKey)
+}
+
+func (s *Store) SetAdminAuthVerifier(value string) error {
+	if err := s.ensureDB(); err != nil {
+		return err
+	}
+
+	return s.db.setAppMetadata(adminAuthMetadataKey, value)
+}
+
+func (s *Store) DeleteAdminAuthVerifier() error {
+	if err := s.ensureDB(); err != nil {
+		return err
+	}
+
+	return s.db.deleteAppMetadata(adminAuthMetadataKey)
 }
 
 func (s *Store) Chats() ([]Chat, error) {

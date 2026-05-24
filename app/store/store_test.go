@@ -107,6 +107,39 @@ func TestStore(t *testing.T) {
 		}
 	})
 
+	t.Run("admin auth verifier persists in app metadata", func(t *testing.T) {
+		initial, err := s.AdminAuthVerifier()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if initial != "" {
+			t.Fatalf("expected empty admin auth verifier, got %q", initial)
+		}
+
+		record := `{"version":1,"algorithm":"PBKDF2-SHA256","iterations":210000,"salt":"salt","verifier":"verifier","createdAt":"2026-05-24T00:00:00Z"}`
+		if err := s.SetAdminAuthVerifier(record); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := s.AdminAuthVerifier()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded != record {
+			t.Fatalf("expected persisted admin auth verifier, got %q", loaded)
+		}
+
+		if err := s.DeleteAdminAuthVerifier(); err != nil {
+			t.Fatal(err)
+		}
+		deleted, err := s.AdminAuthVerifier()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if deleted != "" {
+			t.Fatalf("expected deleted admin auth verifier, got %q", deleted)
+		}
+	})
+
 	t.Run("settings disabled home view falls back to launch", func(t *testing.T) {
 		if err := s.SetSettings(Settings{LastHomeView: "claude-desktop"}); err != nil {
 			t.Fatal(err)

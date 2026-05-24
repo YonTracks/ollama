@@ -4,6 +4,7 @@ import {
   Menu,
   RefreshCcw,
   Settings,
+  ShieldCheck,
   SlidersHorizontal,
   WifiOff
 } from "lucide-react";
@@ -22,6 +23,7 @@ interface TopBarProps {
   selectedModel: string;
   onSelectModel(model: string): void;
   onToggleSidebar(): void;
+  onOpenAdmin(): void;
   onOpenSettings(): void;
   onRefreshConnection(): void;
   onRefreshModels(): void;
@@ -35,6 +37,7 @@ export function TopBar({
   selectedModel,
   onSelectModel,
   onToggleSidebar,
+  onOpenAdmin,
   onOpenSettings,
   onRefreshConnection,
   onRefreshModels
@@ -76,6 +79,14 @@ export function TopBar({
         onClick={() => onOpenSettings()}
       >
         <SlidersHorizontal className="h-5 w-5" />
+      </IconButton>
+
+      <IconButton
+        label="Open admin security dashboard"
+        className="hidden sm:inline-flex"
+        onClick={onOpenAdmin}
+      >
+        <ShieldCheck className="h-5 w-5" />
       </IconButton>
 
       <IconButton

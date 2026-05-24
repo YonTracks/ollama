@@ -143,6 +143,75 @@ func TestHandlePostApiSettings(t *testing.T) {
 	}
 }
 
+func TestAdminAuthHandlersPersistVerifier(t *testing.T) {
+	testStore := &store.Store{
+		DBPath: filepath.Join(t.TempDir(), "db.sqlite"),
+	}
+	defer testStore.Close()
+
+	server := &Server{Store: testStore}
+	record := json.RawMessage(`{"version":1,"algorithm":"PBKDF2-SHA256","iterations":210000,"salt":"salt","verifier":"verifier","createdAt":"2026-05-24T00:00:00Z"}`)
+
+	body, err := json.Marshal(adminAuthRequest{Record: record})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setReq := httptest.NewRequest(http.MethodPut, "/api/v1/admin-auth", bytes.NewReader(body))
+	setReq.Header.Set("Content-Type", "application/json")
+	setRR := httptest.NewRecorder()
+	if err := server.setAdminAuth(setRR, setReq); err != nil {
+		t.Fatalf("setAdminAuth() error = %v", err)
+	}
+	if setRR.Code != http.StatusOK {
+		t.Fatalf("setAdminAuth() status = %d, want %d", setRR.Code, http.StatusOK)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin-auth", nil)
+	getRR := httptest.NewRecorder()
+	if err := server.getAdminAuth(getRR, getReq); err != nil {
+		t.Fatalf("getAdminAuth() error = %v", err)
+	}
+	var got adminAuthResponse
+	if err := json.Unmarshal(getRR.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Configured || string(got.Record) != string(record) {
+		t.Fatalf("expected configured admin auth record, got %#v", got)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/v1/admin-auth", nil)
+	deleteRR := httptest.NewRecorder()
+	if err := server.deleteAdminAuth(deleteRR, deleteReq); err != nil {
+		t.Fatalf("deleteAdminAuth() error = %v", err)
+	}
+	getRR = httptest.NewRecorder()
+	if err := server.getAdminAuth(getRR, getReq); err != nil {
+		t.Fatalf("getAdminAuth() after delete error = %v", err)
+	}
+	got = adminAuthResponse{}
+	if err := json.Unmarshal(getRR.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Configured {
+		t.Fatalf("expected admin auth to be deleted, got %#v", got)
+	}
+}
+
+func TestAdminAuthRejectsInvalidVerifier(t *testing.T) {
+	testStore := &store.Store{
+		DBPath: filepath.Join(t.TempDir(), "db.sqlite"),
+	}
+	defer testStore.Close()
+
+	server := &Server{Store: testStore}
+	body := []byte(`{"record":{"version":1,"algorithm":"plain","iterations":1,"salt":"","verifier":"","createdAt":""}}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin-auth", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	if err := server.setAdminAuth(rr, req); err == nil {
+		t.Fatal("expected invalid admin auth record to be rejected")
+	}
+}
+
 func TestDesktopToolsAvailabilityRequiresEnvAndRegistry(t *testing.T) {
 	server := &Server{ToolRegistry: apptools.NewRegistry()}
 	server.ToolRegistry.Register(testAppTool{})

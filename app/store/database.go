@@ -2115,6 +2115,37 @@ func (db *database) setSettings(s Settings) error {
 	return nil
 }
 
+func (db *database) getAppMetadata(key string) (string, error) {
+	var value string
+	err := db.conn.QueryRow(`SELECT value FROM app_metadata WHERE key = ?`, key).Scan(&value)
+	if err == nil {
+		return value, nil
+	}
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return "", fmt.Errorf("get app metadata %q: %w", key, err)
+}
+
+func (db *database) setAppMetadata(key, value string) error {
+	_, err := db.conn.Exec(`
+		INSERT INTO app_metadata (key, value)
+		VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
+	`, key, value)
+	if err != nil {
+		return fmt.Errorf("set app metadata %q: %w", key, err)
+	}
+	return nil
+}
+
+func (db *database) deleteAppMetadata(key string) error {
+	if _, err := db.conn.Exec(`DELETE FROM app_metadata WHERE key = ?`, key); err != nil {
+		return fmt.Errorf("delete app metadata %q: %w", key, err)
+	}
+	return nil
+}
+
 func (db *database) isCloudSettingMigrated() (bool, error) {
 	var migrated bool
 	err := db.conn.QueryRow("SELECT cloud_setting_migrated FROM settings").Scan(&migrated)

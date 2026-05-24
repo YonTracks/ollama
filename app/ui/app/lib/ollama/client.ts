@@ -79,6 +79,11 @@ interface UserStatusResponse {
   signin_url?: string;
 }
 
+export interface DesktopAdminAuthResponse {
+  configured: boolean;
+  record?: unknown;
+}
+
 export class OllamaClientError extends Error {
   readonly status?: number;
   readonly code: "http" | "unreachable" | "parse" | "unknown";
@@ -529,6 +534,37 @@ export async function updateSettings(settings: Settings): Promise<SettingsRespon
     method: "POST",
     body: JSON.stringify(settings)
   });
+}
+
+export async function getDesktopAdminAuth(
+  signal?: AbortSignal
+): Promise<DesktopAdminAuthResponse> {
+  const data = await fetchJson<DesktopAdminAuthResponse>("/api/v1/admin-auth", { signal });
+  return {
+    configured: Boolean(data.configured),
+    record: data.record
+  };
+}
+
+export async function setDesktopAdminAuth(record: unknown): Promise<DesktopAdminAuthResponse> {
+  const data = await fetchJson<DesktopAdminAuthResponse>("/api/v1/admin-auth", {
+    method: "PUT",
+    body: JSON.stringify({ record })
+  });
+  return {
+    configured: Boolean(data.configured),
+    record: data.record
+  };
+}
+
+export async function deleteDesktopAdminAuth(): Promise<DesktopAdminAuthResponse> {
+  const data = await fetchJson<DesktopAdminAuthResponse>("/api/v1/admin-auth", {
+    method: "DELETE"
+  });
+  return {
+    configured: Boolean(data.configured),
+    record: data.record
+  };
 }
 
 export async function resetAppData(): Promise<AppDataResetResponse> {

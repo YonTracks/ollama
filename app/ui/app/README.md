@@ -122,12 +122,13 @@ step runs the static export, and on Windows the active dev server can keep
 - `npm run start` serves the generated `dist/` folder for a local production smoke test.
 - The static smoke server proxies `/api/*` to `OLLAMA_APP_API_BASE`, defaulting to `http://127.0.0.1:3001`.
 - The desktop tray/taskbar settings action opens `/settings`, which is exported as `dist/settings/index.html`.
+- The admin security dashboard is exported at `/admin` for a consolidated local diagnostics view.
 
 ## PWA
 
 - `public/manifest.webmanifest` defines the installable app metadata.
 - `public/sw.js` pre-caches the static app shell routes and same-origin static assets.
-- Navigation responses are cached by request URL so exported routes such as `/`, `/settings/`, and `/offline/` keep distinct offline shells.
+- Navigation responses are cached by request URL only when they have no query string, so exported routes such as `/`, `/admin/`, `/settings/`, and `/offline/` keep distinct offline shells without storing token-bearing URLs.
 - When the browser reports no internet connection, the UI still probes the local Ollama API. If the local API is reachable, chat remains enabled in local-only mode.
 - Ollama API routes under `/api/` are intentionally excluded from service-worker caching.
 - Chat prompts, chat responses, API responses, and model metadata are not cached by the service worker.

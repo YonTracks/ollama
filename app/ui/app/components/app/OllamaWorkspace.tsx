@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle } from "lucide-react";
+import { AdminSecurityDashboard } from "@/components/admin/AdminSecurityDashboard";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { SettingsDrawer } from "@/components/settings/SettingsDrawer";
@@ -39,6 +40,7 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
   );
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(initialSettingsOpen);
+  const [adminOpen, setAdminOpen] = useState(false);
   const [allowMobileSidebarOpen, setAllowMobileSidebarOpen] = useState(false);
 
   const connected = appMode.ready && connection.status === "connected";
@@ -72,7 +74,9 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
 
   useEffect(() => {
     const syncSettingsRoute = () => {
-      setSettingsOpen(window.location.pathname.startsWith("/settings"));
+      const path = window.location.pathname;
+      setAdminOpen(path.startsWith("/admin"));
+      setSettingsOpen(path.startsWith("/settings"));
     };
 
     syncSettingsRoute();
@@ -296,6 +300,7 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
   };
 
   const openSettings = () => {
+    setAdminOpen(false);
     setSettingsOpen(true);
     if (!window.location.pathname.startsWith("/settings")) {
       window.history.pushState({}, "", "/settings");
@@ -308,6 +313,22 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
       window.history.pushState({}, "", "/");
     }
   };
+
+  const openAdmin = () => {
+    setSettingsOpen(false);
+    setAdminOpen(true);
+  };
+
+  const closeAdmin = () => {
+    setAdminOpen(false);
+    if (window.location.pathname.startsWith("/admin")) {
+      window.history.pushState({}, "", "/");
+    }
+  };
+
+  if (adminOpen) {
+    return <AdminSecurityDashboard onClose={closeAdmin} />;
+  }
 
   return (
     <div className="app-viewport-safe h-dvh overflow-hidden bg-background text-foreground">
@@ -343,6 +364,7 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
             onToggleSidebar={() =>
               handleToggleSidebar(!settings.sidebarOpen)
             }
+            onOpenAdmin={openAdmin}
             onOpenSettings={openSettings}
             onRefreshConnection={handleRefreshConnection}
             onRefreshModels={() => {
