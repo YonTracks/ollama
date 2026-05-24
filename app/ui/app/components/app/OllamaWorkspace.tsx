@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, RefreshCcw } from "lucide-react";
 import { AdminSecurityDashboard } from "@/components/admin/AdminSecurityDashboard";
 import { ChatPanel } from "@/components/chat/ChatPanel";
 import { Sidebar } from "@/components/sidebar/Sidebar";
@@ -12,8 +12,10 @@ import { useAppMode } from "@/hooks/useAppMode";
 import { useChatList, useChatSession } from "@/hooks/useChats";
 import { useLocalSettings } from "@/hooks/useLocalSettings";
 import { useModels } from "@/hooks/useModels";
+import { useModelOperations, type ModelOperationSnapshot } from "@/hooks/useModelOperations";
 import { useOllamaConnection } from "@/hooks/useOllamaConnection";
-import { deleteAllChats } from "@/lib/ollama/client";
+import { deleteAllChats, getApiBase } from "@/lib/ollama/client";
+import { SAME_ORIGIN_CORE_API_BASE } from "@/lib/ollama/standalone";
 import { deleteAllStandaloneChats } from "@/lib/ollama/standalone-db";
 import { cn } from "@/lib/utils";
 import type { LocalSettings } from "@/types/app";
@@ -201,6 +203,17 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
     [settings.selectedModel, showToast, updateSettings]
   );
 
+  const modelOperations = useModelOperations({
+    apiBase:
+      appMode.mode === "standalone"
+        ? settings.coreApiBase || undefined
+        : getApiBase() || SAME_ORIGIN_CORE_API_BASE,
+    apiToken: appMode.mode === "standalone" ? settings.coreApiToken : undefined,
+    selectedModel,
+    onSelectModel: handleSelectModel,
+    onRefreshModels: handleRefreshModels
+  });
+
   const handleQuickSettingsUpdate = useCallback(
     async (updates: Partial<LocalSettings>) => {
       const saved = await updateSettings(updates);
@@ -372,6 +385,13 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
             }}
           />
 
+          {!settingsOpen && modelOperations.snapshot.operation ? (
+            <ModelOperationBanner
+              snapshot={modelOperations.snapshot}
+              onOpenSettings={openSettings}
+            />
+          ) : null}
+
           {appDataEncryptionError ? (
             <div className="border-b border-danger/30 bg-danger/10 px-4 py-3 text-danger">
               <div className="mx-auto flex max-w-4xl items-start gap-3 text-sm">
@@ -408,6 +428,7 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
         chatCount={chatList.chats.length}
         models={modelState.models}
         selectedModel={selectedModel}
+        modelOperations={modelOperations}
         onClose={closeSettings}
         onSelectModel={handleSelectModel}
         onUpdateSettings={updateSettings}
@@ -418,6 +439,62 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
       />
     </div>
   );
+}
+
+function ModelOperationBanner({
+  snapshot,
+  onOpenSettings
+}: {
+  snapshot: ModelOperationSnapshot;
+  onOpenSettings(): void;
+}) {
+  const percent = snapshot.progress
+    ? Math.round((snapshot.progress.completed / Math.max(snapshot.progress.total, 1)) * 100)
+    : null;
+
+  return (
+    <div className="border-b border-border bg-panel-strong px-4 py-2">
+      <div className="mx-auto flex max-w-4xl items-center gap-3 text-sm">
+        <RefreshCcw className="h-4 w-4 flex-none animate-spin text-accent" />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center justify-between gap-3">
+            <span className="min-w-0 truncate font-medium">
+              {modelOperationLabel(snapshot.operation)} {snapshot.model ?? ""}
+            </span>
+            {percent !== null ? (
+              <span className="flex-none text-xs text-muted-foreground">{percent}%</span>
+            ) : null}
+          </div>
+          <div className="mt-0.5 truncate text-xs text-muted-foreground">
+            {snapshot.status ?? "Working"}
+          </div>
+          {percent !== null ? (
+            <div className="mt-1 h-1 overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full rounded-full bg-accent transition-[width]"
+                style={{ width: `${percent}%` }}
+              />
+            </div>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          className="inline-flex h-8 flex-none items-center rounded-md border border-border px-3 text-xs font-medium transition hover:bg-muted focus:focus-ring"
+        >
+          Details
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function modelOperationLabel(kind: ModelOperationSnapshot["operation"]) {
+  if (kind === "pull") return "Pulling";
+  if (kind === "create") return "Creating";
+  if (kind === "import") return "Importing";
+  if (kind === "delete") return "Deleting";
+  return "Working on";
 }
 
 function quickSettingsToastDescription(updates: Partial<LocalSettings>) {

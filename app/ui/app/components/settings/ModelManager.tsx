@@ -17,25 +17,13 @@ import {
 import { showModel } from "@/lib/ollama/client";
 import { createRequestFromModelfile } from "@/lib/ollama/modelfile";
 import {
-  createStandaloneModel,
-  deleteStandaloneModel,
-  pullStandaloneModel,
   showStandaloneModel,
-  standaloneBlobExists,
-  type CreateStandaloneModelRequest,
-  uploadStandaloneBlob
+  type CreateStandaloneModelRequest
 } from "@/lib/ollama/standalone";
 import { useToast } from "@/components/ui/ToastProvider";
 import { cn, formatBytes } from "@/lib/utils";
-import type {
-  ModelOperationEvent,
-  OllamaModel,
-  OllamaShowModelResponse
-} from "@/lib/ollama/types";
-
-interface ToastOptions {
-  silent?: boolean;
-}
+import type { ModelOperationsController } from "@/hooks/useModelOperations";
+import type { OllamaModel, OllamaShowModelResponse } from "@/lib/ollama/types";
 
 interface ModelManagerProps {
   models: OllamaModel[];
@@ -43,11 +31,9 @@ interface ModelManagerProps {
   standalone?: boolean;
   apiBase?: string;
   apiToken?: string;
-  onSelectModel(model: string, options?: ToastOptions): Promise<boolean | void> | boolean | void;
-  onRefreshModels(options?: ToastOptions): Promise<boolean | void> | boolean | void;
+  modelOperations: ModelOperationsController;
 }
 
-type OperationKind = "pull" | "create" | "import" | "delete";
 type CreateMode = "fields" | "modelfile";
 
 const DEFAULT_CREATE_PARAMETERS = {
@@ -88,13 +74,13 @@ export function ModelManager({
   standalone = false,
   apiBase,
   apiToken,
-  onSelectModel,
-  onRefreshModels
+  modelOperations
 }: ModelManagerProps) {
   const { showToast } = useToast();
   const localModels = useMemo(() => models.filter((model) => model.local), [models]);
   const firstLocalModel = localModels[0]?.name ?? selectedModel;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const mountedRef = useRef(true);
 
   const [pullName, setPullName] = useState("");
   const [detailsName, setDetailsName] = useState(firstLocalModel);
@@ -127,14 +113,10 @@ export function ModelManager({
   const [importFile, setImportFile] = useState<File | null>(null);
   const [deleteName, setDeleteName] = useState(firstLocalModel);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
-  const [operation, setOperation] = useState<OperationKind | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
-  const [progress, setProgress] = useState<{ completed: number; total: number } | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
-
-  const busy = operation !== null;
+  const { snapshot } = modelOperations;
+  const busy = snapshot.operation !== null;
   const canPull = pullName.trim().length > 0 && !busy;
   const canShowDetails = detailsName.trim().length > 0 && !modelDetailsLoading;
   const canCreate =
@@ -145,6 +127,13 @@ export function ModelManager({
       : createBase.trim().length > 0);
   const canImport = importName.trim().length > 0 && importFile && !busy;
   const canDelete = deleteName.trim().length > 0 && confirmDelete && !busy;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const hasCreateBase = localModels.some((model) => model.name === createBase);
@@ -159,84 +148,12 @@ export function ModelManager({
     if (!firstLocalModel && deleteName) setDeleteName("");
   }, [createBase, deleteName, detailsName, firstLocalModel, localModels]);
 
-  const clearNotices = () => {
-    setError(null);
-    setSuccess(null);
-    setProgress(null);
-  };
-
-  const applyEvent = (event: ModelOperationEvent) => {
-    if (event.error) {
-      setError(event.error);
-      return;
-    }
-
-    setStatus(event.status);
-    if (typeof event.completed === "number" && typeof event.total === "number") {
-      setProgress({ completed: event.completed, total: event.total });
-    }
-  };
-
-  const runStreamOperation = async (
-    kind: OperationKind,
-    stream: AsyncGenerator<ModelOperationEvent>,
-    completeMessage: string,
-    modelToSelect?: string
-  ) => {
-    setOperation(kind);
-    clearNotices();
-    setStatus("Starting");
-    showToast({
-      id: "model-operation",
-      title: modelOperationStartTitle(kind),
-      description: modelToSelect ?? "Progress is shown in the Models panel.",
-      tone: "info",
-      duration: 5000
-    });
-
-    try {
-      for await (const event of stream) {
-        if (event.error) throw new Error(event.error);
-        applyEvent(event);
-      }
-
-      setSuccess(completeMessage);
-      showToast({
-        id: "model-operation",
-        title: modelOperationSuccessTitle(kind),
-        description: completeMessage,
-        tone: "success"
-      });
-      if (modelToSelect) await Promise.resolve(onSelectModel(modelToSelect, { silent: true }));
-      await Promise.resolve(onRefreshModels({ silent: true }));
-    } catch (operationError) {
-      const message =
-        operationError instanceof Error
-          ? operationError.message
-          : "Model operation failed.";
-      setError(message);
-      showToast({
-        id: "model-operation",
-        title: modelOperationErrorTitle(kind),
-        description: message,
-        tone: "danger",
-        duration: 7000
-      });
-    } finally {
-      setOperation(null);
-    }
-  };
-
   const handlePull = () => {
     const model = pullName.trim();
     if (!model) return;
-
-    void runStreamOperation(
-      "pull",
-      pullStandaloneModel(model, apiBase, apiToken),
-      `${model} added`,
-      model
-    );
+    setFormError(null);
+    modelOperations.clearNotices();
+    void modelOperations.pullModel(model);
   };
 
   const handleShowDetails = async () => {
@@ -290,6 +207,8 @@ export function ModelManager({
   const handleCreate = () => {
     const model = createName.trim();
     if (!model) return;
+    setFormError(null);
+    modelOperations.clearNotices();
 
     let request: CreateStandaloneModelRequest;
     try {
@@ -319,7 +238,7 @@ export function ModelManager({
     } catch (createError) {
       const message =
         createError instanceof Error ? createError.message : "Model create configuration is invalid.";
-      setError(message);
+      setFormError(message);
       showToast({
         id: "model-create-config",
         title: "Model create needs changes",
@@ -330,12 +249,7 @@ export function ModelManager({
       return;
     }
 
-    void runStreamOperation(
-      "create",
-      createStandaloneModel(request, apiBase, apiToken),
-      `${model} created`,
-      model
-    );
+    void modelOperations.createModel(request);
   };
 
   const applyExpertTemplate = () => {
@@ -372,122 +286,38 @@ export function ModelManager({
     event.target.value = "";
   };
 
-  const handleImport = async () => {
+  const handleImport = () => {
     const model = importName.trim();
     if (!model || !importFile) return;
 
-    setOperation("import");
-    clearNotices();
-    showToast({
-      id: "model-operation",
-      title: "Importing model",
-      description: model,
-      tone: "info",
-      duration: 5000
+    setFormError(null);
+    modelOperations.clearNotices();
+    void modelOperations.importModel(model, importFile).then((imported) => {
+      if (imported && mountedRef.current) setImportFile(null);
     });
-
-    try {
-      setStatus("Hashing GGUF");
-      const digest = await sha256Digest(importFile);
-
-      setStatus("Checking blob cache");
-      if (!(await standaloneBlobExists(digest, apiBase, apiToken))) {
-        setStatus("Uploading GGUF");
-        await uploadStandaloneBlob(digest, importFile, apiBase, apiToken);
-      }
-
-      setStatus("Creating model");
-      for await (const event of createStandaloneModel({
-        model,
-        files: {
-          [importFile.name]: digest
-        }
-      }, apiBase, apiToken)) {
-        if (event.error) throw new Error(event.error);
-        applyEvent(event);
-      }
-
-      setSuccess(`${model} imported`);
-      showToast({
-        id: "model-operation",
-        title: "Model imported",
-        description: `${model} is ready to use.`,
-        tone: "success"
-      });
-      setImportFile(null);
-      await Promise.resolve(onSelectModel(model, { silent: true }));
-      await Promise.resolve(onRefreshModels({ silent: true }));
-    } catch (operationError) {
-      const message =
-        operationError instanceof Error
-          ? operationError.message
-          : "Model import failed.";
-      setError(message);
-      showToast({
-        id: "model-operation",
-        title: "Model import failed",
-        description: message,
-        tone: "danger",
-        duration: 7000
-      });
-    } finally {
-      setOperation(null);
-    }
   };
 
-  const handleDelete = async () => {
+  const handleDelete = () => {
     const model = deleteName.trim();
     if (!model || !confirmDelete) return;
 
-    setOperation("delete");
-    clearNotices();
-    setStatus("Deleting model");
-    showToast({
-      id: "model-operation",
-      title: "Deleting model",
-      description: model,
-      tone: "warning",
-      duration: 5000
-    });
-
-    try {
-      await deleteStandaloneModel(model, apiBase, apiToken);
-      setSuccess(`${model} deleted`);
-      showToast({
-        id: "model-operation",
-        title: "Model deleted",
-        description: model,
-        tone: "success"
-      });
+    setFormError(null);
+    modelOperations.clearNotices();
+    void modelOperations.deleteModel(model).then((deleted) => {
+      if (!deleted || !mountedRef.current) return;
       setConfirmDelete(false);
       setDeleteName("");
-      if (selectedModel === model) {
-        await Promise.resolve(onSelectModel("", { silent: true }));
-      }
-      await Promise.resolve(onRefreshModels({ silent: true }));
-    } catch (operationError) {
-      const message =
-        operationError instanceof Error
-          ? operationError.message
-          : "Model delete failed.";
-      setError(message);
-      showToast({
-        id: "model-operation",
-        title: "Model delete failed",
-        description: message,
-        tone: "danger",
-        duration: 7000
-      });
-    } finally {
-      setOperation(null);
-    }
+    });
   };
 
   return (
     <div className="space-y-3">
-      {error ? <ModelNotice tone="danger">{error}</ModelNotice> : null}
-      {success ? <ModelNotice tone="success">{success}</ModelNotice> : null}
-      {status || progress ? <OperationStatus status={status} progress={progress} /> : null}
+      {formError ? <ModelNotice tone="danger">{formError}</ModelNotice> : null}
+      {snapshot.error ? <ModelNotice tone="danger">{snapshot.error}</ModelNotice> : null}
+      {snapshot.success ? <ModelNotice tone="success">{snapshot.success}</ModelNotice> : null}
+      {snapshot.status || snapshot.progress ? (
+        <OperationStatus status={snapshot.status} progress={snapshot.progress} />
+      ) : null}
 
       <div className="rounded-md border border-border bg-panel-strong px-3 py-3">
         <div className="mb-3 flex items-center gap-2 text-sm font-medium">
@@ -1043,27 +873,6 @@ function ModelParameterInput({
   );
 }
 
-function modelOperationStartTitle(kind: OperationKind) {
-  if (kind === "pull") return "Pulling model";
-  if (kind === "create") return "Creating model";
-  if (kind === "delete") return "Deleting model";
-  return "Importing model";
-}
-
-function modelOperationSuccessTitle(kind: OperationKind) {
-  if (kind === "pull") return "Model added";
-  if (kind === "create") return "Model created";
-  if (kind === "delete") return "Model deleted";
-  return "Model imported";
-}
-
-function modelOperationErrorTitle(kind: OperationKind) {
-  if (kind === "pull") return "Model pull failed";
-  if (kind === "create") return "Model create failed";
-  if (kind === "delete") return "Model delete failed";
-  return "Model import failed";
-}
-
 function formatDateTime(value?: string) {
   if (!value) return undefined;
   const date = new Date(value);
@@ -1130,14 +939,4 @@ function addStopParameters(parameters: Record<string, number | string[]>, value:
   if (stops.length > 0) {
     parameters.stop = stops;
   }
-}
-
-async function sha256Digest(file: File) {
-  if (!crypto.subtle) {
-    throw new Error("This browser does not support Web Crypto file hashing.");
-  }
-
-  const hashBuffer = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return `sha256:${hashArray.map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }

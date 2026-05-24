@@ -70,6 +70,7 @@ import { fetchSearchHealth } from "@/lib/search/client";
 import { cn, formatBytes } from "@/lib/utils";
 import type { useOllamaConnection } from "@/hooks/useOllamaConnection";
 import type { AppMode } from "@/lib/appMode";
+import type { ModelOperationsController } from "@/hooks/useModelOperations";
 import type {
   ChatInfo,
   CloudStatusResponse,
@@ -120,6 +121,7 @@ interface SettingsDrawerProps {
   chatCount: number;
   models: OllamaModel[];
   selectedModel: string;
+  modelOperations: ModelOperationsController;
   onClose(): void;
   onSelectModel(model: string, options?: ToastOptions): Promise<boolean | void> | boolean | void;
   onUpdateSettings(updates: Partial<LocalSettings>): Promise<boolean | void> | boolean | void;
@@ -140,6 +142,7 @@ export function SettingsDrawer({
   chatCount,
   models,
   selectedModel,
+  modelOperations,
   onClose,
   onSelectModel,
   onUpdateSettings,
@@ -1435,8 +1438,7 @@ export function SettingsDrawer({
                 apiToken={modelManagerApiToken}
                 models={models}
                 selectedModel={selectedModel}
-                onSelectModel={onSelectModel}
-                onRefreshModels={onRefreshModels}
+                modelOperations={modelOperations}
               />
             </SettingsSection>
           ) : null}
