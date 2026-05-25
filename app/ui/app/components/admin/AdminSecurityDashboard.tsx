@@ -202,11 +202,10 @@ export function AdminSecurityDashboard({ onClose }: AdminSecurityDashboardProps 
     setUnlocked(false);
   }, []);
 
-  const resetDashboardLogin = useCallback(() => {
-    void resetAdminLogin(appMode.mode).finally(() => {
-      setAuthConfigured(false);
-      setUnlocked(false);
-    });
+  const resetDashboardLogin = useCallback(async () => {
+    await resetAdminLogin(appMode.mode);
+    setAuthConfigured(false);
+    setUnlocked(false);
   }, [appMode.mode]);
 
   const tiles = useMemo(
@@ -253,6 +252,7 @@ export function AdminSecurityDashboard({ onClose }: AdminSecurityDashboardProps 
           configured={authConfigured}
           onSetup={(passphrase) => setupAdminLogin(appMode.mode, passphrase)}
           onVerify={(passphrase) => verifyAdminLogin(appMode.mode, passphrase)}
+          onReset={resetDashboardLogin}
           onConfigured={() => {
             setAuthConfigured(true);
             setUnlocked(true);
@@ -390,7 +390,9 @@ export function AdminSecurityDashboard({ onClose }: AdminSecurityDashboardProps 
       <section className="mt-5 flex flex-wrap items-center gap-3 border-t border-border pt-4">
         <button
           type="button"
-          onClick={resetDashboardLogin}
+          onClick={() => {
+            void resetDashboardLogin();
+          }}
           className="inline-flex h-9 items-center gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 text-sm text-danger hover:bg-danger/15 focus:focus-ring"
         >
           <Trash2 className="h-4 w-4" />
@@ -405,12 +407,14 @@ function AdminLogin({
   configured,
   onSetup,
   onVerify,
+  onReset,
   onConfigured,
   onUnlocked
 }: {
   configured: boolean;
   onSetup(passphrase: string): Promise<void>;
   onVerify(passphrase: string): Promise<boolean>;
+  onReset(): Promise<void>;
   onConfigured(): void;
   onUnlocked(): void;
 }) {
@@ -418,6 +422,17 @@ function AdminLogin({
   const [confirmPassphrase, setConfirmPassphrase] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetConfirmation, setResetConfirmation] = useState("");
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+  const canReset = resetConfirmation.trim() === "RESET ADMIN";
+
+  useEffect(() => {
+    setResetOpen(false);
+    setResetConfirmation("");
+    setResetError(null);
+  }, [configured]);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -440,6 +455,27 @@ function AdminLogin({
       setError(submitError instanceof Error ? submitError.message : "Admin login failed.");
     } finally {
       setBusy(false);
+    }
+  };
+
+  const resetLogin = async () => {
+    if (!canReset) return;
+
+    setResetBusy(true);
+    setResetError(null);
+    setError(null);
+    try {
+      await onReset();
+      setPassphrase("");
+      setConfirmPassphrase("");
+      setResetConfirmation("");
+      setResetOpen(false);
+    } catch (resetFailure) {
+      setResetError(
+        resetFailure instanceof Error ? resetFailure.message : "Admin login reset failed."
+      );
+    } finally {
+      setResetBusy(false);
     }
   };
 
@@ -495,6 +531,70 @@ function AdminLogin({
           {configured ? "Unlock dashboard" : "Create and unlock"}
         </button>
       </form>
+
+      {configured ? (
+        <div className="mt-4 border-t border-border pt-4">
+          {!resetOpen ? (
+            <button
+              type="button"
+              onClick={() => setResetOpen(true)}
+              className="inline-flex h-9 items-center gap-2 rounded-md border border-danger/30 bg-danger/10 px-3 text-sm text-danger hover:bg-danger/15 focus:focus-ring"
+            >
+              <Trash2 className="h-4 w-4" />
+              Forgot passphrase
+            </button>
+          ) : (
+            <div className="rounded-md border border-danger/30 bg-danger/10 p-3 text-sm">
+              <div className="font-medium text-danger">Reset admin login</div>
+              <p className="mt-1 leading-5 text-muted-foreground">
+                This removes only the dashboard passphrase. It preserves chats, settings, tokens,
+                and encrypted app data, and it cannot recover a lost app-data encryption key.
+              </p>
+              <label className="mt-3 block">
+                <span className="mb-1 block text-xs text-muted-foreground">
+                  Type RESET ADMIN to continue
+                </span>
+                <input
+                  value={resetConfirmation}
+                  disabled={resetBusy}
+                  onChange={(event) => setResetConfirmation(event.target.value)}
+                  className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm focus:focus-ring disabled:opacity-60"
+                />
+              </label>
+              {resetError ? <div className="mt-2 text-sm text-danger">{resetError}</div> : null}
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={!canReset || resetBusy}
+                  onClick={() => {
+                    void resetLogin();
+                  }}
+                  className="inline-flex h-9 items-center gap-2 rounded-md border border-danger/40 bg-danger px-3 text-sm font-medium text-background hover:bg-danger/90 disabled:opacity-60 focus:focus-ring"
+                >
+                  {resetBusy ? (
+                    <RefreshCcw className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-4 w-4" />
+                  )}
+                  Reset login
+                </button>
+                <button
+                  type="button"
+                  disabled={resetBusy}
+                  onClick={() => {
+                    setResetOpen(false);
+                    setResetConfirmation("");
+                    setResetError(null);
+                  }}
+                  className="inline-flex h-9 items-center rounded-md border border-border px-3 text-sm hover:bg-muted disabled:opacity-60 focus:focus-ring"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }
