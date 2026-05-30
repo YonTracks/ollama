@@ -54,6 +54,71 @@ function findDumpbin {
     return $null
 }
 
+function findDllNearGoCompilerOrPath {
+    param([string]$Name)
+
+    $cc = (& go env CC 2>$null)
+    if ($cc) {
+        $ccCommand = Get-Command -Name $cc.Trim() -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($ccCommand) {
+            $candidate = Join-Path (Split-Path -Parent $ccCommand.Path) $Name
+            if (Test-Path -LiteralPath $candidate) {
+                return $candidate
+            }
+        }
+    }
+
+    $dllCommand = Get-Command -Name $Name -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($dllCommand) {
+        return $dllCommand.Path
+    }
+
+    foreach ($pathDir in ($env:PATH -split [IO.Path]::PathSeparator)) {
+        if (-not $pathDir) {
+            continue
+        }
+        $candidate = Join-Path $pathDir $Name
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
+function bundleGoRuntimeDlls {
+    param([string]$distDir)
+
+    $ollamaExe = Join-Path $distDir "ollama.exe"
+    if (-not (Test-Path -LiteralPath $ollamaExe)) {
+        return
+    }
+
+    $dumpbin = findDumpbin
+    if (-not $dumpbin) {
+        return
+    }
+
+    $output = & $dumpbin /nologo /dependents $ollamaExe 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Output "WARNING: unable to inspect ollama.exe dependencies for Go runtime DLLs"
+        return
+    }
+
+    foreach ($line in $output) {
+        if ($line -match '^\s+(libwinpthread-1\.dll)\s*$') {
+            $dllName = $matches[1]
+            $dllPath = findDllNearGoCompilerOrPath $dllName
+            if (-not $dllPath) {
+                Write-Output "WARNING: $dllName is required by ollama.exe but was not found on PATH"
+                continue
+            }
+            Copy-Item -LiteralPath $dllPath -Destination (Join-Path $distDir $dllName) -Force
+            Write-Output "Bundled Go runtime dependency $dllName"
+        }
+    }
+}
+
 function normalizePathForCompare {
     param([string]$Path)
 
@@ -662,6 +727,7 @@ function buildOllamaCLI {
     mkdir -Force -path "${distDir}\" | Out-Null
     & go build -trimpath -ldflags "-s -w -X=github.com/ollama/ollama/version.Version=$script:VERSION -X=github.com/ollama/ollama/server.mode=release" -o "${distDir}\ollama.exe" .
     if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
+    bundleGoRuntimeDlls $distDir
 }
 
 function ollama {
@@ -878,7 +944,7 @@ function newDependencyAuditJob($payloadDir, $label, $reportPath, $dependencyDirs
             $reportLines.Add("[$($binary.FullName)]")
             $output = & $dumpbinPath /nologo /dependents $binary.FullName 2>&1
             if ($LASTEXITCODE -ne 0) {
-                throw "dumpbin failed for $($binary.FullName) with exit code $LASTEXITCODE"
+                throw "dumpbin failed for $($binary.FullName) with exit code $LASTEXITCODE`n$([System.String]::Join([Environment]::NewLine, $output))"
             }
 
             foreach ($line in $output) {
@@ -941,7 +1007,8 @@ function restoreComponents($mainDir, $stagingDir) {
 }
 
 function zip {
-    $jobs = @()
+    $zipJobs = @()
+    $auditRequests = @()
     $distDir = "${script:SRC_DIR}\dist"
     $amd64Dir = "${distDir}\windows-amd64"
 
@@ -953,39 +1020,39 @@ function zip {
             # Stage ROCm into its own directory for independent compression.
             if (stageComponents $amd64Dir "${distDir}\windows-amd64-rocm" "rocm_v*" "ROCm") {
                 Write-Output "Generating ${distDir}\ollama-windows-amd64-rocm.zip"
-                $jobs += newZipJob "${distDir}\windows-amd64-rocm" "${distDir}\ollama-windows-amd64-rocm.zip"
-                $jobs += newDependencyAuditJob "${distDir}\windows-amd64-rocm" "windows-amd64-rocm" "${distDir}\dependency-audit-windows-amd64-rocm.txt" $amd64Dir
+                $zipJobs += newZipJob "${distDir}\windows-amd64-rocm" "${distDir}\ollama-windows-amd64-rocm.zip"
+                $auditRequests += ,@("${distDir}\windows-amd64-rocm", "windows-amd64-rocm", "${distDir}\dependency-audit-windows-amd64-rocm.txt", $amd64Dir)
             }
 
             # Stage MLX into its own directory for independent compression
             if (stageComponents $amd64Dir "${distDir}\windows-amd64-mlx" "mlx_*" "MLX") {
                 Write-Output "Generating ${distDir}\ollama-windows-amd64-mlx.zip"
-                $jobs += newZipJob "${distDir}\windows-amd64-mlx" "${distDir}\ollama-windows-amd64-mlx.zip"
-                $jobs += newDependencyAuditJob "${distDir}\windows-amd64-mlx" "windows-amd64-mlx" "${distDir}\dependency-audit-windows-amd64-mlx.txt" $amd64Dir
+                $zipJobs += newZipJob "${distDir}\windows-amd64-mlx" "${distDir}\ollama-windows-amd64-mlx.zip"
+                $auditRequests += ,@("${distDir}\windows-amd64-mlx", "windows-amd64-mlx", "${distDir}\dependency-audit-windows-amd64-mlx.txt", $amd64Dir)
             }
 
             # Compress the main amd64 zip (without rocm/mlx)
             Write-Output "Generating ${distDir}\ollama-windows-amd64.zip"
-            $jobs += newZipJob $amd64Dir "${distDir}\ollama-windows-amd64.zip"
-            $jobs += newDependencyAuditJob $amd64Dir "windows-amd64" "${distDir}\dependency-audit-windows-amd64.txt"
+            $zipJobs += newZipJob $amd64Dir "${distDir}\ollama-windows-amd64.zip"
+            $auditRequests += ,@($amd64Dir, "windows-amd64", "${distDir}\dependency-audit-windows-amd64.txt", @())
         }
 
         $arm64Dir = "${distDir}\windows-arm64"
         if (Test-Path -Path $arm64Dir) {
             if ((Test-Path -Path "${arm64Dir}\ollama.exe") -and (Test-Path -Path "${arm64Dir}\lib\ollama\llama-server.exe")) {
                 Write-Output "Generating ${distDir}\ollama-windows-arm64.zip"
-                $jobs += newZipJob $arm64Dir "${distDir}\ollama-windows-arm64.zip"
-                $jobs += newDependencyAuditJob $arm64Dir "windows-arm64" "${distDir}\dependency-audit-windows-arm64.txt"
+                $zipJobs += newZipJob $arm64Dir "${distDir}\ollama-windows-arm64.zip"
+                $auditRequests += ,@($arm64Dir, "windows-arm64", "${distDir}\dependency-audit-windows-arm64.txt", @())
             } else {
                 Write-Output "Skipping ${distDir}\ollama-windows-arm64.zip; missing ARM64 ollama.exe or llama-server.exe"
             }
         }
 
-        if ($jobs.Count -gt 0) {
-            Write-Output "Waiting for $($jobs.Count) parallel zip jobs..."
-            $jobs | Wait-Job | Out-Null
+        if ($zipJobs.Count -gt 0) {
+            Write-Output "Waiting for $($zipJobs.Count) parallel zip jobs..."
+            $zipJobs | Wait-Job | Out-Null
             $failed = $false
-            foreach ($job in $jobs) {
+            foreach ($job in $zipJobs) {
                 if ($job.State -eq 'Failed') {
                     Write-Error "Zip job failed: $($job.ChildJobs[0].JobStateInfo.Reason)"
                     $failed = $true
@@ -994,6 +1061,26 @@ function zip {
                 Remove-Job $job
             }
             if ($failed) { throw "One or more zip jobs failed" }
+        }
+
+        if ($auditRequests.Count -gt 0) {
+            $auditJobs = @()
+            foreach ($auditRequest in $auditRequests) {
+                $auditJobs += newDependencyAuditJob $auditRequest[0] $auditRequest[1] $auditRequest[2] $auditRequest[3]
+            }
+
+            Write-Output "Waiting for $($auditJobs.Count) dependency audit jobs..."
+            $auditJobs | Wait-Job | Out-Null
+            $failed = $false
+            foreach ($job in $auditJobs) {
+                if ($job.State -eq 'Failed') {
+                    Write-Error "Dependency audit job failed: $($job.ChildJobs[0].JobStateInfo.Reason)"
+                    $failed = $true
+                }
+                Receive-Job $job
+                Remove-Job $job
+            }
+            if ($failed) { throw "One or more dependency audit jobs failed" }
         }
     } finally {
         # Always restore staged components back into the main tree

@@ -70,6 +70,9 @@ payload, not old GGUF runner executables.
   as `cuda_v12`, `cuda_v13`, `rocm_v7_1`, and `vulkan`.
 - The llama-server CMake installs Windows CRT/OpenMP or MinGW runtime DLLs
   beside the payload so zip installs do not rely on host-global redistributables.
+- The Go CLI can also depend on MinGW runtime DLLs through CGO packages. The
+  Windows build script bundles those beside `ollama.exe` and dependency-audits
+  staged payloads after compression so packaging does not race `dumpbin`.
 - CUDA v11 is no longer supported by the Windows build script.
 - ROCm v6 is skipped; ROCm v7 is the Windows path.
 - Vulkan bundles the system `vulkan-1.dll` from the Windows runtime.
