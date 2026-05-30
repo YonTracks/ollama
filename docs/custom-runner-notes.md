@@ -85,6 +85,9 @@ payload, not old GGUF runner executables.
   `OLLAMA_MLX_CUDA_ARCHITECTURES` to that GPU's compute capability, for example
   `86` for an RTX 3060, before running `scripts/build_windows.ps1`. The default
   package build keeps the broad upstream architecture set.
+- YonTracks Windows setup builds include the `mlx_*` payload in
+  `OllamaSetup.exe`; otherwise installed MLX models fail at runtime with
+  `mlxc.dll not found` even when the separate MLX zip is valid.
 - The MLX CUDA Windows install step needs the cuDNN `bin` directory for runtime
   dependency bundling. The build script accepts `CUDNN_INCLUDE_PATH` and
   `CUDNN_LIBRARY_PATH`, derives `CUDNN_ROOT_DIR` from them, and also detects the
