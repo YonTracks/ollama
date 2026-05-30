@@ -77,6 +77,18 @@ payload, not old GGUF runner executables.
   acceleration libraries are not supported there.
 - `CGO_ENABLED=1` still appears in Windows build scripts for the Go/native
   project as a whole. That does not mean the old GGUF CGO runner still exists.
+- MLX CUDA 13 is still separate from GGUF inference and is used by the MLX /
+  image generation path. For local Windows builds on a single NVIDIA GPU, set
+  `OLLAMA_MLX_CUDA_ARCHITECTURES` to that GPU's compute capability, for example
+  `86` for an RTX 3060, before running `scripts/build_windows.ps1`. The default
+  package build keeps the broad upstream architecture set.
+- The MLX CUDA Windows install step needs the cuDNN `bin` directory for runtime
+  dependency bundling. The build script accepts `CUDNN_INCLUDE_PATH` and
+  `CUDNN_LIBRARY_PATH`, derives `CUDNN_ROOT_DIR` from them, and also detects the
+  official `CUDNN/v*/include/13.x`, `lib/13.x/x64`, `bin/13.x/x64` layout.
+- If `build/mlx_cuda_v13` was created by an older manual CMake command, remove
+  that generated build directory before switching generators or MLX CUDA
+  architecture settings.
 
 ## Low-VRAM hook points
 

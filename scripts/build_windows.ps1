@@ -528,6 +528,21 @@ function mlxCuda13 {
             # 1. CI/zip extract: CUDNN\include\cudnn.h, lib\x64\, bin\x64\
             # 2. Official installer: CUDNN\v*\include\{cuda-ver}\cudnn.h, lib\{cuda-ver}\x64\, bin\{cuda-ver}\
             if ($env:CUDNN_INCLUDE_PATH -and $env:CUDNN_LIBRARY_PATH) {
+                $env:CUDNN_INCLUDE_PATH = $env:CUDNN_INCLUDE_PATH.Trim('"')
+                $env:CUDNN_LIBRARY_PATH = $env:CUDNN_LIBRARY_PATH.Trim('"')
+                if ($env:CUDNN_ROOT_DIR) {
+                    $env:CUDNN_ROOT_DIR = $env:CUDNN_ROOT_DIR.Trim('"')
+                } else {
+                    $resolvedInclude = Resolve-Path -LiteralPath $env:CUDNN_INCLUDE_PATH -ErrorAction SilentlyContinue
+                    if ($resolvedInclude) {
+                        $includeLeaf = Split-Path -Leaf $resolvedInclude.Path
+                        if ($includeLeaf -match '^\d+(\.\d+)?$') {
+                            $env:CUDNN_ROOT_DIR = Split-Path -Parent (Split-Path -Parent $resolvedInclude.Path)
+                        } else {
+                            $env:CUDNN_ROOT_DIR = Split-Path -Parent $resolvedInclude.Path
+                        }
+                    }
+                }
                 Write-Output "Using cuDNN from environment: $env:CUDNN_INCLUDE_PATH"
             } elseif (Test-Path "C:\Program Files\NVIDIA\CUDNN\include\cudnn.h") {
                 # CI/zip layout (flat)
@@ -539,13 +554,27 @@ function mlxCuda13 {
             } else {
                 # Official installer layout (versioned)
                 $cudnnRoot = $null
-                $resolved = Resolve-Path -Path "C:\Program Files\NVIDIA\CUDNN\v*" -ErrorAction SilentlyContinue | Sort-Object -Descending | Select-Object -First 1
-                if ($resolved -and (Test-Path "$($resolved.Path)\include\$cudaMajorVer.0\cudnn.h")) {
-                    $cudnnRoot = $resolved.Path
+                $cudaCudnnVersion = $null
+                $resolvedRoots = Resolve-Path -Path "C:\Program Files\NVIDIA\CUDNN\v*" -ErrorAction SilentlyContinue | Sort-Object -Property Path -Descending
+                foreach ($resolved in $resolvedRoots) {
+                    $includeDirs = Resolve-Path -Path "$($resolved.Path)\include\$cudaMajorVer.*" -ErrorAction SilentlyContinue | Sort-Object -Property Path -Descending
+                    foreach ($includeDir in $includeDirs) {
+                        $version = Split-Path -Leaf $includeDir.Path
+                        if ((Test-Path "$($includeDir.Path)\cudnn.h") -and (Test-Path "$($resolved.Path)\lib\$version\x64\cudnn.lib")) {
+                            $cudnnRoot = $resolved.Path
+                            $cudaCudnnVersion = $version
+                            break
+                        }
+                    }
+                    if ($cudnnRoot) {
+                        break
+                    }
+                }
+                if ($cudnnRoot) {
                     $env:CUDNN_ROOT_DIR = $cudnnRoot
-                    $env:CUDNN_INCLUDE_PATH = "$cudnnRoot\include\$cudaMajorVer.0"
-                    $env:CUDNN_LIBRARY_PATH = "$cudnnRoot\lib\$cudaMajorVer.0\x64"
-                    Write-Output "Found cuDNN at $cudnnRoot (official installer, CUDA $cudaMajorVer.0)"
+                    $env:CUDNN_INCLUDE_PATH = "$cudnnRoot\include\$cudaCudnnVersion"
+                    $env:CUDNN_LIBRARY_PATH = "$cudnnRoot\lib\$cudaCudnnVersion\x64"
+                    Write-Output "Found cuDNN at $cudnnRoot (official installer, CUDA $cudaCudnnVersion)"
                 } else {
                     Write-Output "cuDNN not found - set CUDNN_INCLUDE_PATH and CUDNN_LIBRARY_PATH environment variables"
                     Write-Output "Skipping MLX build"
@@ -555,20 +584,40 @@ function mlxCuda13 {
 
             Write-Output "Building MLX CUDA v$cudaMajorVer backend libraries $cuda"
             $env:CUDAToolkit_ROOT=$cuda
-            $cudaFlags = @()
+            $mlxCudaArgs = @()
             if ($env:OLLAMA_CMAKE_CUDA_FLAGS) {
-                $cudaFlags += "-DCMAKE_CUDA_FLAGS=$env:OLLAMA_CMAKE_CUDA_FLAGS"
+                $mlxCudaArgs += "-DCMAKE_CUDA_FLAGS=$env:OLLAMA_CMAKE_CUDA_FLAGS"
+            }
+            if ($env:OLLAMA_MLX_CUDA_ARCHITECTURES) {
+                Write-Output "Using MLX CUDA architectures: $env:OLLAMA_MLX_CUDA_ARCHITECTURES"
+                $mlxCudaArgs += "-DMLX_CUDA_ARCHITECTURES=$env:OLLAMA_MLX_CUDA_ARCHITECTURES"
+            } elseif ($env:MLX_CUDA_ARCHITECTURES) {
+                Write-Output "Using MLX CUDA architectures: $env:MLX_CUDA_ARCHITECTURES"
+                $mlxCudaArgs += "-DMLX_CUDA_ARCHITECTURES=$env:MLX_CUDA_ARCHITECTURES"
+            }
+            if ($env:OLLAMA_MLX_CUDA_RAM_MB) {
+                $mlxCudaArgs += "-DMLX_CUDA_RAM_MB=$env:OLLAMA_MLX_CUDA_RAM_MB"
+            } elseif ($env:MLX_CUDA_RAM_MB) {
+                $mlxCudaArgs += "-DMLX_CUDA_RAM_MB=$env:MLX_CUDA_RAM_MB"
             }
             $cudaToolsetArgs = cudaCMakeArgs $cuda
-            $configureArgs = @("-S", ".", "-B", "build\mlx_cuda_v$cudaMajorVer", "-DOLLAMA_MLX_BACKENDS=cuda_v$cudaMajorVer") + $cudaToolsetArgs + $cudaFlags + @("-DOLLAMA_PAYLOAD_INSTALL_PREFIX=$script:DIST_DIR", "--install-prefix", "$script:DIST_DIR")
-            & cmake @configureArgs
-            if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
-            $buildArgs = @("--build", "build\mlx_cuda_v$cudaMajorVer", "--target", "ollama-mlx-cuda_v$cudaMajorVer", "--config", "Release", "--parallel", "$script:JOBS")
-            if ($env:CMAKE_GENERATOR -notlike "Ninja*") {
-                $buildArgs += @("--", "/nodeReuse:false")
+            $configureArgs = @("-S", ".", "-B", "build\mlx_cuda_v$cudaMajorVer", "-DCMAKE_BUILD_TYPE=Release", "-DOLLAMA_MLX_BACKENDS=cuda_v$cudaMajorVer") + $cudaToolsetArgs + $mlxCudaArgs + @("-DOLLAMA_PAYLOAD_INSTALL_PREFIX=$script:DIST_DIR", "--install-prefix", "$script:DIST_DIR")
+            $oldBuildParallel = $env:CMAKE_BUILD_PARALLEL_LEVEL
+            if (-not $env:CMAKE_BUILD_PARALLEL_LEVEL) {
+                $env:CMAKE_BUILD_PARALLEL_LEVEL = "$script:JOBS"
             }
-            & cmake @buildArgs
-            if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
+            try {
+                & cmake @configureArgs
+                if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
+                $buildArgs = @("--build", "build\mlx_cuda_v$cudaMajorVer", "--target", "ollama-mlx-cuda_v$cudaMajorVer", "--config", "Release", "--parallel", "$script:JOBS")
+                if ($env:CMAKE_GENERATOR -notlike "Ninja*") {
+                    $buildArgs += @("--", "/nodeReuse:false")
+                }
+                & cmake @buildArgs
+                if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
+            } finally {
+                $env:CMAKE_BUILD_PARALLEL_LEVEL = $oldBuildParallel
+            }
         } else {
             Write-Output "CUDA v$cudaMajorVer not detected, skipping MLX build"
         }
