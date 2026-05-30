@@ -626,7 +626,7 @@ func (f GGML) GraphSize(context, batch uint64, numParallel int, kvCacheType stri
 
 	// Default for models unless special-cased below. These defaults mirror the
 	// cache usage in llama.cpp under the assumption that models without special
-	// cases below will use the llamarunner and caching will be handled by the
+	// cases below will use llama-server and caching will be handled by the
 	// llama.cpp layer.
 	//
 	// This also assumes that a layer without heads or headsKV set is recurrent

@@ -836,8 +836,8 @@ func GetDevicesFromRunner(ctx context.Context, runner BaseRunner) ([]DeviceInfo,
 			defer resp.Body.Close()
 
 			if resp.StatusCode == http.StatusNotFound {
-				// old runner, fall back to bootstrapping model
-				return nil, fmt.Errorf("llamarunner free vram reporting not supported")
+				// Runner does not expose /info, fall back to bootstrapping model.
+				return nil, fmt.Errorf("runner free vram reporting not supported")
 			}
 
 			body, err := io.ReadAll(resp.Body)

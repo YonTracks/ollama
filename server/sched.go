@@ -559,6 +559,15 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 
 			config := llamaServerConfigForModel(req.model)
 			config.ContextShift = req.contextShift
+			slog.Info("selecting runner backend",
+				"runner", "llama-server",
+				"model", req.model.ShortName,
+				"gpu_count", len(loadGpus),
+				"num_gpu", launchOpts.NumGPU,
+				"num_ctx", launchOpts.NumCtx,
+				"num_batch", launchOpts.NumBatch,
+				"use_mmap", useMMapLogValue(launchOpts.UseMMap),
+				"context_shift", req.contextShift)
 			llama, err = s.newServerFn(systemInfo, loadGpus, req.model.ModelPath, f, req.model.AdapterPaths, req.model.ProjectorPaths, launchOpts, numParallel, config)
 			if err != nil {
 				// some older models are not compatible with newer versions of llama.cpp
@@ -571,8 +580,10 @@ func (s *Scheduler) load(req *LlmRequest, systemInfo ml.SystemInfo, gpus []ml.De
 		} else {
 			modelName := req.model.ShortName
 			if slices.Contains(req.model.Config.Capabilities, "image") {
+				slog.Info("selecting runner backend", "runner", "imagegen", "model", modelName)
 				llama, err = imagegen.NewServer(modelName)
 			} else {
+				slog.Info("selecting runner backend", "runner", "mlx", "model", modelName)
 				llama, err = mlxrunner.NewClient(modelName)
 			}
 		}
@@ -774,6 +785,16 @@ func explicitPartialGPUOffload(opts api.Options, f *ggml.GGML) bool {
 	}
 
 	return uint64(opts.NumGPU) < f.KV().BlockCount()+1
+}
+
+func useMMapLogValue(useMMap *bool) string {
+	if useMMap == nil {
+		return "auto"
+	}
+	if *useMMap {
+		return "true"
+	}
+	return "false"
 }
 
 func effectiveLlamaServerContext(numCtx int, f *ggml.GGML, numParallel int) int {
