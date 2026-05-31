@@ -2232,6 +2232,39 @@ func TestMemoryParsingWriter(t *testing.T) {
 	}
 }
 
+func TestMemoryParsingWriterHandlesSplitLines(t *testing.T) {
+	runner := &llamaServerRunner{vramByDevice: make(map[string]uint64)}
+	w := &memoryParsingWriter{inner: io.Discard, runner: runner}
+
+	chunks := []string{
+		"load_tensors:        CU",
+		"DA0 model buffer size =  2829.67 MiB\nload_tensors:    CUDA_H",
+		"ost model buffer size =  5376.00 MiB\nllm_load_tensors: offloaded 43/",
+		"43 layers to GPU\n",
+	}
+	for _, chunk := range chunks {
+		if _, err := w.Write([]byte(chunk)); err != nil {
+			t.Fatalf("Write() error = %v", err)
+		}
+	}
+
+	mib := float64(1024 * 1024)
+	wantGPU := uint64(2829.67 * mib)
+	wantTotal := uint64((2829.67 + 5376.00) * mib)
+	if got := runner.memGPU; got < wantGPU-1024 || got > wantGPU+1024 {
+		t.Fatalf("memGPU = %d, want approximately %d", got, wantGPU)
+	}
+	if got := runner.memTotal; got < wantTotal-1024 || got > wantTotal+1024 {
+		t.Fatalf("memTotal = %d, want approximately %d", got, wantTotal)
+	}
+	if got := runner.vramByDevice["CUDA0"]; got < wantGPU-1024 || got > wantGPU+1024 {
+		t.Fatalf("vramByDevice[CUDA0] = %d, want approximately %d", got, wantGPU)
+	}
+	if runner.gpuLayers != 43 || runner.totalLayers != 43 {
+		t.Fatalf("layers = %d/%d, want 43/43", runner.gpuLayers, runner.totalLayers)
+	}
+}
+
 func TestMemoryParsingPerDevice(t *testing.T) {
 	tests := []struct {
 		name       string

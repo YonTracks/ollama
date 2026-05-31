@@ -1412,6 +1412,11 @@ func (runner *runnerRef) needsReload(ctx context.Context, req *LlmRequest) bool 
 	return false
 }
 
+const (
+	smallVRAMRecoveryThreshold = 512 * format.MebiByte
+	smallVRAMRecoveryFraction  = 20 // 5% of total GPU memory
+)
+
 // Free memory reporting on GPUs can lag for a while even after the runner
 // exits, so we have to keep checking until we see the available memory recover,
 // otherwise subsequent model loads will get far less layers loaded or worse
@@ -1441,6 +1446,21 @@ func (s *Scheduler) waitForVRAMRecovery(runner *runnerRef, runners []ml.Filtered
 	}
 	totalMemoryNow := totalMemoryBefore
 	freeMemoryNow := freeMemoryBefore
+	if runner.vramSize == 0 {
+		finished <- struct{}{}
+		slog.Debug("skipping VRAM recovery wait for runner with no tracked VRAM", "runner", runner)
+		return finished
+	}
+	if runner.vramSize <= smallVRAMRecoveryThreshold &&
+		totalMemoryBefore > 0 &&
+		runner.vramSize <= totalMemoryBefore/smallVRAMRecoveryFraction {
+		finished <- struct{}{}
+		slog.Debug("skipping VRAM recovery wait for small runner",
+			"runner_vram", format.HumanBytes2(runner.vramSize),
+			"total_vram", format.HumanBytes2(totalMemoryBefore),
+			"runner", runner)
+		return finished
+	}
 
 	go func() {
 		// typical convergence is 0.5-1.5s - If it takes too long to discover and converge, let the scheduler estimate VRAM usage

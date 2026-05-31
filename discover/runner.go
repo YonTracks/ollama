@@ -270,6 +270,7 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 
 		// First try to use existing runners to refresh VRAM since they're already
 		// active on GPU(s)
+		triedActiveRunner := false
 		for _, runner := range runners {
 			if runner == nil {
 				continue
@@ -279,6 +280,7 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 				// Skip this runner since it doesn't have active GPU devices
 				continue
 			}
+			triedActiveRunner = true
 
 			// Check to see if this runner is active on any devices that need a refresh
 			skip := true
@@ -319,6 +321,11 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 			}
 		}
 		if !allDone() {
+			if !triedActiveRunner {
+				slog.Debug("using cached GPU free memory; no active runner is available for refresh")
+				return append([]ml.DeviceInfo{}, devices...)
+			}
+
 			slog.Debug("unable to refresh all GPUs with existing runners, performing bootstrap discovery")
 
 			// Bootstrapping may take longer in some cases (AMD windows), but we

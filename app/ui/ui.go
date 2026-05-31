@@ -2337,16 +2337,18 @@ func applyContextOptions(options map[string]any, settings contextRequestSettings
 }
 
 const (
-	contextMessageOverheadTokens = 12
-	contextImageAttachmentTokens = 512
-	contextSummaryMinTokens      = 24
-	contextSummaryMaxTokens      = 512
-	contextRetrievalMaxTokens    = 640
-	contextRetrievalSnippetChars = 320
-	contextDefaultRetrievalLimit = 4
-	contextMaxRetrievalLimit     = 8
-	contextVectorIndexLimit      = 64
-	contextVectorTextMaxChars    = 2048
+	contextMessageOverheadTokens  = 12
+	contextImageAttachmentTokens  = 512
+	contextSummaryMinTokens       = 24
+	contextSummaryMaxTokens       = 512
+	contextRetrievalMaxTokens     = 640
+	contextRetrievalSnippetChars  = 320
+	contextDefaultRetrievalLimit  = 4
+	contextMaxRetrievalLimit      = 8
+	contextVectorIndexLimit       = 64
+	contextVectorTextMaxChars     = 2048
+	contextVectorEmbeddingNumCtx  = 2048
+	contextVectorEmbeddingTimeout = 60 * time.Second
 )
 
 const contextDefaultExpertInstructions = "Act as a careful domain expert. Use retrieved memory when it is relevant, keep claims grounded, and call out missing information instead of guessing."
@@ -2657,7 +2659,7 @@ func (s *Server) retrieveVectorStoreMessages(ctx context.Context, c *api.Client,
 		embeddingByKey[vectorMemoryEmbeddingKey(embedding.ChatID, embedding.ContentHash)] = embedding.Embedding
 	}
 
-	embedCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	embedCtx, cancel := context.WithTimeout(ctx, contextVectorEmbeddingTimeout)
 	defer cancel()
 
 	queryEmbedding, err := embedTexts(embedCtx, c, embeddingModel, []string{vectorMemoryQueryText(queryText, queryIntent)})
@@ -2935,7 +2937,7 @@ func embedTexts(ctx context.Context, c *api.Client, model string, texts []string
 		Model:    model,
 		Input:    inputs,
 		Truncate: &truncate,
-		Options:  map[string]any{},
+		Options:  map[string]any{"num_ctx": contextVectorEmbeddingNumCtx},
 	})
 	if err != nil {
 		return nil, err
