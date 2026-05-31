@@ -263,6 +263,8 @@ func LogLevel() slog.Level {
 var (
 	// FlashAttention enables the experimental flash attention feature.
 	FlashAttention = BoolWithDefault("OLLAMA_FLASH_ATTENTION")
+	// GoTemplate enables Modelfile TEMPLATE rendering when a model has one.
+	GoTemplate = BoolWithDefault("OLLAMA_GO_TEMPLATE")
 	// DebugLogRequests logs inference requests to disk for replay/debugging.
 	DebugLogRequests = Bool("OLLAMA_DEBUG_LOG_REQUESTS")
 	// KvCacheType is the quantization type for the K/V cache.
@@ -273,9 +275,9 @@ var (
 	NoPrune = Bool("OLLAMA_NOPRUNE")
 	// SchedSpread allows scheduling models across all GPUs.
 	SchedSpread = Bool("OLLAMA_SCHED_SPREAD")
-	// MultiUserCache optimizes prompt caching for multi-user scenarios
+	// MultiUserCache optimizes prompt caching for multi-user scenarios.
 	MultiUserCache = Bool("OLLAMA_MULTIUSER_CACHE")
-	// Enable the new Ollama engine
+	// NewEngine enables the new Ollama engine.
 	NewEngine = Bool("OLLAMA_NEW_ENGINE")
 	// ContextLength sets the default context length
 	ContextLength = Uint("OLLAMA_CONTEXT_LENGTH", 0)
@@ -287,8 +289,10 @@ var (
 	AppDataKey = String("OLLAMA_APP_DATA_KEY")
 	// AppDataEncryption controls desktop app SQLite encryption. Set to "off" with OLLAMA_APP_DATA_KEY to decrypt existing rows.
 	AppDataEncryption = String("OLLAMA_APP_DATA_ENCRYPTION")
-	// Enable Vulkan backend
-	EnableVulkan = Bool("OLLAMA_VULKAN")
+	// EnableVulkan controls Vulkan backend discovery.
+	EnableVulkan = BoolWithDefault("OLLAMA_VULKAN")
+	// EnableIntegratedGPU controls whether integrated GPUs may be selected.
+	EnableIntegratedGPU = BoolWithDefault("OLLAMA_IGPU_ENABLE")
 	// NoCloudEnv checks the OLLAMA_NO_CLOUD environment variable.
 	NoCloudEnv = Bool("OLLAMA_NO_CLOUD")
 )
@@ -367,9 +371,13 @@ func AsMap() map[string]EnvVar {
 	ret := map[string]EnvVar{
 		"OLLAMA_DEBUG":                      {"OLLAMA_DEBUG", LogLevel(), "Show additional debug information (e.g. OLLAMA_DEBUG=1)"},
 		"OLLAMA_DEBUG_LOG_REQUESTS":         {"OLLAMA_DEBUG_LOG_REQUESTS", DebugLogRequests(), "Log inference request bodies and replay curl commands to a temp directory"},
+		"OLLAMA_GO_TEMPLATE":                {"OLLAMA_GO_TEMPLATE", GoTemplate(true), "Enable Modelfile TEMPLATE based rendering when available"},
 		"OLLAMA_FLASH_ATTENTION":            {"OLLAMA_FLASH_ATTENTION", FlashAttention(false), "Enabled flash attention"},
 		"OLLAMA_KV_CACHE_TYPE":              {"OLLAMA_KV_CACHE_TYPE", KvCacheType(), "Quantization type for the K/V cache (default: f16)"},
 		"OLLAMA_GPU_OVERHEAD":               {"OLLAMA_GPU_OVERHEAD", GpuOverhead(), "Reserve a portion of VRAM per GPU (bytes)"},
+		"OLLAMA_IGPU_ENABLE":                {"OLLAMA_IGPU_ENABLE", String("OLLAMA_IGPU_ENABLE")(), "Enable integrated GPUs"},
+		"LLAMA_ARG_FIT":                     {"LLAMA_ARG_FIT", String("LLAMA_ARG_FIT")(), "Enable llama.cpp automatic fit of unset memory options (default \"on\")"},
+		"LLAMA_ARG_FIT_TARGET":              {"LLAMA_ARG_FIT_TARGET", String("LLAMA_ARG_FIT_TARGET")(), "Target free VRAM margin per device for llama.cpp fit (MiB)"},
 		"OLLAMA_ALLOW_NETWORK_EXPOSURE":     {"OLLAMA_ALLOW_NETWORK_EXPOSURE", AllowNetworkExposure(), "Allow ollama serve to bind to non-localhost addresses"},
 		"OLLAMA_API_TOKEN":                  {"OLLAMA_API_TOKEN", APIToken(), "Require this bearer token for the local HTTP API when set"},
 		"OLLAMA_APP_DATA_KEY":               {"OLLAMA_APP_DATA_KEY", AppDataKey(), "Encrypt sensitive desktop app SQLite fields when set"},
@@ -417,7 +425,7 @@ func AsMap() map[string]EnvVar {
 		ret["GGML_VK_VISIBLE_DEVICES"] = EnvVar{"GGML_VK_VISIBLE_DEVICES", VkVisibleDevices(), "Set which Vulkan devices are visible by numeric ID"}
 		ret["GPU_DEVICE_ORDINAL"] = EnvVar{"GPU_DEVICE_ORDINAL", GpuDeviceOrdinal(), "Set which AMD devices are visible by numeric ID"}
 		ret["HSA_OVERRIDE_GFX_VERSION"] = EnvVar{"HSA_OVERRIDE_GFX_VERSION", HsaOverrideGfxVersion(), "Override the gfx used for all detected AMD GPUs"}
-		ret["OLLAMA_VULKAN"] = EnvVar{"OLLAMA_VULKAN", EnableVulkan(), "Enable experimental Vulkan support"}
+		ret["OLLAMA_VULKAN"] = EnvVar{"OLLAMA_VULKAN", EnableVulkan(true), "Enable Vulkan support"}
 	}
 
 	return ret

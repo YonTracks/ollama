@@ -1382,6 +1382,8 @@ func TestProxyRequestBodyLimit(t *testing.T) {
 }
 
 func TestProxyLogsRedactSensitiveData(t *testing.T) {
+	t.Setenv("OLLAMA_PROXY_ALLOW_MODEL_MUTATION", "")
+
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	handler := (&Server{Token: "desktop-cookie-token", Logger: logger}).Handler()
