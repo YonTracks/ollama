@@ -79,6 +79,12 @@ Logs are split by process during development:
 Debug levels for the core Ollama API are `OLLAMA_DEBUG=1` for DEBUG and
 `OLLAMA_DEBUG=2` for TRACE. Use TRACE sparingly because it is much noisier and
 can include parser, tool, and runner detail that is not normally needed.
+For model-runner diagnostics in `server.log`, useful llama-server signals are
+`selecting runner backend`, `starting llama-server`, `offloaded ... layers to
+GPU`, `CUDA0 model buffer size`, `CUDA_Host model buffer size`, `runner.vram`,
+and the final prompt/eval timing lines. `CUDA_Host` on a large MoE model means
+host-backed CUDA/system memory is participating; it is not the same as a CPU
+fallback when the runner still reports `Library:CUDA`.
 
 When using the installed taskbar app instead of manual terminals, view logs in
 `%LOCALAPPDATA%\Ollama` on Windows or `~/.ollama/logs` on macOS. `app.log`
@@ -147,6 +153,19 @@ Run `go generate ./...` from the repository root only when you need to refresh
 generated TypeScript or embedded static UI assets. Stop any running
 `npm run dev` or `npm run dev:standalone` server first; on Windows, Next.js can
 hold `app/ui/app/app/api` open and block the static export step.
+
+Recommended UI validation from `app/ui/app`:
+
+```bash
+npm run lint
+npm run typecheck
+npm run test
+npm run build
+npm run build:standalone
+```
+
+Run the normal Go tests as well when UI changes touch shared generated types,
+backend routes, desktop storage, search, tools, or runner-facing behavior.
 
 #### Desktop tool development
 

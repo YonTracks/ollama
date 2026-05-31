@@ -24,6 +24,12 @@ When using the installed taskbar app instead of manual terminals, view logs in
 `%LOCALAPPDATA%\Ollama` on Windows or `~/.ollama/logs` on macOS. `app.log`
 contains GUI app logs, `server.log` contains core server logs, and rotated logs
 use suffixes such as `app-1.log` and `server-1.log`.
+For GPU/model diagnostics in `server.log`, look for `selecting runner backend`,
+`starting llama-server`, `offloaded ... layers to GPU`, `CUDA0 model buffer
+size`, `CUDA_Host model buffer size`, `runner.vram`, `prompt eval time`, and
+`eval time`. Large MoE models can be CUDA-accelerated while still reporting a
+large `CUDA_Host model buffer`, which means llama-server overflowed weights into
+host-backed memory to fit the GPU.
 
 Use `npm run dev:standalone` only for standalone browser/PWA testing against
 a local core Ollama API. That API can come from `ollama serve` or from the
@@ -123,6 +129,19 @@ step runs the static export, and on Windows the active dev server can keep
 - The static smoke server proxies `/api/*` to `OLLAMA_APP_API_BASE`, defaulting to `http://127.0.0.1:3001`.
 - The desktop tray/taskbar settings action opens `/settings`, which is exported as `dist/settings/index.html`.
 - The admin security dashboard is exported at `/admin` for a consolidated local diagnostics view.
+
+Recommended validation before handing off UI/PWA changes:
+
+```bash
+npm run lint
+npm run typecheck
+npm run test
+npm run build
+npm run build:standalone
+```
+
+Use `npm run start` after a build when you want a local production smoke test of
+the exported `dist/` folder.
 
 ## PWA
 

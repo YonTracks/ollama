@@ -21,6 +21,9 @@ they still make sense in the llama-server flow.
 - Device discovery also uses llama-server. `discover/llama_server.go` starts
   llama-server without a model and parses `--list-devices` and startup output;
   `discover/runner.go` coordinates backend discovery and fallback behavior.
+- CUDA discovery marks devices as already init-validated when llama-server
+  startup output proves the device compute capability is supported by the
+  loaded CUDA backend. That avoids a second `GGML_CUDA_INIT=1` probe on startup.
 
 ## What replaced the old CGO/classic runner path
 
@@ -57,7 +60,16 @@ Do not reintroduce a Go-side GGUF loader, the old `llamarunner` /
 - Scheduler placement and automatic option policy: `server/sched.go`.
 - llama-server logs are sent through `NewStatusWriter(os.Stderr)` and wrapped
   by `memoryParsingWriter` so startup buffer size and layer offload lines feed
-  memory accounting.
+  memory accounting. The parser buffers partial lines because llama-server can
+  split memory/offload messages across writes.
+- Runner/backend selection is logged from `server/sched.go`, including the
+  selected runner, model name, GPU count, `num_gpu`, `num_ctx`, batch size,
+  `use_mmap`, and context-shift policy.
+- When no runner is active yet, GPU free-memory refresh uses cached discovery
+  results instead of paying for an extra cold discovery pass before first load.
+- Small discrete-GPU helper runners, such as `nomic-embed-text`, skip the slow
+  VRAM-recovery wait on unload when their tracked VRAM is tiny relative to the
+  device.
 
 ## Windows build changes
 
@@ -98,6 +110,12 @@ payload, not old GGUF runner executables.
 - If `build/mlx_cuda_v13` was created by an older manual CMake command, remove
   that generated build directory before switching generators or MLX CUDA
   architecture settings.
+- The full Windows packaging script is the normal path for the custom build:
+  set `VERSION` and `PKG_VERSION` to the YonTracks version, then run
+  `scripts/build_windows.ps1`. A manual
+  `cmake -B build\mlx_cuda_v13 . -DOLLAMA_MLX_BACKENDS=cuda_v13` build is only
+  useful for isolated MLX development and does not replace the installer/zip
+  packaging flow.
 
 ## Low-VRAM hook points
 
@@ -122,17 +140,31 @@ not into a resurrected runner.
 
 ## MoE CPU offload
 
-The current wrapper has no MoE-specific CPU offload flag or per-expert device
-policy. Existing MoE support found in this tree is about model creation,
-quantization, metadata/tensor compatibility, and loading via llama-server.
+The current wrapper has no custom MoE-specific CPU offload flag or per-expert
+device policy. Do not port old MoE offload patches that depended on direct
+Go/CGO tensor loading.
 
-For inference, Ollama currently exposes coarse placement controls through
+The upstream llama-server fit logic can still support large MoE models on
+smaller GPUs by overflowing MoE/dense portions into host-backed memory. In logs
+this may appear as all logical layers offloaded while a large
+`CUDA_Host model buffer` remains. For example, a `qwen3.6:35b` Q4_K load on a
+12 GiB RTX 3060 can report:
+
+- `offloaded 42/42 layers to GPU`
+- `CUDA0 model buffer size` around 9 GiB
+- `CUDA_Host model buffer size` around 12 GiB
+- runner VRAM around 10 GiB
+
+That is still CUDA-accelerated inference, not a CPU fallback. The host-backed
+expert weight traffic explains longer cold loads and lower throughput than a
+model that fits fully inside VRAM.
+
+For explicit policy, Ollama currently exposes coarse placement controls through
 llama-server options such as `-ngl`, `--main-gpu`, `--split-mode none`,
 `--no-mmap`, `--no-mmproj-offload`, KV cache flags, batch/context sizing, and
-flash-attention mode. If upstream llama-server adds or already documents a
-stable MoE/expert CPU-offload flag, support should be added by plumbing an
-Ollama option into `llm/llama_server.go` and scheduler policy. Do not port old
-MoE offload patches that depended on direct Go/CGO tensor loading.
+flash-attention mode. If upstream llama-server adds or documents a stable
+per-expert offload flag, support should be added by plumbing an Ollama option
+into `llm/llama_server.go` and scheduler policy.
 
 ## Old custom patches not to re-apply
 
@@ -153,6 +185,7 @@ MoE offload patches that depended on direct Go/CGO tensor loading.
 ## Inspected files
 
 - `runner/runner.go`
+- `runner/README.md`
 - `llm/server.go`
 - `llm/llama_server.go`
 - `llm/llama_binary.go`
@@ -168,15 +201,20 @@ MoE offload patches that depended on direct Go/CGO tensor loading.
 - `llama/compat/README.md`
 - `scripts/build_windows.ps1`
 - `docs/development.md`
+- `app/README.md`
+- `app/ui/app/README.md`
 - `Dockerfile`
 
 ## Safe next steps for the standalone PWA
 
-- Keep the PWA changes separate from runner compatibility work.
-- Re-add the PWA on top of this branch only after the llama-server baseline is
-  green.
+- Keep PWA work separate from runner compatibility work in commits and review.
+- This branch now carries the standalone PWA/UI changes on top of the
+  llama-server baseline, so future UI changes should stay in `app/` unless a
+  backend API is genuinely required.
 - Avoid touching `llm/`, `server/sched.go`, `discover/`, `ml/`, or
   `llama/server/` for PWA work unless the UI genuinely needs a backend API.
-- Add PWA build/dev documentation near the UI code, not in native runner docs.
 - Validate the PWA with its own build and browser checks, then run the normal Go
   and native smoke checks to prove it did not disturb runner packaging.
+- Recommended UI checks live in `app/ui/app/README.md`: `npm run lint`,
+  `npm run typecheck`, `npm run test`, `npm run build`, and
+  `npm run build:standalone`.

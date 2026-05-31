@@ -1,21 +1,21 @@
 # `runner`
 
-> Note: this is a work in progress
+This package is the internal dispatch point for non-GGUF auxiliary engines.
+It currently accepts:
 
-A minimial runner for loading a model and running inference via a http web server.
+- `--imagegen-engine`
+- `--mlx-engine`
 
-```shell
-./runner -model <model binary>
-```
+GGUF/GGML text and embedding inference no longer runs through a Go-side
+classic runner from this directory. The scheduler launches `llama-server`
+instead, and Ollama talks to that subprocess over HTTP. Runner selection,
+backend library paths, llama-server flags, and startup logs live in:
 
-### Completion
+- `server/sched.go`
+- `llm/llama_server.go`
+- `discover/llama_server.go`
+- `discover/runner.go`
 
-```shell
-curl -X POST -H "Content-Type: application/json" -d '{"prompt": "hi"}' http://localhost:8080/completion
-```
-
-### Embeddings
-
-```shell
-curl -X POST -H "Content-Type: application/json" -d '{"prompt": "turn me into an embedding"}' http://localhost:8080/embedding
-```
+Do not re-add `llamarunner`, `ollamarunner`, or force-classic runner logic here.
+See `docs/custom-runner-notes.md` for the compatibility notes used by the
+YonTracks branches.

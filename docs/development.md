@@ -99,6 +99,34 @@ For Ninja builds, run CMake from a Developer PowerShell/Command Prompt or anothe
 
 Windows ARM does not support additional acceleration libraries at this time.
 
+### Windows package builds
+
+For a full local Windows package build, prefer the release script over isolated
+CMake backend builds:
+
+```powershell
+$env:VERSION="0.30.0-yontracks"
+$env:PKG_VERSION="0.30.0-yontracks"
+powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1
+```
+
+The script builds and stages the Go binary, `llama-server.exe`, GGUF backend
+modules, MLX payloads, installer output, and zip archives together. Manual MLX
+CMake commands are useful for isolated MLX development, but they do not replace
+the Windows packaging flow.
+
+On local NVIDIA systems, you can narrow MLX CUDA compilation to the installed
+GPU architecture before running the package build. For example, an RTX 3060 is
+compute capability 8.6:
+
+```powershell
+$env:OLLAMA_MLX_CUDA_ARCHITECTURES="86"
+```
+
+If `build\mlx_cuda_v13` was created by an older manual CMake command, remove
+that generated build directory before changing generators or MLX architecture
+settings.
+
 ## Linux
 
 Additional prerequisites:
@@ -120,6 +148,10 @@ Additional prerequisites:
 ## MLX Engine (Optional)
 
 The MLX engine enables running safetensor based models. On macOS arm64, MLX is enabled by default. On other platforms, MLX backends are selected with `OLLAMA_MLX_BACKENDS`.
+
+MLX is separate from GGUF/GGML inference. GGUF models use `llama-server` and the
+`OLLAMA_LLAMA_BACKENDS` payloads; MLX CUDA is used by safetensor/MLX engine
+paths and image generation support.
 
 ### CUDA
 
