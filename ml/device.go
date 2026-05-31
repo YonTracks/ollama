@@ -328,6 +328,10 @@ type DeviceInfo struct {
 	// overrides discovered during bootstrap. This is internal server state and
 	// is not serialized.
 	RunnerEnvOverrides map[string]string `json:"-"`
+
+	// InitValidated indicates discovery already validated this backend/device
+	// pairing enough to skip a redundant bootstrap init pass.
+	InitValidated bool `json:"-"`
 }
 
 type SystemInfo struct {
@@ -662,6 +666,10 @@ func allDevicesUseLibrary(l []DeviceInfo, library string) bool {
 // to crash at inference time and requires deeper validation before we include
 // it in the supported devices list.
 func (d DeviceInfo) NeedsInitValidation() bool {
+	if d.InitValidated {
+		return false
+	}
+
 	// ROCm: rocblas will crash on unsupported devices.
 	// CUDA: verify CC is supported by the version of the library
 	return d.Library == "ROCm" || d.Library == "CUDA"

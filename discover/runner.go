@@ -124,6 +124,14 @@ func GPUDevices(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.
 		for i := range devices {
 			libDir := devices[i].LibraryPath[len(devices[i].LibraryPath)-1]
 			if !devices[i].NeedsInitValidation() {
+				if devices[i].InitValidated {
+					slog.Debug("skipping redundant GPU init validation",
+						"library", envconfig.RedactedValue("library", libDir),
+						"description", devices[i].Description,
+						"compute", devices[i].Compute(),
+						"id", envconfig.RedactedValue("id", devices[i].ID),
+						"pci_id", envconfig.RedactedValue("pci_id", devices[i].PCIID))
+				}
 				// No need to validate, add to the supported map
 				supportedMu.Lock()
 				if _, ok := supported[devices[i].Library]; !ok {

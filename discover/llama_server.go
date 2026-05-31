@@ -285,6 +285,7 @@ func parseLlamaServerDevicesWithNative(output string, libDirs []string, nativeDe
 		}
 
 		// For CUDA devices, check if this variant supports the device's CC
+		initValidated := false
 		if library == "CUDA" {
 			cc, ok := ccByIndex[deviceIndex]
 			if ok && len(cudaArchSet) > 0 {
@@ -295,6 +296,7 @@ func parseLlamaServerDevicesWithNative(output string, libDirs []string, nativeDe
 					deviceIndex++
 					continue
 				}
+				initValidated = true
 			} else if !ok {
 				slog.Warn("llama-server discovery: could not determine compute capability for CUDA device — "+
 					"architecture filtering disabled for this device. If inference crashes, "+
@@ -319,15 +321,16 @@ func parseLlamaServerDevicesWithNative(output string, libDirs []string, nativeDe
 				ID:      strconv.Itoa(deviceIndex),
 				Library: library,
 			},
-			Name:         name,
-			Description:  description,
-			TotalMemory:  totalBytes,
-			FreeMemory:   freeMiB * 1024 * 1024,
-			ComputeMajor: computeMajor,
-			ComputeMinor: computeMinor,
-			LibraryPath:  libDirs,
-			GFXTarget:    gfxByIndex[deviceIndex],
-			Integrated:   isIntegratedLlamaServerDevice(library, deviceIndex, integratedByIndex),
+			Name:          name,
+			Description:   description,
+			TotalMemory:   totalBytes,
+			FreeMemory:    freeMiB * 1024 * 1024,
+			ComputeMajor:  computeMajor,
+			ComputeMinor:  computeMinor,
+			LibraryPath:   libDirs,
+			GFXTarget:     gfxByIndex[deviceIndex],
+			Integrated:    isIntegratedLlamaServerDevice(library, deviceIndex, integratedByIndex),
+			InitValidated: initValidated,
 		}
 		if hasNativeDevice {
 			if nativeDevice.DeviceID != "" {

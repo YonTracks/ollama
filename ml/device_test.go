@@ -109,6 +109,41 @@ func TestGetDevicesEnvFiltersVisibleDevices(t *testing.T) {
 	}
 }
 
+func TestNeedsInitValidationUsesParsedValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		dev  DeviceInfo
+		want bool
+	}{
+		{
+			name: "cuda needs validation by default",
+			dev:  DeviceInfo{DeviceID: DeviceID{Library: "CUDA"}},
+			want: true,
+		},
+		{
+			name: "validated cuda skips redundant validation",
+			dev:  DeviceInfo{DeviceID: DeviceID{Library: "CUDA"}, InitValidated: true},
+		},
+		{
+			name: "rocm still needs validation",
+			dev:  DeviceInfo{DeviceID: DeviceID{Library: "ROCm"}},
+			want: true,
+		},
+		{
+			name: "metal does not need validation",
+			dev:  DeviceInfo{DeviceID: DeviceID{Library: "Metal"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.dev.NeedsInitValidation(); got != tt.want {
+				t.Fatalf("NeedsInitValidation() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDeviceCompareVulkanDuplicates(t *testing.T) {
 	tests := []struct {
 		name string

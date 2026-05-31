@@ -47,6 +47,7 @@ func TestLlamaServerDiscovery(t *testing.T) {
 			gfxTarget       string
 			checkIntegrated bool
 			integrated      bool
+			initValidated   bool
 		}
 
 		tests := []struct {
@@ -155,10 +156,11 @@ Available devices:
   CUDA0: NVIDIA GeForce RTX 4060 Ti (16379 MiB, 14900 MiB free)
 `,
 				want: []wantDevice{{
-					name:     "CUDA0",
-					library:  "CUDA",
-					totalMiB: 16379,
-					compute:  "8.9",
+					name:          "CUDA0",
+					library:       "CUDA",
+					totalMiB:      16379,
+					compute:       "8.9",
+					initValidated: true,
 				}},
 			},
 			{
@@ -198,10 +200,11 @@ Available devices:
   CUDA1: NVIDIA GeForce RTX 4060 Ti (16379 MiB, 14900 MiB free)
 `,
 				want: []wantDevice{{
-					name:     "CUDA1",
-					library:  "CUDA",
-					totalMiB: 16379,
-					compute:  "8.9",
+					name:          "CUDA1",
+					library:       "CUDA",
+					totalMiB:      16379,
+					compute:       "8.9",
+					initValidated: true,
 				}},
 			},
 			{
@@ -270,6 +273,9 @@ Available devices:
 					if want.checkIntegrated && got.Integrated != want.integrated {
 						t.Errorf("device %d integrated = %v, want %v", i, got.Integrated, want.integrated)
 					}
+					if got.InitValidated != want.initValidated {
+						t.Errorf("device %d InitValidated = %v, want %v", i, got.InitValidated, want.initValidated)
+					}
 				}
 			})
 		}
@@ -283,6 +289,7 @@ Available devices:
 			compute    string
 			gfxTarget  string
 			integrated bool
+			validated  bool
 		}
 
 		tests := []struct {
@@ -303,10 +310,11 @@ Available devices:
   CUDA1: NVIDIA GeForce RTX 4060 Ti (16379 MiB, 14900 MiB free)
 `,
 				want: []wantDevice{{
-					name:     "CUDA1",
-					library:  "CUDA",
-					totalMiB: 16379,
-					compute:  "8.9",
+					name:      "CUDA1",
+					library:   "CUDA",
+					totalMiB:  16379,
+					compute:   "8.9",
+					validated: true,
 				}},
 			},
 			{
@@ -379,6 +387,9 @@ Available devices:
 					}
 					if got[i].Integrated != want.integrated {
 						t.Fatalf("device %d integrated = %v, want %v", i, got[i].Integrated, want.integrated)
+					}
+					if got[i].InitValidated != want.validated {
+						t.Fatalf("device %d InitValidated = %v, want %v", i, got[i].InitValidated, want.validated)
 					}
 				}
 			})
