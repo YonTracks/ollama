@@ -115,17 +115,26 @@ modules, MLX payloads, installer output, and zip archives together. Manual MLX
 CMake commands are useful for isolated MLX development, but they do not replace
 the Windows packaging flow.
 
-On local NVIDIA systems, you can narrow MLX CUDA compilation to the installed
-GPU architecture before running the package build. For example, an RTX 3060 is
-compute capability 8.6:
+On local NVIDIA systems, you can narrow GGUF llama-server CUDA compilation to
+the installed GPU architecture before running the package build. For example,
+an RTX 3060 is compute capability 8.6:
+
+```powershell
+$env:OLLAMA_LLAMA_CUDA_ARCHITECTURES="86"
+```
+
+If `OLLAMA_LLAMA_CUDA_ARCHITECTURES` is unset, the Windows CUDA v13 package
+build uses the broad preset in `llama/server/CMakePresets.json`.
+
+MLX CUDA uses a separate architecture setting:
 
 ```powershell
 $env:OLLAMA_MLX_CUDA_ARCHITECTURES="86"
 ```
 
-If `build\mlx_cuda_v13` was created by an older manual CMake command, remove
-that generated build directory before changing generators or MLX architecture
-settings.
+If `build\llama-server-cuda_v13` or `build\mlx_cuda_v13` was created by an
+older manual CMake command, remove that generated build directory before
+changing generators or CUDA architecture settings.
 
 ## Linux
 
