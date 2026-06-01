@@ -68,6 +68,10 @@ payload, not old GGUF runner executables.
   `dist/windows-<arch>/lib/ollama`.
 - GPU backends are built as llama-server backend modules in subdirectories such
   as `cuda_v12`, `cuda_v13`, `rocm_v7_1`, and `vulkan`.
+- The Windows CUDA v13 llama-server preset uses the broad CUDA 13 architecture
+  list, including compute 8.6 for RTX 3060/3070/3080-class GPUs. Local package
+  builds can narrow this with `OLLAMA_LLAMA_CUDA_ARCHITECTURES`, for example
+  `86` on an RTX 3060.
 - The llama-server CMake installs Windows CRT/OpenMP or MinGW runtime DLLs
   beside the payload so zip installs do not rely on host-global redistributables.
 - The Go CLI can also depend on MinGW runtime DLLs through CGO packages. The
@@ -84,7 +88,7 @@ payload, not old GGUF runner executables.
   image generation path. For local Windows builds on a single NVIDIA GPU, set
   `OLLAMA_MLX_CUDA_ARCHITECTURES` to that GPU's compute capability, for example
   `86` for an RTX 3060, before running `scripts/build_windows.ps1`. The default
-  package build keeps the broad upstream architecture set.
+  MLX package build keeps the broad architecture set.
 - YonTracks Windows setup builds include the `mlx_*` payload in
   `OllamaSetup.exe`; otherwise installed MLX models fail at runtime with
   `mlxc.dll not found` even when the separate MLX zip is valid.
@@ -92,9 +96,9 @@ payload, not old GGUF runner executables.
   dependency bundling. The build script accepts `CUDNN_INCLUDE_PATH` and
   `CUDNN_LIBRARY_PATH`, derives `CUDNN_ROOT_DIR` from them, and also detects the
   official `CUDNN/v*/include/13.x`, `lib/13.x/x64`, `bin/13.x/x64` layout.
-- If `build/mlx_cuda_v13` was created by an older manual CMake command, remove
-  that generated build directory before switching generators or MLX CUDA
-  architecture settings.
+- If `build/llama-server-cuda_v13` or `build/mlx_cuda_v13` was created by an
+  older manual CMake command, remove that generated build directory before
+  switching generators or CUDA architecture settings.
 
 ## Low-VRAM hook points
 

@@ -456,6 +456,21 @@ function cudaCMakeArgs {
     return @("-T", "cuda=$cuda", "-DCMAKE_CUDA_COMPILER=$cuda\bin\nvcc.exe")
 }
 
+function llamaCudaArchArgs {
+    $llamaCudaArgs = @()
+    if ($env:OLLAMA_CMAKE_CUDA_FLAGS) {
+        $llamaCudaArgs += "-DCMAKE_CUDA_FLAGS=$env:OLLAMA_CMAKE_CUDA_FLAGS"
+    }
+    if ($env:OLLAMA_LLAMA_CUDA_ARCHITECTURES) {
+        Write-Output "Using llama-server CUDA architectures: $env:OLLAMA_LLAMA_CUDA_ARCHITECTURES"
+        $llamaCudaArgs += "-DCMAKE_CUDA_ARCHITECTURES=$env:OLLAMA_LLAMA_CUDA_ARCHITECTURES"
+    } elseif ($env:CMAKE_CUDA_ARCHITECTURES) {
+        Write-Output "Using CMAKE_CUDA_ARCHITECTURES for llama-server CUDA: $env:CMAKE_CUDA_ARCHITECTURES"
+        $llamaCudaArgs += "-DCMAKE_CUDA_ARCHITECTURES=$env:CMAKE_CUDA_ARCHITECTURES"
+    }
+    return $llamaCudaArgs
+}
+
 function cudaCommon {
     param (
         [string]$cudaMajorVer
@@ -476,7 +491,8 @@ function cudaCommon {
             $env:CUDAToolkit_ROOT=$cuda
             $preset = "llama_cuda_v$($cudaMajorVer)_windows"
             $cudaToolsetArgs = cudaCMakeArgs $cuda
-            $configureArgs = @("-S", "llama\server", "--preset", $preset) + $cudaToolsetArgs + @("--install-prefix", "$script:DIST_DIR")
+            $llamaCudaArgs = llamaCudaArchArgs
+            $configureArgs = @("-S", "llama\server", "--preset", $preset) + $cudaToolsetArgs + $llamaCudaArgs + @("--install-prefix", "$script:DIST_DIR")
             & cmake @configureArgs
             if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
             & cmake --build "build\llama-server-cuda_v$cudaMajorVer" --config Release --parallel $script:JOBS
