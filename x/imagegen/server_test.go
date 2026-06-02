@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -99,4 +102,73 @@ func TestCompletionEOFBeforeDoneReturnsError(t *testing.T) {
 	if len(responses) != 1 || responses[0].Done {
 		t.Fatalf("responses = %+v, want one non-done progress response", responses)
 	}
+}
+
+func TestConfigureMLXSubprocessEnvAddsMLXDirsAndCUDAHeaders(t *testing.T) {
+	root := t.TempDir()
+	mlxCUDA := filepath.Join(root, "mlx_cuda_v13")
+	if err := os.MkdirAll(filepath.Join(mlxCUDA, "include"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mlxOther := filepath.Join(root, "mlx_cuda_v12")
+	if err := os.MkdirAll(mlxOther, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	backend := filepath.Join(root, "cuda_v13")
+	if err := os.MkdirAll(backend, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	existingRuntimePath := filepath.Join(t.TempDir(), "existing-runtime")
+	existingOllamaPath := filepath.Join(t.TempDir(), "existing-ollama")
+	pathEnv := mlxLibraryPathEnv()
+	t.Setenv(pathEnv, existingRuntimePath)
+	t.Setenv("OLLAMA_LIBRARY_PATH", existingOllamaPath)
+
+	cmd := exec.Command("ollama-test")
+	cmd.Env = os.Environ()
+	configureMLXSubprocessEnv(cmd, []string{root, backend})
+
+	env := envMap(cmd.Env)
+	gotRuntimePaths := filepath.SplitList(env[pathEnv])
+	wantRuntimePaths := []string{root, mlxCUDA, mlxOther, backend, existingRuntimePath}
+	if !samePathListPrefix(gotRuntimePaths, wantRuntimePaths) {
+		t.Fatalf("%s = %q, want prefix %q", pathEnv, gotRuntimePaths, wantRuntimePaths)
+	}
+
+	gotOllamaPaths := filepath.SplitList(env["OLLAMA_LIBRARY_PATH"])
+	wantOllamaPaths := []string{root, mlxCUDA, mlxOther, backend, existingOllamaPath}
+	if !samePathListPrefix(gotOllamaPaths, wantOllamaPaths) {
+		t.Fatalf("OLLAMA_LIBRARY_PATH = %q, want prefix %q", gotOllamaPaths, wantOllamaPaths)
+	}
+
+	if got := env["CUDA_PATH"]; got != mlxCUDA {
+		t.Fatalf("CUDA_PATH = %q, want %q", got, mlxCUDA)
+	}
+	if got := env["CUDA_HOME"]; got != mlxCUDA {
+		t.Fatalf("CUDA_HOME = %q, want %q", got, mlxCUDA)
+	}
+}
+
+func envMap(env []string) map[string]string {
+	out := map[string]string{}
+	for _, entry := range env {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func samePathListPrefix(got, want []string) bool {
+	if len(got) < len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }

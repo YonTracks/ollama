@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -186,11 +187,13 @@ func configureMLXSubprocessEnv(cmd *exec.Cmd, libraryPaths []string) {
 	if len(libraryPaths) == 0 {
 		return
 	}
+	libraryPaths = expandMLXLibraryPaths(libraryPaths)
 
 	// Search order for the imagegen runner is:
 	//   1. bundled lib/ollama root
-	//   2. backend-specific library dirs selected during GPU discovery
-	//   3. any existing caller-provided library path values
+	//   2. bundled mlx_* dirs containing mlxc and its dependent DLLs
+	//   3. backend-specific library dirs selected during GPU discovery
+	//   4. any existing caller-provided library path values
 	pathEnv := mlxLibraryPathEnv()
 	pathEnvPaths := append([]string{}, libraryPaths...)
 	if existingPath, ok := os.LookupEnv(pathEnv); ok {
@@ -207,6 +210,55 @@ func configureMLXSubprocessEnv(cmd *exec.Cmd, libraryPaths []string) {
 	ollamaLibraryPathValue := strings.Join(ollamaLibraryPaths, string(filepath.ListSeparator))
 	setSubprocessEnv(cmd, "OLLAMA_LIBRARY_PATH", ollamaLibraryPathValue)
 	slog.Debug("mlx subprocess library path", "OLLAMA_LIBRARY_PATH", envconfig.RedactedValue("OLLAMA_LIBRARY_PATH", ollamaLibraryPathValue))
+
+	configureMLXCUDAHeaders(cmd, libraryPaths)
+}
+
+func expandMLXLibraryPaths(libraryPaths []string) []string {
+	var expanded []string
+	seen := map[string]struct{}{}
+	add := func(path string) {
+		if path == "" {
+			return
+		}
+		if _, ok := seen[path]; ok {
+			return
+		}
+		seen[path] = struct{}{}
+		expanded = append(expanded, path)
+	}
+
+	for _, path := range libraryPaths {
+		add(path)
+		if strings.HasPrefix(filepath.Base(path), "mlx_") {
+			continue
+		}
+		mlxDirs, err := filepath.Glob(filepath.Join(path, "mlx_*"))
+		if err != nil {
+			continue
+		}
+		sort.Sort(sort.Reverse(sort.StringSlice(mlxDirs)))
+		for _, mlxDir := range mlxDirs {
+			add(mlxDir)
+		}
+	}
+
+	return expanded
+}
+
+func configureMLXCUDAHeaders(cmd *exec.Cmd, libraryPaths []string) {
+	for _, path := range libraryPaths {
+		if !strings.HasPrefix(filepath.Base(path), "mlx_cuda_") {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(path, "include")); err != nil {
+			continue
+		}
+		setSubprocessEnv(cmd, "CUDA_PATH", path)
+		setSubprocessEnv(cmd, "CUDA_HOME", path)
+		slog.Debug("mlx subprocess CUDA headers", "CUDA_PATH", envconfig.RedactedValue("CUDA_PATH", path))
+		return
+	}
 }
 
 func setSubprocessEnv(cmd *exec.Cmd, key, value string) {
