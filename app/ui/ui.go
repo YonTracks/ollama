@@ -5543,7 +5543,7 @@ func (s *Server) buildChatRequest(chat *store.Chat, model string, think any, ava
 
 		var content string
 		var images []api.ImageData
-		if m.Role == "user" && len(m.Attachments) > 0 {
+		if len(m.Attachments) > 0 {
 			content, images = promptAndImagesFromMessage(m)
 		} else {
 			content = m.Content

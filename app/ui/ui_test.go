@@ -717,6 +717,42 @@ func TestBuildChatRequestAddsDesktopToolGuidance(t *testing.T) {
 	}
 }
 
+func TestBuildChatRequestIncludesAssistantImageAttachments(t *testing.T) {
+	generatedImage := []byte("generated image bytes")
+	chat := &store.Chat{
+		ID: "chat",
+		Messages: []store.Message{
+			store.NewMessage("user", "Generate an image of a blue vase", nil),
+			store.NewMessage("assistant", "", &store.MessageOptions{
+				Model: "x/flux2-klein",
+				Attachments: []store.File{
+					{Filename: "generated-image.png", Data: generatedImage},
+				},
+			}),
+			store.NewMessage("user", "Describe the image you just generated", nil),
+		},
+	}
+
+	req, err := (&Server{}).buildChatRequest(chat, "vision-model", false, nil, contextRequestSettings{})
+	if err != nil {
+		t.Fatalf("buildChatRequest returned error: %v", err)
+	}
+	if len(req.Messages) != 3 {
+		t.Fatalf("messages = %d, want 3: %#v", len(req.Messages), req.Messages)
+	}
+
+	assistantMessage := req.Messages[1]
+	if assistantMessage.Role != "assistant" {
+		t.Fatalf("assistant role = %q, want assistant", assistantMessage.Role)
+	}
+	if len(assistantMessage.Images) != 1 {
+		t.Fatalf("assistant images = %d, want 1", len(assistantMessage.Images))
+	}
+	if !bytes.Equal(assistantMessage.Images[0], generatedImage) {
+		t.Fatalf("assistant image bytes = %q, want %q", assistantMessage.Images[0], generatedImage)
+	}
+}
+
 func TestAuthenticationMiddleware(t *testing.T) {
 	tests := []struct {
 		name         string
