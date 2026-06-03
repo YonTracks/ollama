@@ -132,6 +132,61 @@ endif()
 # apply the patch by hand while iterating on the compat layer.
 set(_ollama_compat_patch_cmd "")
 include(${CMAKE_CURRENT_SOURCE_DIR}/../compat/compat.cmake)
+
+function(ollama_reset_dirty_fetched_llama_cpp_if_tag_changed SOURCE_DIR REQUESTED_REF)
+    if(NOT EXISTS "${SOURCE_DIR}/.git")
+        return()
+    endif()
+
+    find_package(Git QUIET REQUIRED)
+
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+        WORKING_DIRECTORY "${SOURCE_DIR}"
+        RESULT_VARIABLE _head_result
+        OUTPUT_VARIABLE _head_hash
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(NOT _head_result EQUAL 0)
+        return()
+    endif()
+
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse "${REQUESTED_REF}^{commit}"
+        WORKING_DIRECTORY "${SOURCE_DIR}"
+        RESULT_VARIABLE _ref_result
+        OUTPUT_VARIABLE _ref_hash
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(_ref_result EQUAL 0 AND _ref_hash STREQUAL _head_hash)
+        return()
+    endif()
+
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} status --porcelain
+        WORKING_DIRECTORY "${SOURCE_DIR}"
+        RESULT_VARIABLE _status_result
+        OUTPUT_VARIABLE _status_output
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(NOT _status_result EQUAL 0 OR _status_output STREQUAL "")
+        return()
+    endif()
+
+    message(STATUS
+        "Resetting dirty fetched llama.cpp source before updating to "
+        "${REQUESTED_REF}")
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} reset --hard HEAD
+        WORKING_DIRECTORY "${SOURCE_DIR}"
+        RESULT_VARIABLE _reset_result
+        OUTPUT_QUIET)
+    if(NOT _reset_result EQUAL 0)
+        message(FATAL_ERROR
+            "Failed to reset fetched llama.cpp source before update: "
+            "${SOURCE_DIR}")
+    endif()
+endfunction()
+
 option(OLLAMA_LLAMA_CPP_SKIP_COMPAT_PATCH
     "Skip llama.cpp compat patch application because the source is already prepared"
     OFF)
@@ -157,6 +212,9 @@ elseif(NOT DEFINED ENV{OLLAMA_LLAMA_CPP_SOURCE})
                 "${_llama_cpp_source_override}")
         endif()
     else()
+        ollama_reset_dirty_fetched_llama_cpp_if_tag_changed(
+            "${CMAKE_BINARY_DIR}/_deps/llama_cpp-src"
+            "${LLAMA_CPP_GIT_TAG}")
         set(_ollama_compat_patch_cmd PATCH_COMMAND ${OLLAMA_LLAMA_CPP_COMPAT_FETCH_PATCH_COMMAND})
     endif()
 endif()
