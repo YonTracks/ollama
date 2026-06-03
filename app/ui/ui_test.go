@@ -753,6 +753,139 @@ func TestBuildChatRequestIncludesAssistantImageAttachments(t *testing.T) {
 	}
 }
 
+func TestImageGenerateToolExecutionIsDeferred(t *testing.T) {
+	if !shouldDeferToolExecutionUntilChatComplete("image.generate") {
+		t.Fatal("image.generate should be deferred until the calling chat request completes")
+	}
+	if shouldDeferToolExecutionUntilChatComplete("web_search") {
+		t.Fatal("web_search should execute during the active chat request")
+	}
+}
+
+func TestImageGenerateToolStartIsEmittedBeforeExecution(t *testing.T) {
+	if !shouldEmitToolStartBeforeExecution("image.generate") {
+		t.Fatal("image.generate should emit a tool start event before long-running execution")
+	}
+	if shouldEmitToolStartBeforeExecution("web_search") {
+		t.Fatal("web_search should keep the existing post-execution tool event behavior")
+	}
+}
+
+func TestUnloadGenerateRequestUsesKeepAliveZero(t *testing.T) {
+	req := unloadGenerateRequest("qwen3.6:35b")
+
+	if req.Model != "qwen3.6:35b" {
+		t.Fatalf("model = %q, want qwen3.6:35b", req.Model)
+	}
+	if req.Prompt != "" {
+		t.Fatalf("prompt = %q, want empty unload prompt", req.Prompt)
+	}
+	if req.Stream == nil || *req.Stream {
+		t.Fatal("stream should be explicitly disabled for unload requests")
+	}
+	if req.KeepAlive == nil || req.KeepAlive.Duration != 0 {
+		t.Fatalf("keep_alive = %#v, want duration 0", req.KeepAlive)
+	}
+}
+
+func TestIsModelRunningMatchesProcessModels(t *testing.T) {
+	ps := &api.ProcessResponse{Models: []api.ProcessModelResponse{
+		{
+			Name:  "registry.ollama.ai/library/qwen3.6:35b",
+			Model: "qwen3.6:35b",
+		},
+	}}
+
+	if !isModelRunning(ps, "qwen3.6") {
+		t.Fatal("expected qwen3.6 to match running qwen3.6:35b")
+	}
+	if isModelRunning(ps, "x/flux2-klein:latest") {
+		t.Fatal("did not expect flux2-klein to match running qwen3.6:35b")
+	}
+	if isModelRunning(nil, "qwen3.6:35b") {
+		t.Fatal("nil process response should not report a running model")
+	}
+}
+
+func TestRemainingDeferredToolVRAMRecoveryGrace(t *testing.T) {
+	started := time.Unix(100, 0)
+
+	tests := []struct {
+		name  string
+		now   time.Time
+		grace time.Duration
+		want  time.Duration
+	}{
+		{
+			name:  "remaining",
+			now:   started.Add(1500 * time.Millisecond),
+			grace: 5500 * time.Millisecond,
+			want:  4 * time.Second,
+		},
+		{
+			name:  "elapsed",
+			now:   started.Add(6 * time.Second),
+			grace: 5500 * time.Millisecond,
+			want:  0,
+		},
+		{
+			name:  "clock skew",
+			now:   started.Add(-time.Second),
+			grace: 5500 * time.Millisecond,
+			want:  5500 * time.Millisecond,
+		},
+		{
+			name:  "disabled",
+			now:   started,
+			grace: 0,
+			want:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := remainingDeferredToolVRAMRecoveryGrace(started, tt.now, tt.grace); got != tt.want {
+				t.Fatalf("remaining grace = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestImageToolGenerateRequestUsesKeepAliveZero(t *testing.T) {
+	req := imageToolGenerateRequest(apptools.ImageGenerateRequest{
+		Model:  "x/flux2-klein:latest",
+		Prompt: "tree",
+		Width:  768,
+		Height: 768,
+		Steps:  4,
+	})
+
+	if req.Model != "x/flux2-klein:latest" {
+		t.Fatalf("model = %q, want x/flux2-klein:latest", req.Model)
+	}
+	if req.Prompt != "tree" {
+		t.Fatalf("prompt = %q, want tree", req.Prompt)
+	}
+	if req.Stream == nil || !*req.Stream {
+		t.Fatal("stream should be enabled for image generation")
+	}
+	if req.KeepAlive == nil || req.KeepAlive.Duration != 0 {
+		t.Fatalf("keep_alive = %#v, want duration 0", req.KeepAlive)
+	}
+	if req.Width != 768 || req.Height != 768 || req.Steps != 4 {
+		t.Fatalf("image options = %dx%d steps=%d, want 768x768 steps=4", req.Width, req.Height, req.Steps)
+	}
+}
+
+func TestRequestOnlyAssistantCanBeCreatedForImageGenerate(t *testing.T) {
+	if !canCreateRequestOnlyAssistantForTool("image.generate") {
+		t.Fatal("image.generate should support request-only assistant tool call persistence")
+	}
+	if canCreateRequestOnlyAssistantForTool("desktop.read_text_file") {
+		t.Fatal("desktop.read_text_file should not create request-only assistant tool calls")
+	}
+}
+
 func TestAuthenticationMiddleware(t *testing.T) {
 	tests := []struct {
 		name         string

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/ollama/ollama/llm"
+	"github.com/ollama/ollama/ml"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -147,6 +148,53 @@ func TestConfigureMLXSubprocessEnvAddsMLXDirsAndCUDAHeaders(t *testing.T) {
 	}
 	if got := env["CUDA_HOME"]; got != mlxCUDA {
 		t.Fatalf("CUDA_HOME = %q, want %q", got, mlxCUDA)
+	}
+}
+
+func TestShouldAttemptImagegenLoadWithLowFreeMemory(t *testing.T) {
+	tests := []struct {
+		name        string
+		gpu         ml.DeviceInfo
+		requireFull bool
+		goos        string
+		want        bool
+	}{
+		{
+			name:        "windows cuda first load can bypass stale snapshot",
+			gpu:         ml.DeviceInfo{DeviceID: ml.DeviceID{Library: "CUDA"}},
+			requireFull: false,
+			goos:        "windows",
+			want:        true,
+		},
+		{
+			name:        "windows cuda full fit check still evicts",
+			gpu:         ml.DeviceInfo{DeviceID: ml.DeviceID{Library: "CUDA"}},
+			requireFull: true,
+			goos:        "windows",
+			want:        false,
+		},
+		{
+			name:        "windows non cuda still trusts preflight",
+			gpu:         ml.DeviceInfo{DeviceID: ml.DeviceID{Library: "Metal"}},
+			requireFull: false,
+			goos:        "windows",
+			want:        false,
+		},
+		{
+			name:        "linux cuda still trusts preflight",
+			gpu:         ml.DeviceInfo{DeviceID: ml.DeviceID{Library: "CUDA"}},
+			requireFull: false,
+			goos:        "linux",
+			want:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldAttemptImagegenLoadWithLowFreeMemory(tt.gpu, tt.requireFull, tt.goos); got != tt.want {
+				t.Fatalf("shouldAttemptImagegenLoadWithLowFreeMemory() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

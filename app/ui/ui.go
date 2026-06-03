@@ -1393,6 +1393,15 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 			maxToolPasses = max(maxToolPasses, 8)
 		}
 
+		if hasToolsCapability && (s.Agent || s.Tools) {
+			registry.Register(s.newImageGenerateTool(c))
+			if s.Agent {
+				maxToolPasses = max(maxToolPasses, 8)
+			} else {
+				maxToolPasses = max(maxToolPasses, 1)
+			}
+		}
+
 		if hasToolsCapability && s.desktopToolsRequested(req) && s.registerDesktopTools(registry) {
 			if s.Agent {
 				maxToolPasses = max(maxToolPasses, 8)
@@ -1411,10 +1420,130 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 	// inject them into the next request, and attach on first assistant content/thinking.
 	var pendingAssistantToolCalls []store.ToolCall
 
+	executeToolCall := func(toolCall api.ToolCall) error {
+		emitToolStart := shouldEmitToolStartBeforeExecution(toolCall.Function.Name)
+		if emitToolStart {
+			content := ""
+			json.NewEncoder(w).Encode(responses.ChatEvent{
+				EventName: "tool",
+				Content:   &content,
+				ToolName:  &toolCall.Function.Name,
+			})
+			flusher.Flush()
+		}
+
+		result, content, err := registry.Execute(ctx, toolCall.Function.Name, toolCall.Function.Arguments.ToMap())
+		if err != nil {
+			errContent := fmt.Sprintf("Error: %v", err)
+			toolErrMsg := store.NewMessage("tool", errContent, nil)
+			toolErrMsg.ToolName = toolCall.Function.Name
+			chat.Messages = append(chat.Messages, toolErrMsg)
+			if err := s.Store.AppendMessage(chat.ID, toolErrMsg); err != nil {
+				return err
+			}
+
+			// Emit tool error event
+			toolResult := true
+			if !emitToolStart {
+				json.NewEncoder(w).Encode(responses.ChatEvent{
+					EventName: "tool",
+					Content:   &errContent,
+					ToolName:  &toolCall.Function.Name,
+				})
+				flusher.Flush()
+			}
+
+			json.NewEncoder(w).Encode(responses.ChatEvent{
+				EventName:      "tool_result",
+				Content:        &errContent,
+				ToolName:       &toolCall.Function.Name,
+				ToolResult:     &toolResult,
+				ToolResultData: nil, // No result data for errors
+			})
+			flusher.Flush()
+			return nil
+		}
+
+		var tr json.RawMessage
+		if strings.HasPrefix(toolCall.Function.Name, "browser.search") {
+			// For standalone web_search, ensure the tool message has readable content
+			// so the second-pass model can consume results, while keeping browser state flow intact.
+			// We still persist tool msg with content below.
+			// (No browser state update needed for standalone.)
+		} else if strings.HasPrefix(toolCall.Function.Name, "browser") {
+			stateBytes, err := json.Marshal(browser.State())
+			if err != nil {
+				return fmt.Errorf("failed to marshal browser state: %w", err)
+			}
+			if err := s.Store.UpdateChatBrowserState(chat.ID, json.RawMessage(stateBytes)); err != nil {
+				return fmt.Errorf("failed to persist browser state to chat: %w", err)
+			}
+			// tool result is not added to the tool message for the browser tool
+		} else {
+			var err error
+			tr, err = json.Marshal(result)
+			if err != nil {
+				return fmt.Errorf("failed to marshal tool result: %w", err)
+			}
+		}
+		// ensure tool message sent back to the model has content (if empty, use a sensible fallback)
+		modelContent := content
+		if toolCall.Function.Name == "web_fetch" && modelContent == "" {
+			if str, ok := result.(string); ok {
+				modelContent = str
+			}
+		}
+		if modelContent == "" && len(tr) > 0 {
+			s.log().Debug("tool message empty, sending json result")
+			modelContent = string(tr)
+		}
+		storeAttachments, eventAttachments := toolAttachmentsFromResult(result)
+		toolMsg := store.NewMessage("tool", modelContent, &store.MessageOptions{
+			ToolResult:  &tr,
+			Attachments: storeAttachments,
+		})
+		toolMsg.ToolName = toolCall.Function.Name
+		chat.Messages = append(chat.Messages, toolMsg)
+
+		if err := s.Store.AppendMessage(chat.ID, toolMsg); err != nil {
+			return err
+		}
+
+		// Emit tool message event (matching agent pattern)
+		toolResult := true
+		if !emitToolStart {
+			json.NewEncoder(w).Encode(responses.ChatEvent{
+				EventName: "tool",
+				Content:   &content,
+				ToolName:  &toolCall.Function.Name,
+			})
+			flusher.Flush()
+		}
+
+		var toolState any = nil
+		if browser != nil {
+			toolState = browser.State()
+		}
+		// Stream tool result to frontend
+
+		json.NewEncoder(w).Encode(responses.ChatEvent{
+			EventName:      "tool_result",
+			Content:        &content,
+			ToolName:       &toolCall.Function.Name,
+			ToolResult:     &toolResult,
+			ToolResultData: result,
+			ToolState:      toolState,
+			Attachments:    eventAttachments,
+		})
+		flusher.Flush()
+		return nil
+	}
+
 	passNum := 1
 
 	for {
 		var toolsExecuted bool
+		var deferredToolCalls []api.ToolCall
 
 		var availableTools []map[string]any
 		if passNum <= maxToolPasses {
@@ -1537,7 +1666,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 					} else {
 						onlyStandalone := true
 						for _, tc := range res.Message.ToolCalls {
-							if !(tc.Function.Name == "web_search" || tc.Function.Name == "web_fetch") {
+							if !canCreateRequestOnlyAssistantForTool(tc.Function.Name) {
 								onlyStandalone = false
 								break
 							}
@@ -1570,101 +1699,15 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 				for _, toolCall := range res.Message.ToolCalls {
 					// continues loop as tools were executed
 					toolsExecuted = true
-					result, content, err := registry.Execute(ctx, toolCall.Function.Name, toolCall.Function.Arguments.ToMap())
-					if err != nil {
-						errContent := fmt.Sprintf("Error: %v", err)
-						toolErrMsg := store.NewMessage("tool", errContent, nil)
-						toolErrMsg.ToolName = toolCall.Function.Name
-						chat.Messages = append(chat.Messages, toolErrMsg)
-						if err := s.Store.AppendMessage(chat.ID, toolErrMsg); err != nil {
-							return err
-						}
 
-						// Emit tool error event
-						toolResult := true
-						json.NewEncoder(w).Encode(responses.ChatEvent{
-							EventName: "tool",
-							Content:   &errContent,
-							ToolName:  &toolCall.Function.Name,
-						})
-						flusher.Flush()
-
-						json.NewEncoder(w).Encode(responses.ChatEvent{
-							EventName:      "tool_result",
-							Content:        &errContent,
-							ToolName:       &toolCall.Function.Name,
-							ToolResult:     &toolResult,
-							ToolResultData: nil, // No result data for errors
-						})
-						flusher.Flush()
+					if shouldDeferToolExecutionUntilChatComplete(toolCall.Function.Name) {
+						deferredToolCalls = append(deferredToolCalls, toolCall)
 						continue
 					}
 
-					var tr json.RawMessage
-					if strings.HasPrefix(toolCall.Function.Name, "browser.search") {
-						// For standalone web_search, ensure the tool message has readable content
-						// so the second-pass model can consume results, while keeping browser state flow intact.
-						// We still persist tool msg with content below.
-						// (No browser state update needed for standalone.)
-					} else if strings.HasPrefix(toolCall.Function.Name, "browser") {
-						stateBytes, err := json.Marshal(browser.State())
-						if err != nil {
-							return fmt.Errorf("failed to marshal browser state: %w", err)
-						}
-						if err := s.Store.UpdateChatBrowserState(chat.ID, json.RawMessage(stateBytes)); err != nil {
-							return fmt.Errorf("failed to persist browser state to chat: %w", err)
-						}
-						// tool result is not added to the tool message for the browser tool
-					} else {
-						var err error
-						tr, err = json.Marshal(result)
-						if err != nil {
-							return fmt.Errorf("failed to marshal tool result: %w", err)
-						}
+					if err := executeToolCall(toolCall); err != nil {
+						return err
 					}
-					// ensure tool message sent back to the model has content (if empty, use a sensible fallback)
-					modelContent := content
-					if toolCall.Function.Name == "web_fetch" && modelContent == "" {
-						if str, ok := result.(string); ok {
-							modelContent = str
-						}
-					}
-					if modelContent == "" && len(tr) > 0 {
-						s.log().Debug("tool message empty, sending json result")
-						modelContent = string(tr)
-					}
-					toolMsg := store.NewMessage("tool", modelContent, &store.MessageOptions{
-						ToolResult: &tr,
-					})
-					toolMsg.ToolName = toolCall.Function.Name
-					chat.Messages = append(chat.Messages, toolMsg)
-
-					s.Store.AppendMessage(chat.ID, toolMsg)
-
-					// Emit tool message event (matching agent pattern)
-					toolResult := true
-					json.NewEncoder(w).Encode(responses.ChatEvent{
-						EventName: "tool",
-						Content:   &content,
-						ToolName:  &toolCall.Function.Name,
-					})
-					flusher.Flush()
-
-					var toolState any = nil
-					if browser != nil {
-						toolState = browser.State()
-					}
-					// Stream tool result to frontend
-
-					json.NewEncoder(w).Encode(responses.ChatEvent{
-						EventName:      "tool_result",
-						Content:        &content,
-						ToolName:       &toolCall.Function.Name,
-						ToolResult:     &toolResult,
-						ToolResultData: result,
-						ToolState:      toolState,
-					})
-					flusher.Flush()
 				}
 
 			case EventChat:
@@ -1755,6 +1798,21 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 			json.NewEncoder(w).Encode(errorEvent)
 			flusher.Flush()
 			return nil
+		}
+
+		// Image generation needs a clean GPU handoff. The caller model may stay
+		// resident after chat completes, so unload it before running deferred
+		// image tools.
+		if len(deferredToolCalls) > 0 {
+			if err := s.unloadModelForDeferredTool(ctx, c, req.Model); err != nil {
+				s.log().Warn("failed to unload caller model before deferred tool", "model", req.Model, "error", err)
+			}
+		}
+
+		for _, toolCall := range deferredToolCalls {
+			if err := executeToolCall(toolCall); err != nil {
+				return err
+			}
 		}
 
 		// If no tools were executed, exit the loop
@@ -5265,13 +5323,131 @@ func supportsBrowserTools(model string) bool {
 	return strings.HasPrefix(strings.ToLower(model), "gpt-oss")
 }
 
+func shouldDeferToolExecutionUntilChatComplete(name string) bool {
+	return name == "image.generate"
+}
+
+func shouldEmitToolStartBeforeExecution(name string) bool {
+	return name == "image.generate"
+}
+
+// Ollama's unload API returns after the runner is scheduled to expire. On CUDA,
+// the process can disappear from /api/ps before VRAM has actually recovered, so
+// image generation gets a short recovery window before loading the image model.
+const deferredToolVRAMRecoveryGrace = 5500 * time.Millisecond
+
+func unloadGenerateRequest(model string) *api.GenerateRequest {
+	return &api.GenerateRequest{
+		Model:     model,
+		Stream:    ptr(false),
+		KeepAlive: &api.Duration{Duration: 0},
+	}
+}
+
+func (s *Server) unloadModelForDeferredTool(ctx context.Context, c *api.Client, model string) error {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return nil
+	}
+
+	started := time.Now()
+	s.log().Debug("unloading caller model before deferred tool", "model", model)
+	// Empty prompt + keep_alive 0 is Ollama's public "unload this model" API.
+	if err := c.Generate(ctx, unloadGenerateRequest(model), func(api.GenerateResponse) error {
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	if err := s.waitForModelUnload(ctx, c, model, 20*time.Second); err != nil {
+		return err
+	}
+
+	return s.waitForDeferredToolVRAMRecovery(ctx, started, deferredToolVRAMRecoveryGrace)
+}
+
+func (s *Server) waitForModelUnload(ctx context.Context, c *api.Client, model string, timeout time.Duration) error {
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		ps, err := c.ListRunning(waitCtx)
+		if err != nil {
+			return err
+		}
+		// This confirms the scheduler has removed the runner from its public
+		// process list. VRAM recovery may still be in progress after this.
+		if !isModelRunning(ps, model) {
+			s.log().Debug("caller model unloaded before deferred tool", "model", model)
+			return nil
+		}
+
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("timed out waiting for model %q to unload: %w", model, waitCtx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func isModelRunning(ps *api.ProcessResponse, model string) bool {
+	if ps == nil {
+		return false
+	}
+
+	for _, runningModel := range ps.Models {
+		if matchesRunningModel(runningModel, model) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (s *Server) waitForDeferredToolVRAMRecovery(ctx context.Context, started time.Time, grace time.Duration) error {
+	remaining := remainingDeferredToolVRAMRecoveryGrace(started, time.Now(), grace)
+	if remaining <= 0 {
+		return nil
+	}
+
+	// Match the scheduler's hidden VRAM recovery window without adding extra
+	// delay if /api/ps polling already consumed most of that time.
+	s.log().Debug("waiting for VRAM recovery before deferred tool", "duration", remaining)
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		s.log().Debug("VRAM recovery grace completed before deferred tool")
+		return nil
+	}
+}
+
+func remainingDeferredToolVRAMRecoveryGrace(started, now time.Time, grace time.Duration) time.Duration {
+	if grace <= 0 {
+		return 0
+	}
+	if now.Before(started) {
+		return grace
+	}
+	remaining := grace - now.Sub(started)
+	if remaining <= 0 {
+		return 0
+	}
+	return remaining
+}
+
+func canCreateRequestOnlyAssistantForTool(name string) bool {
+	return name == "web_search" || name == "web_fetch" || name == "image.generate"
+}
+
 func isImageGenerationModelName(name string) bool {
-	lower := strings.ToLower(name)
-	return strings.HasPrefix(lower, "x/flux") ||
-		strings.HasPrefix(lower, "x/z-image") ||
-		strings.Contains(lower, "flux-klein") ||
-		strings.Contains(lower, "flux2-klein") ||
-		strings.Contains(lower, "z-image")
+	return tools.IsAllowedImageGenerationModel(name)
 }
 
 func apiThinkValue(think any) *api.ThinkValue {
@@ -5344,6 +5520,99 @@ func generatedImageFilename(mimeType string) string {
 	default:
 		return "generated-image.png"
 	}
+}
+
+func (s *Server) newImageGenerateTool(c *api.Client) *tools.ImageGenerateTool {
+	return tools.NewImageGenerateTool(func(ctx context.Context, req tools.ImageGenerateRequest) (*tools.GeneratedImage, error) {
+		generateReq := imageToolGenerateRequest(req)
+
+		var image *tools.GeneratedImage
+		if err := c.Generate(ctx, generateReq, func(res api.GenerateResponse) error {
+			if res.Image == "" {
+				return nil
+			}
+
+			imageData, mimeType, err := generatedImagePayload(res.Image)
+			if err != nil {
+				return err
+			}
+			imageBytes, err := base64.StdEncoding.DecodeString(imageData)
+			if err != nil {
+				return err
+			}
+
+			image = &tools.GeneratedImage{
+				Data:     imageBytes,
+				MimeType: mimeType,
+			}
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+
+		if image == nil || len(image.Data) == 0 {
+			return nil, fmt.Errorf("image generation returned no image")
+		}
+
+		return image, nil
+	})
+}
+
+func imageToolGenerateRequest(req tools.ImageGenerateRequest) *api.GenerateRequest {
+	return &api.GenerateRequest{
+		Model:     req.Model,
+		Prompt:    req.Prompt,
+		Stream:    ptr(true),
+		KeepAlive: &api.Duration{Duration: 0},
+		Width:     req.Width,
+		Height:    req.Height,
+		Steps:     req.Steps,
+	}
+}
+
+func toolAttachmentsFromResult(result any) ([]store.File, []responses.ChatEventAttachment) {
+	provider, ok := result.(tools.AttachmentProvider)
+	if !ok {
+		return nil, nil
+	}
+
+	attachments := provider.ToolAttachments()
+	if len(attachments) == 0 {
+		return nil, nil
+	}
+
+	storeAttachments := make([]store.File, 0, len(attachments))
+	eventAttachments := make([]responses.ChatEventAttachment, 0, len(attachments))
+	now := time.Now().UnixNano()
+	for i, attachment := range attachments {
+		if len(attachment.Data) == 0 || attachment.Filename == "" {
+			continue
+		}
+
+		mimeType := attachment.MimeType
+		if mimeType == "" {
+			mimeType = http.DetectContentType(attachment.Data)
+		}
+		kind := "file"
+		if strings.HasPrefix(mimeType, "image/") {
+			kind = "image"
+		}
+
+		storeAttachments = append(storeAttachments, store.File{
+			Filename: attachment.Filename,
+			Data:     attachment.Data,
+		})
+		eventAttachments = append(eventAttachments, responses.ChatEventAttachment{
+			ID:       fmt.Sprintf("tool-attachment-%d-%d", now, i),
+			Name:     attachment.Filename,
+			MimeType: mimeType,
+			Size:     len(attachment.Data),
+			Kind:     kind,
+			Data:     base64.StdEncoding.EncodeToString(attachment.Data),
+		})
+	}
+
+	return storeAttachments, eventAttachments
 }
 
 func (s *Server) buildGenerateRequest(chat *store.Chat, req responses.ChatRequest, think any) (*api.GenerateRequest, error) {
@@ -5616,6 +5885,7 @@ func createToolUseInstructionMessage(availableTools []map[string]any) (api.Messa
 
 	names := make([]string, 0, len(availableTools))
 	hasDesktopTools := false
+	hasImageGenerateTool := false
 	for _, toolSchema := range availableTools {
 		name := getStringFromMap(toolSchema, "name", "")
 		if name == "" {
@@ -5625,6 +5895,9 @@ func createToolUseInstructionMessage(availableTools []map[string]any) (api.Messa
 		if strings.HasPrefix(name, "desktop.") {
 			hasDesktopTools = true
 		}
+		if name == "image.generate" {
+			hasImageGenerateTool = true
+		}
 	}
 	if len(names) == 0 {
 		return api.Message{}, false
@@ -5633,6 +5906,9 @@ func createToolUseInstructionMessage(availableTools []map[string]any) (api.Messa
 	content := "Tool access is available for this request. Use the available tools when the user asks for information that requires them, instead of saying you cannot access it."
 	if hasDesktopTools {
 		content += " For local file or folder questions, call desktop.list_files, desktop.read_text_file, or desktop.search_files with paths relative to the configured working directory. If a desktop tool reports a scope or permission error, explain that result."
+	}
+	if hasImageGenerateTool {
+		content += " For image creation requests, call image.generate with a detailed prompt instead of saying this model cannot generate images. The generated image will be attached to the chat."
 	}
 	content += " Available tools: " + strings.Join(names, ", ") + "."
 

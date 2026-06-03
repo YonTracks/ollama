@@ -3,6 +3,7 @@
 import {
   Check,
   Edit3,
+  Loader2,
   MessageSquare,
   PanelLeftClose,
   Plus,
@@ -23,6 +24,7 @@ interface SidebarProps {
   error: string | null;
   open: boolean;
   allowMobileOpen: boolean;
+  streamingChatIds?: string[];
   onToggle(open: boolean): void;
   onNewChat(): void;
   onSelectChat(chatId: string): void;
@@ -38,6 +40,7 @@ export function Sidebar({
   error,
   open,
   allowMobileOpen,
+  streamingChatIds = [],
   onToggle,
   onNewChat,
   onSelectChat,
@@ -51,6 +54,10 @@ export function Sidebar({
   const inputRef = useRef<HTMLInputElement>(null);
   const pointerSelectingChatRef = useRef(false);
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const streamingChatIdSet = useMemo(
+    () => new Set(streamingChatIds),
+    [streamingChatIds]
+  );
 
   const filteredChats = useMemo(() => {
     if (!normalizedSearchQuery) return chats;
@@ -190,6 +197,7 @@ export function Sidebar({
                 {group.chats.map((chat) => {
                   const active = chat.id === activeChatId;
                   const editing = chat.id === editingChatId;
+                  const streaming = streamingChatIdSet.has(chat.id);
 
                   return (
                     <div
@@ -244,13 +252,19 @@ export function Sidebar({
                             className="min-w-0 flex-1 rounded-md px-2 py-2 text-left transition hover:bg-muted focus:focus-ring"
                           >
                             <div className="flex min-w-0 items-center gap-2">
-                              <MessageSquare className="h-4 w-4 flex-none text-muted-foreground" />
+                              {streaming ? (
+                                <Loader2 className="h-4 w-4 flex-none animate-spin text-accent" />
+                              ) : (
+                                <MessageSquare className="h-4 w-4 flex-none text-muted-foreground" />
+                              )}
                               <span className="truncate text-sm font-medium">
                                 {chat.title || "Untitled chat"}
                               </span>
                             </div>
                             <div className="mt-1 truncate pl-6 text-xs text-muted-foreground">
-                              {chat.userExcerpt || formatRelativeTime(chat.updatedAt)}
+                              {streaming
+                                ? "Generating..."
+                                : chat.userExcerpt || formatRelativeTime(chat.updatedAt)}
                             </div>
                           </button>
                           <div className="flex flex-none opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">

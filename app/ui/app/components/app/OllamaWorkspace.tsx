@@ -240,7 +240,23 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
     [showToast, updateSettings]
   );
 
+  const handleNewChat = useCallback(() => {
+    chatSession.detachNewChatStream();
+    setActiveChatId(null);
+  }, [chatSession]);
+
   const handleDeleteChat = async (chatId: string) => {
+    if (chatSession.streamingChatIds.includes(chatId)) {
+      showToast({
+        id: "chat-delete-streaming",
+        title: "Chat is still generating",
+        description: "Stop the background request before deleting this conversation.",
+        tone: "warning",
+        duration: 4200
+      });
+      return;
+    }
+
     try {
       await chatList.remove(chatId);
       if (activeChatId === chatId) {
@@ -352,9 +368,10 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
           loading={chatList.loading}
           error={chatList.error}
           open={settings.sidebarOpen}
+          streamingChatIds={chatSession.streamingChatIds}
           allowMobileOpen={allowMobileSidebarOpen}
           onToggle={handleToggleSidebar}
-          onNewChat={() => setActiveChatId(null)}
+          onNewChat={handleNewChat}
           onSelectChat={setActiveChatId}
           onRenameChat={handleRenameChat}
           onDeleteChat={handleDeleteChat}

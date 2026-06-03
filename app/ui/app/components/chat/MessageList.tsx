@@ -236,24 +236,25 @@ export function MessageList({
     <>
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-4 px-4 py-6 sm:px-6">
         {messages.map((message) => {
+          const isImageGenerateTool = message.toolName === "image.generate";
           const hasGeneratedImage =
-            message.role === "assistant" &&
+            (message.role === "assistant" || isImageGenerateTool) &&
             Boolean(
               message.attachments?.some(
                 (attachment) => attachment.kind === "image" && attachment.data
               )
             );
           const imageGenerating =
-            message.role === "assistant" &&
             (message.status === "sending" || message.status === "streaming") &&
-            isImageGenerationModel(message.model) &&
+            ((message.role === "assistant" && isImageGenerationModel(message.model)) ||
+              (message.role === "tool" && isImageGenerateTool)) &&
             !hasGeneratedImage;
           const modelLoading =
             message.role === "assistant" &&
             message.status === "sending" &&
             !imageGenerating;
           const generatedImages =
-            message.role === "assistant" &&
+            (message.role === "assistant" || isImageGenerateTool) &&
             message.attachments?.some((attachment) => attachment.kind === "image");
 
           return (

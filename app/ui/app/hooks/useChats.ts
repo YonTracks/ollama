@@ -59,6 +59,46 @@ interface SendOptions {
   replaceFromIndex?: number;
 }
 
+interface ActiveChatStream {
+  id: string;
+  chatId: string | null;
+  messages: ChatMessage[];
+  modelLoading: boolean;
+  modelLoadingName: string | null;
+  error: string | null;
+  download: DownloadEvent | null;
+}
+
+type ActiveChatStreams = Record<string, ActiveChatStream>;
+
+// Streams keep their own transient messages so switching chats cannot redirect
+// async deltas into whichever conversation is currently visible.
+function selectedStream(
+  streams: ActiveChatStreams,
+  chatId: string | null,
+  activeNewStreamId: string | null
+) {
+  if (chatId) {
+    return Object.values(streams).find((stream) => stream.chatId === chatId) ?? null;
+  }
+
+  return activeNewStreamId ? streams[activeNewStreamId] ?? null : null;
+}
+
+function streamMatchesSelection(
+  stream: ActiveChatStream,
+  chatId: string | null,
+  activeNewStreamId: string | null
+) {
+  return chatId ? stream.chatId === chatId : stream.id === activeNewStreamId;
+}
+
+function streamingChatIds(streams: ActiveChatStreams) {
+  return Object.values(streams)
+    .map((stream) => stream.chatId)
+    .filter((chatId): chatId is string => Boolean(chatId));
+}
+
 function appendAssistantDelta(
   messages: ChatMessage[],
   event: ChatTextEvent
@@ -97,7 +137,8 @@ function appendAssistantDelta(
 
 function applyToolEvent(messages: ChatMessage[], event: ChatTextEvent) {
   const toolName = event.toolName ?? "Tool";
-  const content = event.content || `${toolName} finished`;
+  const content =
+    event.content ?? (event.eventName === "tool" ? "" : `${toolName} finished`);
 
   if (event.eventName === "tool_result") {
     const pendingIndex = [...messages]
@@ -117,6 +158,7 @@ function applyToolEvent(messages: ChatMessage[], event: ChatTextEvent) {
               ...message,
               content,
               toolName,
+              attachments: mergeAttachments(message.attachments, event.attachments),
               status: "complete" as const
             }
           : message
@@ -130,6 +172,7 @@ function applyToolEvent(messages: ChatMessage[], event: ChatTextEvent) {
       id: createClientId("tool"),
       role: "tool" as const,
       content,
+      attachments: event.attachments,
       toolName,
       status: event.eventName === "tool" ? "streaming" as const : "complete" as const
     }
@@ -532,18 +575,106 @@ export function useChatSession({
 }: UseChatOptions) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
-  const [streaming, setStreaming] = useState(false);
-  const [modelLoading, setModelLoading] = useState(false);
-  const [modelLoadingName, setModelLoadingName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [download, setDownload] = useState<DownloadEvent | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
+  const [activeStreams, setActiveStreams] = useState<ActiveChatStreams>({});
+  const [activeNewStreamId, setActiveNewStreamId] = useState<string | null>(null);
+  const activeStreamsRef = useRef<ActiveChatStreams>({});
+  const activeNewStreamIdRef = useRef<string | null>(null);
+  const abortRefs = useRef<Record<string, AbortController>>({});
+  const chatIdRef = useRef<string | null>(chatId);
   const chatRef = useRef<Chat | null>(null);
-  const optimisticChatIdRef = useRef<string | null>(null);
+  const activeStream = useMemo(
+    () => selectedStream(activeStreams, chatId, activeNewStreamId),
+    [activeNewStreamId, activeStreams, chatId]
+  );
+  const visibleMessages = activeStream?.messages ?? messages;
+  const streaming = Boolean(activeStream);
+  const modelLoading = activeStream?.modelLoading ?? false;
+  const modelLoadingName = activeStream?.modelLoadingName ?? null;
+  const download = activeStream?.download ?? null;
+  const currentError = activeStream?.error ?? error;
+  const streamingIds = useMemo(() => streamingChatIds(activeStreams), [activeStreams]);
+
+  // Async stream callbacks need the latest selection, not the chatId captured
+  // when a request started.
+  useEffect(() => {
+    chatIdRef.current = chatId;
+    if (chatId && activeNewStreamIdRef.current) {
+      activeNewStreamIdRef.current = null;
+      setActiveNewStreamId(null);
+    }
+  }, [chatId]);
+
+  useEffect(() => {
+    activeStreamsRef.current = activeStreams;
+  }, [activeStreams]);
+
+  useEffect(() => {
+    activeNewStreamIdRef.current = activeNewStreamId;
+  }, [activeNewStreamId]);
+
+  const addActiveStream = useCallback((stream: ActiveChatStream) => {
+    setActiveStreams((current) => {
+      const next = { ...current, [stream.id]: stream };
+      activeStreamsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const updateActiveStream = useCallback(
+    (streamId: string, updater: (stream: ActiveChatStream) => ActiveChatStream) => {
+      setActiveStreams((current) => {
+        const stream = current[streamId];
+        if (!stream) return current;
+        const next = { ...current, [streamId]: updater(stream) };
+        activeStreamsRef.current = next;
+        return next;
+      });
+    },
+    []
+  );
+
+  const finishActiveStream = useCallback((streamId: string, finalMessages: ChatMessage[]) => {
+    const stream = activeStreamsRef.current[streamId];
+    if (!stream) return;
+
+    if (
+      streamMatchesSelection(
+        stream,
+        chatIdRef.current,
+        activeNewStreamIdRef.current
+      )
+    ) {
+      setMessages(finalMessages);
+    }
+
+    setActiveStreams((current) => {
+      if (!current[streamId]) return current;
+      const next = { ...current };
+      delete next[streamId];
+      activeStreamsRef.current = next;
+      return next;
+    });
+
+    delete abortRefs.current[streamId];
+    if (activeNewStreamIdRef.current === streamId) {
+      activeNewStreamIdRef.current = null;
+      setActiveNewStreamId(null);
+    }
+  }, []);
 
   const loadChat = useCallback(
     async (signal?: AbortSignal) => {
-      if (streaming && chatId && chatId === optimisticChatIdRef.current) {
+      // The stream map is the source of truth while that chat is in flight;
+      // loading persisted history here would hide the live placeholder/result.
+      if (
+        selectedStream(
+          activeStreamsRef.current,
+          chatId,
+          activeNewStreamIdRef.current
+        )
+      ) {
+        setLoading(false);
         return;
       }
 
@@ -570,7 +701,7 @@ export function useChatSession({
         setLoading(false);
       }
     },
-    [chatId, enabled, mode, streaming]
+    [chatId, enabled, mode]
   );
 
   useEffect(() => {
@@ -580,21 +711,29 @@ export function useChatSession({
   }, [loadChat]);
 
   const stop = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setStreaming(false);
-    setModelLoading(false);
-    setModelLoadingName(null);
-    setMessages((current) => {
-      const next = completeActiveMessages(current);
-      if (mode === "standalone" && chatRef.current) {
-        const nextChat = completeChat(chatRef.current, next);
-        chatRef.current = nextChat;
-        void saveStandaloneChat(nextChat);
-      }
-      return next;
-    });
-  }, [mode]);
+    const stream = selectedStream(
+      activeStreamsRef.current,
+      chatIdRef.current,
+      activeNewStreamIdRef.current
+    );
+    if (!stream) return;
+
+    abortRefs.current[stream.id]?.abort();
+    const nextMessages = completeActiveMessages(stream.messages);
+
+    if (mode === "standalone" && chatRef.current) {
+      const nextChat = completeChat(chatRef.current, nextMessages);
+      chatRef.current = nextChat;
+      void saveStandaloneChat(nextChat);
+    }
+
+    finishActiveStream(stream.id, nextMessages);
+  }, [finishActiveStream, mode]);
+
+  const detachNewChatStream = useCallback(() => {
+    activeNewStreamIdRef.current = null;
+    setActiveNewStreamId(null);
+  }, []);
 
   const send = useCallback(
     async (
@@ -603,18 +742,27 @@ export function useChatSession({
       options: SendOptions = {}
     ) => {
       const trimmed = prompt.trim();
-      if ((!trimmed && attachments.length === 0) || !selectedModel || streaming) return;
+      const ownedStream = selectedStream(
+        activeStreamsRef.current,
+        chatIdRef.current,
+        activeNewStreamIdRef.current
+      );
+      if ((!trimmed && attachments.length === 0) || !selectedModel || ownedStream) return;
+
       const replaceFromIndex =
         typeof options.replaceFromIndex === "number" && options.replaceFromIndex >= 0
           ? options.replaceFromIndex
           : undefined;
       const baseMessages =
         replaceFromIndex === undefined ? messages : messages.slice(0, replaceFromIndex);
+      const streamId = createClientId("stream");
+      const controller = new AbortController();
+      abortRefs.current[streamId] = controller;
+      setError(null);
 
       if (mode === "standalone") {
         const now = new Date().toISOString();
         const targetChatId = chatId ?? createClientId("chat");
-        const controller = new AbortController();
         const userMessage: ChatMessage = {
           id: createClientId("user"),
           role: "user",
@@ -640,18 +788,48 @@ export function useChatSession({
           persistableMessages(workingMessages)
         );
 
-        abortRef.current = controller;
-        setError(null);
-        setDownload(null);
-        setModelLoading(true);
-        setModelLoadingName(selectedModel);
-        setStreaming(true);
-        setMessages(workingMessages);
-        chatRef.current = currentChat;
+        if (!chatId) {
+          activeNewStreamIdRef.current = streamId;
+          setActiveNewStreamId(streamId);
+        }
+
+        const initialStream: ActiveChatStream = {
+          id: streamId,
+          chatId: targetChatId,
+          messages: workingMessages,
+          modelLoading: true,
+          modelLoadingName: selectedModel,
+          error: null,
+          download: null
+        };
+        addActiveStream(initialStream);
+
+        const syncActiveChatRef = (chat: Chat) => {
+          const stream = activeStreamsRef.current[streamId] ?? initialStream;
+          if (
+            streamMatchesSelection(
+              stream,
+              chatIdRef.current,
+              activeNewStreamIdRef.current
+            )
+          ) {
+            chatRef.current = chat;
+          }
+        };
+        syncActiveChatRef(currentChat);
 
         try {
           await saveStandaloneChat(currentChat);
-          if (!chatId) onChatCreated(targetChatId);
+          if (
+            !chatId &&
+            streamMatchesSelection(
+              initialStream,
+              chatIdRef.current,
+              activeNewStreamIdRef.current
+            )
+          ) {
+            onChatCreated(targetChatId);
+          }
           onRefreshNeeded();
 
           const webSearch = await resolveWebSearchContext(
@@ -661,7 +839,10 @@ export function useChatSession({
             controller.signal
           );
           workingMessages = attachWebSearchToLastAssistant(workingMessages, webSearch);
-          setMessages(workingMessages);
+          updateActiveStream(streamId, (stream) => ({
+            ...stream,
+            messages: workingMessages
+          }));
           const contextSettings = toContextSettings(settings, webSearch?.context ?? "");
 
           for await (const event of sendStandaloneChat(
@@ -677,17 +858,20 @@ export function useChatSession({
           )) {
             if (event.eventName === "error") {
               const contextError = contextErrorMessage(event.error, settings);
-              setModelLoading(false);
-              setModelLoadingName(null);
-              setError(contextError.message);
               workingMessages = appendAssistantError(
                 workingMessages,
                 contextError.message,
                 contextError.warnings
               );
               const nextChat = completeChat(currentChat, workingMessages);
-              chatRef.current = nextChat;
-              setMessages(workingMessages);
+              syncActiveChatRef(nextChat);
+              updateActiveStream(streamId, (stream) => ({
+                ...stream,
+                messages: workingMessages,
+                modelLoading: false,
+                modelLoadingName: null,
+                error: contextError.message
+              }));
               await saveStandaloneChat(nextChat);
               continue;
             }
@@ -697,22 +881,23 @@ export function useChatSession({
               event.eventName === "thinking" ||
               event.eventName === "assistant_with_tools"
             ) {
-              setModelLoading(false);
-              setModelLoadingName(null);
               workingMessages = appendAssistantDelta(workingMessages, event);
               const nextChat = completeChat(
                 currentChat,
                 persistableMessages(workingMessages)
               );
-              chatRef.current = nextChat;
-              setMessages(workingMessages);
+              syncActiveChatRef(nextChat);
+              updateActiveStream(streamId, (stream) => ({
+                ...stream,
+                messages: workingMessages,
+                modelLoading: false,
+                modelLoadingName: null
+              }));
               await saveStandaloneChat(nextChat);
               continue;
             }
 
             if (event.eventName === "done") {
-              setModelLoading(false);
-              setModelLoadingName(null);
               workingMessages = completeActiveMessages(
                 workingMessages,
                 event.stats,
@@ -720,8 +905,13 @@ export function useChatSession({
                 event.contextWarnings
               );
               const nextChat = completeChat(currentChat, workingMessages);
-              chatRef.current = nextChat;
-              setMessages(workingMessages);
+              syncActiveChatRef(nextChat);
+              updateActiveStream(streamId, (stream) => ({
+                ...stream,
+                messages: workingMessages,
+                modelLoading: false,
+                modelLoadingName: null
+              }));
               await saveStandaloneChat(nextChat);
             }
           }
@@ -736,33 +926,31 @@ export function useChatSession({
             contextError.message,
             contextError.warnings
           );
-          setError(contextError.message);
-          setMessages(workingMessages);
           const nextChat = completeChat(currentChat, workingMessages);
-          chatRef.current = nextChat;
+          syncActiveChatRef(nextChat);
+          updateActiveStream(streamId, (stream) => ({
+            ...stream,
+            messages: workingMessages,
+            modelLoading: false,
+            modelLoadingName: null,
+            error: contextError.message
+          }));
           await saveStandaloneChat(nextChat);
           onRefreshNeeded();
         } finally {
-          abortRef.current = null;
-          setModelLoading(false);
-          setModelLoadingName(null);
-          setStreaming(false);
+          finishActiveStream(streamId, workingMessages);
         }
         return;
       }
 
       const targetChatId = chatId ?? "new";
-      const controller = new AbortController();
-      optimisticChatIdRef.current = null;
-      abortRef.current = controller;
-      setError(null);
-      setDownload(null);
-      setModelLoading(true);
-      setModelLoadingName(selectedModel);
-      setStreaming(true);
+      if (!chatId) {
+        activeNewStreamIdRef.current = streamId;
+        setActiveNewStreamId(streamId);
+      }
 
-      setMessages((current) => [
-        ...(replaceFromIndex === undefined ? current : current.slice(0, replaceFromIndex)),
+      let workingMessages: ChatMessage[] = [
+        ...baseMessages,
         {
           id: createClientId("user"),
           role: "user",
@@ -771,7 +959,17 @@ export function useChatSession({
           status: "complete"
         },
         createPendingAssistantMessage(selectedModel)
-      ]);
+      ];
+
+      addActiveStream({
+        id: streamId,
+        chatId,
+        messages: workingMessages,
+        modelLoading: true,
+        modelLoadingName: selectedModel,
+        error: null,
+        download: null
+      });
 
       try {
         const webSearch = await resolveWebSearchContext(
@@ -780,7 +978,11 @@ export function useChatSession({
           baseMessages,
           controller.signal
         );
-        setMessages((current) => attachWebSearchToLastAssistant(current, webSearch));
+        workingMessages = attachWebSearchToLastAssistant(workingMessages, webSearch);
+        updateActiveStream(streamId, (stream) => ({
+          ...stream,
+          messages: workingMessages
+        }));
         const contextSettings = toContextSettings(settings, webSearch?.context ?? "");
         const request: ChatRequest = {
           model: selectedModel,
@@ -816,24 +1018,53 @@ export function useChatSession({
 
         for await (const event of sendChat(targetChatId, request, controller.signal)) {
           if (event.eventName === "chat_created" && event.chatId) {
-            optimisticChatIdRef.current = event.chatId;
-            onChatCreated(event.chatId);
+            // Brand-new chats only steal focus if the user is still looking at
+            // the same new-chat stream that created them.
+            const shouldSelectCreatedChat =
+              !chatId &&
+              streamMatchesSelection(
+                activeStreamsRef.current[streamId] ?? {
+                  id: streamId,
+                  chatId: null,
+                  messages: workingMessages,
+                  modelLoading: false,
+                  modelLoadingName: null,
+                  error: null,
+                  download: null
+                },
+                chatIdRef.current,
+                activeNewStreamIdRef.current
+              );
+            updateActiveStream(streamId, (stream) => ({
+              ...stream,
+              chatId: event.chatId ?? stream.chatId
+            }));
+            if (shouldSelectCreatedChat) onChatCreated(event.chatId);
             onRefreshNeeded();
           }
 
           if (event.eventName === "download") {
-            setDownload(event);
+            updateActiveStream(streamId, (stream) => ({
+              ...stream,
+              download: event
+            }));
             continue;
           }
 
           if (event.eventName === "error") {
             const contextError = contextErrorMessage(event.error, settings);
-            setModelLoading(false);
-            setModelLoadingName(null);
-            setError(contextError.message);
-            setMessages((current) =>
-              appendAssistantError(current, contextError.message, contextError.warnings)
+            workingMessages = appendAssistantError(
+              workingMessages,
+              contextError.message,
+              contextError.warnings
             );
+            updateActiveStream(streamId, (stream) => ({
+              ...stream,
+              messages: workingMessages,
+              modelLoading: false,
+              modelLoadingName: null,
+              error: contextError.message
+            }));
             continue;
           }
 
@@ -842,30 +1073,40 @@ export function useChatSession({
             event.eventName === "thinking" ||
             event.eventName === "assistant_with_tools"
           ) {
-            setModelLoading(false);
-            setModelLoadingName(null);
-            setMessages((current) => appendAssistantDelta(current, event));
+            workingMessages = appendAssistantDelta(workingMessages, event);
+            updateActiveStream(streamId, (stream) => ({
+              ...stream,
+              messages: workingMessages,
+              modelLoading: false,
+              modelLoadingName: null
+            }));
             continue;
           }
 
           if (event.eventName === "tool" || event.eventName === "tool_result") {
-            setModelLoading(false);
-            setModelLoadingName(null);
-            setMessages((current) => applyToolEvent(current, event));
+            workingMessages = applyToolEvent(workingMessages, event);
+            updateActiveStream(streamId, (stream) => ({
+              ...stream,
+              messages: workingMessages,
+              modelLoading: false,
+              modelLoadingName: null
+            }));
             continue;
           }
 
           if (event.eventName === "done") {
-            setModelLoading(false);
-            setModelLoadingName(null);
-            setMessages((current) =>
-              completeActiveMessages(
-                current,
-                event.stats,
-                event.contextNotice,
-                event.contextWarnings
-              )
+            workingMessages = completeActiveMessages(
+              workingMessages,
+              event.stats,
+              event.contextNotice,
+              event.contextWarnings
             );
+            updateActiveStream(streamId, (stream) => ({
+              ...stream,
+              messages: workingMessages,
+              modelLoading: false,
+              modelLoadingName: null
+            }));
           }
         }
 
@@ -874,60 +1115,64 @@ export function useChatSession({
         if (controller.signal.aborted) return;
         const rawMessage = sendError instanceof Error ? sendError.message : "Failed to send message";
         const contextError = contextErrorMessage(rawMessage, settings);
-        setError(contextError.message);
-        setModelLoading(false);
-        setModelLoadingName(null);
-        setMessages((current) =>
-          appendAssistantError(current, contextError.message, contextError.warnings)
+        workingMessages = appendAssistantError(
+          workingMessages,
+          contextError.message,
+          contextError.warnings
         );
+        updateActiveStream(streamId, (stream) => ({
+          ...stream,
+          messages: workingMessages,
+          modelLoading: false,
+          modelLoadingName: null,
+          error: contextError.message
+        }));
       } finally {
-        abortRef.current = null;
-        setModelLoading(false);
-        setModelLoadingName(null);
-        setStreaming(false);
-        optimisticChatIdRef.current = null;
+        finishActiveStream(streamId, workingMessages);
       }
     },
     [
+      addActiveStream,
       chatId,
       coreApiBase,
       coreApiToken,
+      finishActiveStream,
       messages,
       mode,
       onChatCreated,
       onRefreshNeeded,
       selectedModel,
       settings,
-      streaming
+      updateActiveStream
     ]
   );
 
   const retryFromMessage = useCallback(
     async (messageId: string) => {
       if (streaming) return false;
-      const messageIndex = messages.findIndex((message) => message.id === messageId);
+      const messageIndex = visibleMessages.findIndex((message) => message.id === messageId);
       if (messageIndex < 0) {
         throw new Error("Message was not found.");
       }
 
-      const userIndex = findPreviousUserIndex(messages, messageIndex);
+      const userIndex = findPreviousUserIndex(visibleMessages, messageIndex);
       if (userIndex < 0) {
         throw new Error("No user prompt was found to retry.");
       }
 
-      const userMessage = messages[userIndex];
+      const userMessage = visibleMessages[userIndex];
       await send(userMessage.content, userMessage.attachments ?? [], {
         replaceFromIndex: userIndex
       });
       return true;
     },
-    [messages, send, streaming]
+    [send, streaming, visibleMessages]
   );
 
   const deleteMessage = useCallback(
     async (messageId: string) => {
       if (streaming) return false;
-      const messageIndex = messages.findIndex((message) => message.id === messageId);
+      const messageIndex = visibleMessages.findIndex((message) => message.id === messageId);
       if (messageIndex < 0) {
         throw new Error("Message was not found.");
       }
@@ -946,7 +1191,7 @@ export function useChatSession({
       onRefreshNeeded();
       return true;
     },
-    [chatId, messages, mode, onRefreshNeeded, streaming]
+    [chatId, mode, onRefreshNeeded, streaming, visibleMessages]
   );
 
   const branchFromMessage = useCallback(
@@ -956,7 +1201,7 @@ export function useChatSession({
         throw new Error("Save the conversation before branching it.");
       }
 
-      const messageIndex = messages.findIndex((message) => message.id === messageId);
+      const messageIndex = visibleMessages.findIndex((message) => message.id === messageId);
       if (messageIndex < 0) {
         throw new Error("Message was not found.");
       }
@@ -969,31 +1214,33 @@ export function useChatSession({
       onRefreshNeeded();
       return response.chat.id;
     },
-    [chatId, messages, mode, onChatCreated, onRefreshNeeded, streaming]
+    [chatId, mode, onChatCreated, onRefreshNeeded, streaming, visibleMessages]
   );
 
   return useMemo(
     () => ({
-      messages,
+      messages: visibleMessages,
       loading,
       streaming,
       modelLoading,
       modelLoadingName,
-      error,
+      error: currentError,
       download,
+      streamingChatIds: streamingIds,
       reload: loadChat,
       send,
       retryFromMessage,
       deleteMessage,
       branchFromMessage,
-      stop
+      stop,
+      detachNewChatStream
     }),
     [
+      currentError,
+      detachNewChatStream,
       download,
-      error,
       loadChat,
       loading,
-      messages,
       modelLoading,
       modelLoadingName,
       send,
@@ -1001,7 +1248,9 @@ export function useChatSession({
       deleteMessage,
       branchFromMessage,
       stop,
-      streaming
+      streaming,
+      streamingIds,
+      visibleMessages
     ]
   );
 }

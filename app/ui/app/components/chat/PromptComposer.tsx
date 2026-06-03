@@ -24,7 +24,11 @@ import {
 import { IconButton } from "@/components/ui/IconButton";
 import { useToast } from "@/components/ui/ToastProvider";
 import { imageAttachmentDataUrl } from "@/lib/ollama/attachments";
-import { isImageGenerationModel } from "@/lib/ollama/models";
+import {
+  DEFAULT_IMAGE_GENERATION_STEPS,
+  imageGenerationDefaultSteps,
+  isImageGenerationModel
+} from "@/lib/ollama/models";
 import { cn, createClientId, formatBytes } from "@/lib/utils";
 import type { ChatAttachment } from "@/lib/ollama/types";
 import type { LocalSettings } from "@/types/app";
@@ -159,9 +163,11 @@ export function PromptComposer({
   const recognitionRef = useRef<AppSpeechRecognition | null>(null);
   const dictationBasePromptRef = useRef("");
   const finalTranscriptRef = useRef("");
+  const previousImageDefaultStepsRef = useRef<number | null>(null);
   const disabled = Boolean(disabledReason);
   const hasDraft = prompt.trim().length > 0 || attachments.length > 0;
   const imageGeneration = isImageGenerationModel(selectedModel);
+  const defaultStepsForSelectedModel = imageGenerationDefaultSteps(selectedModel);
   const selectedImageSizePreset =
     IMAGE_SIZE_PRESETS.find(
       (preset) =>
@@ -180,6 +186,36 @@ export function PromptComposer({
     setDictationSupported(Boolean(getSpeechRecognitionConstructor()));
     return () => recognitionRef.current?.abort();
   }, []);
+
+  useEffect(() => {
+    if (!imageGeneration) return;
+
+    const previousDefaultSteps = previousImageDefaultStepsRef.current;
+    previousImageDefaultStepsRef.current = defaultStepsForSelectedModel;
+
+    if (previousDefaultSteps === null) {
+      if (
+        settings.imageGenerationSteps !== DEFAULT_IMAGE_GENERATION_STEPS ||
+        defaultStepsForSelectedModel === DEFAULT_IMAGE_GENERATION_STEPS
+      ) {
+        return;
+      }
+      void onUpdateSettings({ imageGenerationSteps: defaultStepsForSelectedModel });
+      return;
+    }
+
+    if (
+      previousDefaultSteps !== defaultStepsForSelectedModel &&
+      settings.imageGenerationSteps === previousDefaultSteps
+    ) {
+      void onUpdateSettings({ imageGenerationSteps: defaultStepsForSelectedModel });
+    }
+  }, [
+    defaultStepsForSelectedModel,
+    imageGeneration,
+    onUpdateSettings,
+    settings.imageGenerationSteps
+  ]);
 
   const stopDictation = () => {
     recognitionRef.current?.stop();

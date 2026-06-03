@@ -87,7 +87,16 @@ func (s *Server) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo
 			if requireFull {
 				return nil, llm.ErrLoadRequiredFull
 			}
-			return nil, fmt.Errorf("model requires %s but only %s are available (after %s overhead)", format.HumanBytes2(s.vramSize), format.HumanBytes2(available), format.HumanBytes2(overhead))
+			if shouldAttemptImagegenLoadWithLowFreeMemory(gpus[0], requireFull, runtime.GOOS) {
+				slog.Warn("imagegen GPU memory snapshot is below model requirement; attempting load because Windows CUDA free memory can be stale after runner unload",
+					"model", s.modelName,
+					"required", format.HumanBytes2(s.vramSize),
+					"available", format.HumanBytes2(available),
+					"free", format.HumanBytes2(gpus[0].FreeMemory),
+					"overhead", format.HumanBytes2(overhead))
+			} else {
+				return nil, fmt.Errorf("model requires %s but only %s are available (after %s overhead)", format.HumanBytes2(s.vramSize), format.HumanBytes2(available), format.HumanBytes2(overhead))
+			}
 		}
 	}
 
@@ -152,6 +161,17 @@ func (s *Server) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo
 	}()
 
 	return nil, nil
+}
+
+func shouldAttemptImagegenLoadWithLowFreeMemory(gpu ml.DeviceInfo, requireFull bool, goos string) bool {
+	if requireFull {
+		return false
+	}
+
+	// The scheduler can carry a stale low CUDA free-memory snapshot on Windows
+	// after all runners have unloaded. When no eviction decision is being made,
+	// let the imagegen subprocess perform the real load-time check.
+	return goos == "windows" && strings.EqualFold(gpu.Library, "CUDA")
 }
 
 // Ping checks if the subprocess is healthy.
