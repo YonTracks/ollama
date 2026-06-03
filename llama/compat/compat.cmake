@@ -35,7 +35,16 @@ set(OLLAMA_LLAMA_CPP_COMPAT_PATCH_COMMAND
     ${CMAKE_COMMAND}
         -DPATCH_DIR=${_compat_dir}
         -P ${_compat_dir}/apply-patch.cmake
-    CACHE INTERNAL "llama.cpp compat patch command for FetchContent")
+    CACHE INTERNAL "llama.cpp compat patch command for source overrides")
+
+# Fetched sources are disposable build artifacts. Let the patch applier reset
+# them only when it detects stale edits from a previous llama.cpp pin.
+set(OLLAMA_LLAMA_CPP_COMPAT_FETCH_PATCH_COMMAND
+    ${CMAKE_COMMAND}
+        -DPATCH_DIR=${_compat_dir}
+        -DRESET_SOURCE=ON
+        -P ${_compat_dir}/apply-patch.cmake
+    CACHE INTERNAL "llama.cpp compat patch command for fetched sources")
 
 # Where the compat source files live, so the main CMakeLists can wire them
 # into the llama.cpp targets that need the hooks.

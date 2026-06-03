@@ -11,10 +11,14 @@ published models and newly created models use llama.cpp-compatible metadata and
 tensor layouts on disk, and this directory can be removed.
 
 The layer is applied automatically at build time via CMake `FetchContent`'s
-`PATCH_COMMAND` for normal fetched builds. If CMake is pointed at a source
-override through `FETCHCONTENT_SOURCE_DIR_LLAMA_CPP`, the same patch is applied
-during configure. If `OLLAMA_LLAMA_CPP_SOURCE` is set, the patch is
-intentionally skipped so a developer can iterate on a local llama.cpp tree.
+`PATCH_COMMAND` for normal fetched builds. Fetched llama.cpp sources are reset
+to the pinned checkout only when the patch applier detects a stale or partial
+patch state, so old build directories can recover from pin bumps without
+forcing every reconfigure to rebuild patched files. If CMake is pointed at a
+source override through `FETCHCONTENT_SOURCE_DIR_LLAMA_CPP`, the same patch is
+applied during configure without resetting that source. If
+`OLLAMA_LLAMA_CPP_SOURCE` is set, the patch is intentionally skipped so a
+developer can iterate on a local llama.cpp tree.
 
 ## Files
 

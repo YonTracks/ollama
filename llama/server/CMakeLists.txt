@@ -157,7 +157,7 @@ elseif(NOT DEFINED ENV{OLLAMA_LLAMA_CPP_SOURCE})
                 "${_llama_cpp_source_override}")
         endif()
     else()
-        set(_ollama_compat_patch_cmd PATCH_COMMAND ${OLLAMA_LLAMA_CPP_COMPAT_PATCH_COMMAND})
+        set(_ollama_compat_patch_cmd PATCH_COMMAND ${OLLAMA_LLAMA_CPP_COMPAT_FETCH_PATCH_COMMAND})
     endif()
 endif()
 

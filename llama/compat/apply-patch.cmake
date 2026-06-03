@@ -20,6 +20,53 @@ set(_git_apply_env GIT_CEILING_DIRECTORIES=${_git_ceiling})
 
 file(GLOB_RECURSE _patches "${PATCH_DIR}/*.patch")
 list(SORT _patches)
+
+# Fetched sources can keep old patch edits after a llama.cpp pin bump. Only
+# reset when a patch is neither already applied nor cleanly applicable, which
+# indicates a stale or partially patched checkout.
+if(RESET_SOURCE)
+    set(_reset_source OFF)
+    foreach(PATCH_FILE IN LISTS _patches)
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} -E env ${_git_apply_env}
+                ${GIT_EXECUTABLE} apply --reverse --check "${PATCH_FILE}"
+            RESULT_VARIABLE _reverse_check
+            OUTPUT_QUIET ERROR_QUIET
+        )
+        if(_reverse_check EQUAL 0)
+            continue()
+        endif()
+
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} -E env ${_git_apply_env}
+                ${GIT_EXECUTABLE} apply --check --whitespace=nowarn "${PATCH_FILE}"
+            RESULT_VARIABLE _forward_check
+            OUTPUT_QUIET ERROR_QUIET
+        )
+        if(_forward_check EQUAL 0)
+            continue()
+        endif()
+
+        set(_reset_source ON)
+        message(STATUS "llama/compat: stale patch state detected for ${PATCH_FILE}")
+        break()
+    endforeach()
+
+    if(_reset_source)
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} -E env ${_git_apply_env}
+                ${GIT_EXECUTABLE} reset --hard HEAD
+            RESULT_VARIABLE _reset_result
+            OUTPUT_QUIET
+        )
+        if(NOT _reset_result EQUAL 0)
+            message(FATAL_ERROR
+                "llama/compat: failed to reset fetched source before applying patches")
+        endif()
+        message(STATUS "llama/compat: reset fetched source before applying patches")
+    endif()
+endif()
+
 foreach(PATCH_FILE IN LISTS _patches)
     # If the patch can be REVERSED cleanly, it's already applied. Skip.
     execute_process(

@@ -10,8 +10,8 @@ import (
 
 const (
 	defaultImageGenerateModel  = "x/flux2-klein:latest"
-	defaultImageGenerateWidth  = 1024
-	defaultImageGenerateHeight = 1024
+	defaultImageGenerateWidth  = 512
+	defaultImageGenerateHeight = 512
 	defaultImageGenerateSteps  = 20
 	flux2KleinGenerateSteps    = 4
 )
@@ -74,7 +74,7 @@ func (t *ImageGenerateTool) Name() string {
 }
 
 func (t *ImageGenerateTool) Description() string {
-	return "Generate a single image using an allowed local image generation model and attach it to the chat."
+	return "Generate a single image using an allowed local image generation model and attach it to the chat. For ordinary requests, provide only prompt and omit optional model, width, height, and steps."
 }
 
 func (t *ImageGenerateTool) Prompt() string {
@@ -91,27 +91,27 @@ func (t *ImageGenerateTool) Schema() map[string]any {
 			},
 			"model": map[string]any{
 				"type":        "string",
-				"description": "Allowed local image generation model. Defaults to x/flux2-klein:latest.",
+				"description": "Optional allowed local image generation model. Omit unless the user asks for a specific image model. Defaults to x/flux2-klein:latest.",
 				"default":     defaultImageGenerateModel,
 			},
 			"width": map[string]any{
 				"type":        "integer",
-				"description": "Image width in pixels. Defaults to 1024.",
+				"description": "Optional image width in pixels. Omit unless the user asks for a specific size. Defaults to 512.",
 				"default":     defaultImageGenerateWidth,
 				"minimum":     64,
 				"maximum":     2048,
 			},
 			"height": map[string]any{
 				"type":        "integer",
-				"description": "Image height in pixels. Defaults to 1024.",
+				"description": "Optional image height in pixels. Omit unless the user asks for a specific size. Defaults to 512.",
 				"default":     defaultImageGenerateHeight,
 				"minimum":     64,
 				"maximum":     2048,
 			},
 			"steps": map[string]any{
 				"type":        "integer",
-				"description": "Diffusion steps. Defaults to 20.",
-				"default":     defaultImageGenerateSteps,
+				"description": "Optional diffusion steps. Omit unless the user asks for quality/speed tuning. Defaults to 4 for x/flux2-klein:latest.",
+				"default":     ImageGenerationDefaultSteps(defaultImageGenerateModel),
 				"minimum":     1,
 				"maximum":     100,
 			},

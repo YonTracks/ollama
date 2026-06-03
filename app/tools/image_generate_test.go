@@ -47,6 +47,28 @@ func TestImageGenerateToolDefaultsAndAttachment(t *testing.T) {
 	}
 }
 
+func TestImageGenerateToolSchemaAdvertisesSafeDefaults(t *testing.T) {
+	tool := NewImageGenerateTool(nil)
+	schema := tool.Schema()
+	properties := schema["properties"].(map[string]any)
+
+	width := properties["width"].(map[string]any)
+	height := properties["height"].(map[string]any)
+	steps := properties["steps"].(map[string]any)
+
+	if width["default"] != defaultImageGenerateWidth || height["default"] != defaultImageGenerateHeight {
+		t.Fatalf("schema dimensions = %v x %v, want %d x %d", width["default"], height["default"], defaultImageGenerateWidth, defaultImageGenerateHeight)
+	}
+	if steps["default"] != ImageGenerationDefaultSteps(defaultImageGenerateModel) {
+		t.Fatalf("schema steps = %v, want %d", steps["default"], ImageGenerationDefaultSteps(defaultImageGenerateModel))
+	}
+	for _, property := range []map[string]any{width, height, steps} {
+		if !strings.Contains(strings.ToLower(property["description"].(string)), "omit") {
+			t.Fatalf("schema description should tell models to omit optional params: %q", property["description"])
+		}
+	}
+}
+
 func TestImageGenerateToolUsesGenericDefaultStepsForNonKleinImageModels(t *testing.T) {
 	var gotReq ImageGenerateRequest
 	tool := NewImageGenerateTool(func(_ context.Context, req ImageGenerateRequest) (*GeneratedImage, error) {
