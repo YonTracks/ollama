@@ -146,15 +146,10 @@ func main() {
 	// Do this after logging is set up so we can debug issues
 	if runtime.GOOS == "windows" && urlSchemeRequest != "" {
 		slog.Debug("checking for existing instance", "url", urlSchemeRequest)
-		if checkAndHandleExistingInstance(urlSchemeRequest) {
-			// The function will exit if it successfully sends to another instance
-			// If we reach here, we're the first/only instance
-		} else {
-			// No existing instance found, handle the URL scheme in this instance
-			go func() {
-				handleURLSchemeInCurrentInstance(urlSchemeRequest)
-			}()
-		}
+		// This exits if an existing instance receives the URL. If no existing
+		// instance is found, continue the normal startup path and handle the URL
+		// after the desktop and managed Ollama servers are initialized.
+		checkAndHandleExistingInstance(urlSchemeRequest)
 	}
 
 	// Detect if this is a first start after an upgrade, in
@@ -246,10 +241,7 @@ func main() {
 	wv.Store = st
 	done := make(chan error, 1)
 	osrv := server.New(st, devMode)
-	go func() {
-		slog.Info("starting ollama server")
-		done <- osrv.Run(octx)
-	}()
+	startOllamaServer(done, osrv, octx)
 
 	upd := &updater.Updater{Store: st}
 
@@ -259,9 +251,7 @@ func main() {
 			ocancel()
 			<-done
 			octx, ocancel = context.WithCancel(ctx)
-			go func() {
-				done <- osrv.Run(octx)
-			}()
+			startOllamaServer(done, osrv, octx)
 		},
 		Store:        st,
 		ToolRegistry: toolRegistry,
@@ -354,6 +344,17 @@ func main() {
 	slog.Info("shutting down ollama server")
 	cancel()
 	<-done
+}
+
+func startOllamaServer(done chan<- error, osrv *server.Server, ctx context.Context) {
+	go func() {
+		slog.Info("starting ollama server")
+		err := osrv.Run(ctx)
+		if err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("ollama server stopped", "error", err)
+		}
+		done <- err
+	}()
 }
 
 func startHiddenTasks() {
