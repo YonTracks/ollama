@@ -9,6 +9,7 @@
     "build": "node scripts/build-static.mjs",
     "build:standalone": "node scripts/build-standalone.mjs",
     "start": "node scripts/serve-dist.mjs",
+    "start:standalone": "node scripts/serve-dist-standalone.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

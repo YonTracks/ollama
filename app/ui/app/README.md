@@ -55,6 +55,7 @@ Then run:
 
 - `npm run dev:standalone` starts Next.js on `http://localhost:5173` with the UI pointed at `http://127.0.0.1:11434`.
 - `npm run build:standalone` exports a standalone static build.
+- `npm run start:standalone` serves the exported standalone build on `http://localhost:5173` and proxies same-origin `/api/*` requests to `http://127.0.0.1:11434`.
 - `NEXT_PUBLIC_OLLAMA_CORE_API_BASE` can point standalone mode at another local Ollama server.
 - The desktop taskbar app always runs in desktop mode. It does not switch into standalone browser storage.
 
@@ -140,13 +141,15 @@ npm run build
 npm run build:standalone
 ```
 
-Use `npm run start` after a build when you want a local production smoke test of
-the exported `dist/` folder.
+Use `npm run start` after a desktop-mode build when you want a local production
+smoke test of the exported `dist/` folder. Use `npm run start:standalone` after
+`npm run build:standalone` for standalone PWA offline testing.
 
 ## PWA
 
 - `public/manifest.webmanifest` defines the installable app metadata.
 - `public/sw.js` pre-caches the static app shell routes and same-origin static assets.
+- `npm run build` and `npm run build:standalone` inject the exported Next.js chunk and route-data manifest into `dist/sw.js`; offline PWA testing should use a production export, not `npm run dev:standalone`.
 - Navigation responses are cached by request URL only when they have no query string, so exported routes such as `/`, `/admin/`, `/settings/`, and `/offline/` keep distinct offline shells without storing token-bearing URLs.
 - When the browser reports no internet connection, the UI still probes the local Ollama API. If the local API is reachable, chat remains enabled in local-only mode.
 - Ollama API routes under `/api/` are intentionally excluded from service-worker caching.

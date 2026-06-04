@@ -147,9 +147,7 @@ func handleURLSchemeRequest(urlScheme string) {
 	if isConnect {
 		handleConnectURLScheme()
 	} else {
-		if wv.webview != nil {
-			showWindow(wv.webview.Window())
-		}
+		app.UIShow()
 	}
 }
 

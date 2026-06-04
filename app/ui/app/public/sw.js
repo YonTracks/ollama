@@ -1,8 +1,9 @@
-const CACHE_VERSION = "ollama-app-shell-v8";
+const CACHE_VERSION = "ollama-app-shell-v10";
 const STATIC_CACHE = `${CACHE_VERSION}:static`;
 const APP_SHELL = [
   "/",
   "/admin/",
+  "/settings/",
   "/offline/",
   "/manifest.webmanifest",
   "/favicon.svg",
@@ -10,6 +11,7 @@ const APP_SHELL = [
   "/icons/ollama-icon-512.png",
   "/apple-touch-icon.png"
 ];
+const PRECACHE_ASSETS = [];
 
 const RUNTIME_CACHE_EXCLUDED_PATHS = [
   "/api",
@@ -51,6 +53,7 @@ function isStaticAsset(url) {
     url.origin === self.location.origin &&
     (url.pathname.startsWith("/_next/static/") ||
       url.pathname.startsWith("/icons/") ||
+      url.pathname.endsWith(".txt") ||
       url.pathname === "/manifest.webmanifest" ||
       url.pathname === "/favicon.svg" ||
       url.pathname === "/favicon.ico")
@@ -71,7 +74,7 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(STATIC_CACHE)
-      .then((cache) => cache.addAll(APP_SHELL))
+      .then((cache) => cache.addAll([...new Set([...APP_SHELL, ...PRECACHE_ASSETS])]))
       .then(() => self.skipWaiting())
   );
 });

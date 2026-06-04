@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const distDir = join(root, "dist");
 const resolvedDistDir = resolve(distDir);
+const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 3000);
 const apiBase = (process.env.OLLAMA_APP_API_BASE || "http://127.0.0.1:3001").replace(/\/$/, "");
 const apiBaseUrl = new URL(apiBase);
@@ -20,6 +21,7 @@ const contentTypes = new Map([
   [".json", "application/json; charset=utf-8"],
   [".png", "image/png"],
   [".svg", "image/svg+xml"],
+  [".txt", "text/plain; charset=utf-8"],
   [".webmanifest", "application/manifest+json; charset=utf-8"]
 ]);
 
@@ -137,7 +139,7 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(port, "127.0.0.1", () => {
-  console.log(`Serving dist/ at http://127.0.0.1:${port}`);
+server.listen(port, host, () => {
+  console.log(`Serving dist/ at http://${host}:${port}`);
   console.log(`Proxying /api/* to ${apiBase}`);
 });

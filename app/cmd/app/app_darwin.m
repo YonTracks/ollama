@@ -31,6 +31,7 @@ bool firstTimeRun,startHidden; // Set in run before initialization
                 handleConnectURL();
             } else {
                 // Set app to be active and visible
+                ShowUI();
                 [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
                 [NSApp activateIgnoringOtherApps:YES];
             }

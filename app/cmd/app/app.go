@@ -408,13 +408,21 @@ func startHiddenTasks() {
 	}
 }
 
-func checkUserLoggedIn(uiServerPort int) bool {
-	if uiServerPort == 0 {
-		slog.Debug("UI server not ready yet, skipping auth check")
+func checkUserLoggedIn(uiServerPort int, token string) bool {
+	if uiServerPort == 0 || token == "" {
+		slog.Debug("UI server or desktop token not ready yet, skipping auth check")
 		return false
 	}
 
-	resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/api/me", uiServerPort), "application/json", nil)
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/api/v1/user", uiServerPort), nil)
+	if err != nil {
+		slog.Debug("failed to create local auth request", "error", err)
+		return false
+	}
+	req.AddCookie(&http.Cookie{Name: "token", Value: token})
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		slog.Debug("failed to call local auth endpoint", "error", err)
 		return false
@@ -427,31 +435,35 @@ func checkUserLoggedIn(uiServerPort int) bool {
 		return false
 	}
 
-	var user struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
+	var payload struct {
+		User *struct {
+			ID    string `json:"id"`
+			Email string `json:"email"`
+			Name  string `json:"name"`
+		} `json:"user"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		slog.Debug("failed to parse user response", "error", err)
 		return false
 	}
 
-	// Verify we have a valid user with an ID and name
-	if user.ID == "" || user.Name == "" {
-		slog.Debug("user response missing required fields", "id", user.ID, "name", user.Name)
+	if payload.User == nil || (payload.User.ID == "" && payload.User.Email == "" && payload.User.Name == "") {
+		slog.Debug("user response missing required fields")
 		return false
 	}
 
-	slog.Debug("user is logged in", "user_id", user.ID, "user_name", user.Name)
+	slog.Debug("user is logged in", "user_id", payload.User.ID, "user_name", payload.User.Name)
 	return true
 }
 
 // handleConnectURLScheme fetches the connect URL and opens it in the browser
 func handleConnectURLScheme() {
-	if checkUserLoggedIn(uiServerPort) {
+	if checkUserLoggedIn(uiServerPort, wv.token) {
 		slog.Info("user is already logged in, opening app instead")
-		showWindow(wv.webview.Window())
+		if wv.webview != nil {
+			showWindow(wv.webview.Window())
+		}
 		return
 	}
 

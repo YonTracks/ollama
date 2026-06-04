@@ -346,6 +346,9 @@ export function OllamaWorkspace({ initialSettingsOpen = false }: OllamaWorkspace
   const openAdmin = () => {
     setSettingsOpen(false);
     setAdminOpen(true);
+    if (!window.location.pathname.startsWith("/admin")) {
+      window.history.pushState({}, "", "/admin");
+    }
   };
 
   const closeAdmin = () => {

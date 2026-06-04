@@ -120,7 +120,7 @@ Use a custom server-side endpoint when you already have a search service.
 
 ```shell
 SEARCH_PROVIDER=custom
-CUSTOM_SEARCH_ENDPOINT=http://localhost:9000/search
+CUSTOM_SEARCH_ENDPOINT=https://search.example.com/search
 ```
 
 The app sends the query as `q=<query>` and accepts either:
@@ -137,7 +137,17 @@ or:
 
 Each result is normalized as best as possible from fields like `title`, `name`, `url`, `link`, `content`, `snippet`, `description`, `source`, `engine`, and `score`.
 
-Custom endpoints must use `http` or `https`. Returned result URLs using other schemes are ignored before they are shown, stored, or injected into chat context.
+Custom endpoints must use `http` or `https`. Public hosts are allowed by default. Localhost, private-network, link-local, multicast, and single-label hosts are blocked unless you also set `CUSTOM_SEARCH_ALLOW_LOCAL=true` for a trusted local adapter that you control.
+
+For example, a local adapter needs the explicit local opt-in:
+
+```shell
+SEARCH_PROVIDER=custom
+CUSTOM_SEARCH_ENDPOINT=http://localhost:9000/search
+CUSTOM_SEARCH_ALLOW_LOCAL=true
+```
+
+Returned result URLs using schemes other than `http` or `https` are ignored before they are shown, stored, or injected into chat context.
 
 ## Why SearXNG Is Not The Main Windows Path
 

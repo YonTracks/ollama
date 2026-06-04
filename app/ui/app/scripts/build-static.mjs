@@ -1,6 +1,6 @@
-import { cp, mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
-import { dirname, join } from "node:path";
+import { dirname, extname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -59,6 +59,7 @@ try {
     await rm(distDir, { recursive: true, force: true });
     await cp(outDir, distDir, { recursive: true });
     await rm(outDir, { recursive: true, force: true });
+    await writeServiceWorkerPrecacheManifest();
 
     for (const required of ["index.html", "manifest.webmanifest", "sw.js"]) {
       await stat(join(distDir, required));
@@ -123,6 +124,45 @@ async function recoverInterruptedStaticExport() {
   if (apiExists && disabledApiExists) {
     await rm(disabledApiDir, { recursive: true, force: true });
   }
+}
+
+async function writeServiceWorkerPrecacheManifest() {
+  const swPath = join(distDir, "sw.js");
+  const swSource = await readFile(swPath, "utf8");
+  const placeholder = "const PRECACHE_ASSETS = [];";
+  if (!swSource.includes(placeholder)) {
+    throw new Error("Could not find service worker precache placeholder.");
+  }
+
+  const assetPaths = [
+    ...(await listDistFiles(join(distDir, "_next", "static"))),
+    ...(await listDistFiles(distDir, (path) => extname(path) === ".txt"))
+  ];
+  const urls = [...new Set(assetPaths.map((path) => `/${relative(distDir, path).replaceAll("\\", "/")}`))].sort();
+  const manifest = `const PRECACHE_ASSETS = ${JSON.stringify(urls, null, 2)};`;
+
+  await writeFile(swPath, swSource.replace(placeholder, manifest));
+}
+
+async function listDistFiles(dir, include = () => true) {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if (hasCode(error, "ENOENT")) return [];
+    throw error;
+  }
+
+  const files = [];
+  for (const entry of entries) {
+    const entryPath = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await listDistFiles(entryPath, include)));
+    } else if (entry.isFile() && include(entryPath)) {
+      files.push(entryPath);
+    }
+  }
+  return files;
 }
 
 async function exists(path) {
