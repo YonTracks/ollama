@@ -58,7 +58,17 @@ func New(s *store.Store, devMode bool) *Server {
 	return &Server{store: s, bin: p, dev: devMode}
 }
 
+func executableCandidateNames(name string) []string {
+	names := []string{name}
+	if runtime.GOOS == "windows" && filepath.Ext(name) == "" {
+		names = append(names, name+".exe")
+	}
+	return names
+}
+
 func resolvePath(name string) string {
+	names := executableCandidateNames(name)
+
 	// look in the app bundle first
 	if exe, _ := os.Executable(); exe != "" {
 		var dir string
@@ -67,24 +77,32 @@ func resolvePath(name string) string {
 		} else {
 			dir = filepath.Join(filepath.Dir(exe), "..", "Resources")
 		}
-		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-			return filepath.Join(dir, name)
+		for _, candidate := range names {
+			path := filepath.Join(dir, candidate)
+			if _, err := os.Stat(path); err == nil {
+				return path
+			}
 		}
 	}
 
 	// check the development dist path
-	for _, path := range []string{
-		filepath.Join("dist", runtime.GOOS, name),
-		filepath.Join("dist", runtime.GOOS+"-"+runtime.GOARCH, name),
+	for _, dir := range []string{
+		filepath.Join("dist", runtime.GOOS),
+		filepath.Join("dist", runtime.GOOS+"-"+runtime.GOARCH),
 	} {
-		if _, err := os.Stat(path); err == nil {
-			return path
+		for _, candidate := range names {
+			path := filepath.Join(dir, candidate)
+			if _, err := os.Stat(path); err == nil {
+				return path
+			}
 		}
 	}
 
 	// fallback to system path
-	if p, _ := exec.LookPath(name); p != "" {
-		return p
+	for _, candidate := range names {
+		if p, _ := exec.LookPath(candidate); p != "" {
+			return p
+		}
 	}
 
 	return name

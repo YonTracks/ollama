@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,24 @@ func TestNew(t *testing.T) {
 
 	if s.bin == "" {
 		t.Error("expected non-empty bin path")
+	}
+}
+
+func TestExecutableCandidateNames(t *testing.T) {
+	got := executableCandidateNames("ollama")
+	want := []string{"ollama"}
+	if runtime.GOOS == "windows" {
+		want = []string{"ollama", "ollama.exe"}
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("executableCandidateNames(\"ollama\") = %v, want %v", got, want)
+	}
+
+	got = executableCandidateNames("ollama.exe")
+	want = []string{"ollama.exe"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("executableCandidateNames(\"ollama.exe\") = %v, want %v", got, want)
 	}
 }
 
