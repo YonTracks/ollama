@@ -292,6 +292,7 @@ const (
 	SW_MINIMIZE    = 6  // Minimizes the window
 	SW_RESTORE     = 9  // Restores to previous size/position
 	SW_SHOWDEFAULT = 10 // Sets show state based on program state
+	SW_MAXIMIZE    = 3  // Maximizes the window
 	SM_CXSCREEN    = 0
 	SM_CYSCREEN    = 1
 	HWND_TOP       = 0
@@ -378,8 +379,9 @@ func showWindow(ptr unsafe.Pointer) {
 			pShowWindow.Call(hwnd, uintptr(SW_RESTORE))
 		}
 
-		// Show the window
-		pShowWindow.Call(hwnd, uintptr(SW_SHOW))
+		// Show the app maximized so tray-opened windows do not inherit an
+		// off-screen default placement from the webview host.
+		pShowWindow.Call(hwnd, uintptr(SW_MAXIMIZE))
 
 		// Bring window to top
 		pBringWindowToTop.Call(hwnd)
