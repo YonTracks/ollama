@@ -415,6 +415,7 @@ export class Settings {
     SelectedModel: string;
     SidebarOpen: boolean;
     LastHomeView: string;
+    StartMinimized: boolean;
     AutoUpdateEnabled: boolean;
 
     constructor(source: any = {}) {
@@ -434,6 +435,7 @@ export class Settings {
         this.SelectedModel = source["SelectedModel"];
         this.SidebarOpen = source["SidebarOpen"];
         this.LastHomeView = source["LastHomeView"];
+        this.StartMinimized = source["StartMinimized"];
         this.AutoUpdateEnabled = source["AutoUpdateEnabled"];
     }
 }
