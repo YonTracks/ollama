@@ -170,6 +170,9 @@ type Settings struct {
 	// LastHomeView stores the preferred home route target ("chat" or integration name)
 	LastHomeView string
 
+	// StartMinimized indicates if the app UI should stay hidden when Ollama starts
+	StartMinimized bool
+
 	// AutoUpdateEnabled indicates if automatic updates should be downloaded
 	AutoUpdateEnabled bool
 }

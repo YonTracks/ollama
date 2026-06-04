@@ -16,6 +16,7 @@ import {
   CogIcon,
   ArrowLeftIcon,
   ArrowDownTrayIcon,
+  MinusCircleIcon,
 } from "@heroicons/react/20/solid";
 import { Settings as SettingsType } from "@/gotypes";
 import { useNavigate } from "@tanstack/react-router";
@@ -214,6 +215,7 @@ export default function Settings() {
         Agent: false,
         Tools: false,
         ContextLength: 0,
+        StartMinimized: false,
         AutoUpdateEnabled: true,
       });
       updateSettingsMutation.mutate(defaultSettings);
@@ -464,6 +466,29 @@ export default function Settings() {
                     <Switch
                       checked={settings.AutoUpdateEnabled}
                       onChange={(checked) => handleChange("AutoUpdateEnabled", checked)}
+                    />
+                  </div>
+                </div>
+              </Field>
+
+              {/* Start Minimized */}
+              <Field>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-start space-x-3 flex-1">
+                    <MinusCircleIcon className="mt-1 h-5 w-5 flex-shrink-0 text-black dark:text-neutral-100" />
+                    <div>
+                      <Label>Start minimized</Label>
+                      <Description>
+                        Keep the app hidden when Ollama starts.
+                      </Description>
+                    </div>
+                  </div>
+                  <div className="flex-shrink-0">
+                    <Switch
+                      checked={settings.StartMinimized}
+                      onChange={(checked) =>
+                        handleChange("StartMinimized", checked)
+                      }
                     />
                   </div>
                 </div>

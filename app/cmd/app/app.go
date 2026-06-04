@@ -202,6 +202,13 @@ func main() {
 	st := &store.Store{}
 	appStore = st
 
+	if settings, err := st.Settings(); err != nil {
+		slog.Warn("failed to load startup settings", "error", err)
+	} else if settings.StartMinimized {
+		slog.Debug("starting hidden due to settings")
+		startHidden = true
+	}
+
 	// Enable CORS in development mode
 	if devMode {
 		os.Setenv("OLLAMA_CORS", "1")

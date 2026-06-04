@@ -29,12 +29,13 @@ func TestHandlePostApiSettings(t *testing.T) {
 		{
 			name: "valid settings update - all fields",
 			requested: store.Settings{
-				Expose:     true,
-				Browser:    true,
-				Models:     "/custom/models",
-				Agent:      true,
-				Tools:      true,
-				WorkingDir: "/workspace",
+				Expose:         true,
+				Browser:        true,
+				Models:         "/custom/models",
+				Agent:          true,
+				Tools:          true,
+				WorkingDir:     "/workspace",
+				StartMinimized: true,
 			},
 			wantErr: false,
 		},
@@ -108,6 +109,9 @@ func TestHandlePostApiSettings(t *testing.T) {
 					}
 					if savedSettings.WorkingDir != tt.requested.WorkingDir {
 						t.Errorf("WorkingDir: got %q, want %q", savedSettings.WorkingDir, tt.requested.WorkingDir)
+					}
+					if savedSettings.StartMinimized != tt.requested.StartMinimized {
+						t.Errorf("StartMinimized: got %v, want %v", savedSettings.StartMinimized, tt.requested.StartMinimized)
 					}
 					// Only check Models if explicitly set in the test case
 					if tt.requested.Models != "" && savedSettings.Models != tt.requested.Models {

@@ -174,6 +174,88 @@ func TestMigrationV15ToV16LastHomeViewDefaultsToLaunch(t *testing.T) {
 	}
 }
 
+func TestMigrationV16ToV17StartMinimizedDefaultsOff(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	db, err := newDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create database: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.conn.Exec(`
+		ALTER TABLE settings DROP COLUMN start_minimized;
+		UPDATE settings SET schema_version = 16;
+	`); err != nil {
+		t.Fatalf("failed to seed v16 settings row: %v", err)
+	}
+
+	if err := db.migrate(); err != nil {
+		t.Fatalf("migration from v16 to v17 failed: %v", err)
+	}
+
+	var startMinimized bool
+	if err := db.conn.QueryRow("SELECT start_minimized FROM settings").Scan(&startMinimized); err != nil {
+		t.Fatalf("failed to read start_minimized: %v", err)
+	}
+
+	if startMinimized {
+		t.Fatal("expected start_minimized to default to false after migration")
+	}
+
+	version, err := db.getSchemaVersion()
+	if err != nil {
+		t.Fatalf("failed to get schema version: %v", err)
+	}
+	if version != currentSchemaVersion {
+		t.Fatalf("expected schema version %d, got %d", currentSchemaVersion, version)
+	}
+}
+
+func TestInitRepairsMissingCurrentSettingsColumns(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	db, err := newDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create database: %v", err)
+	}
+
+	if _, err := db.conn.Exec(`
+		ALTER TABLE settings DROP COLUMN start_minimized;
+		UPDATE settings SET schema_version = ?;
+	`, currentSchemaVersion); err != nil {
+		db.Close()
+		t.Fatalf("failed to seed current-version settings row without start_minimized: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("failed to close seeded database: %v", err)
+	}
+
+	db, err = newDatabase(dbPath)
+	if err != nil {
+		t.Fatalf("failed to reopen database: %v", err)
+	}
+	defer db.Close()
+
+	settings, err := db.getSettings()
+	if err != nil {
+		t.Fatalf("failed to get settings after repair: %v", err)
+	}
+	if settings.StartMinimized {
+		t.Fatal("expected repaired start_minimized to default to false")
+	}
+
+	version, err := db.getSchemaVersion()
+	if err != nil {
+		t.Fatalf("failed to get schema version: %v", err)
+	}
+	if version != currentSchemaVersion {
+		t.Fatalf("expected schema version %d, got %d", currentSchemaVersion, version)
+	}
+}
+
 func TestChatDeletionWithCascade(t *testing.T) {
 	t.Run("chat deletion cascades to related messages", func(t *testing.T) {
 		tmpDir := t.TempDir()
