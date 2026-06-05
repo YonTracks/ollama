@@ -336,6 +336,13 @@ func (s *Server) Completion(ctx context.Context, req llm.CompletionRequest, fn f
 		if raw.Done && raw.StopReason != "" {
 			slog.Info("mlx generation completed", "stop_reason", raw.StopReason)
 		}
+		if raw.Done && raw.Image == "" && strings.HasPrefix(raw.Content, "error:") {
+			errMsg := strings.TrimSpace(strings.TrimPrefix(raw.Content, "error:"))
+			if errMsg == "" {
+				errMsg = raw.Content
+			}
+			return fmt.Errorf("%s", errMsg)
+		}
 
 		// Convert to llm.CompletionResponse
 		cresp := llm.CompletionResponse{

@@ -400,8 +400,10 @@ func LoadLinearLayer(weights WeightSource, path string) (nn.LinearLayer, error) 
 		}
 
 		// NVFP4 and MXFP8 don't have native quantized matmul kernels in MLX,
-		// so we always dequantize at load time. Affine modes (FP4, FP8) have kernel support.
-		if mlx.MetalIsAvailable() && mode != "nvfp4" && mode != "mxfp8" {
+		// so we dequantize those at load time. Affine modes have native
+		// quantized matmul support on GPU backends and must stay quantized to
+		// avoid expanding Flux2 weights beyond CUDA memory limits.
+		if mlx.GPUIsAvailable() && mode != "nvfp4" && mode != "mxfp8" {
 			return &nn.QuantizedLinear{
 				Weight:    weight,
 				Scales:    scales,

@@ -19,9 +19,21 @@ static void mlx_silent_error_handler(const char* msg, void* data) {
     mlx_init_error_flag = 1;
 }
 
-void mlx_set_safe_init_mode(void) {
+void mlx_clear_error(void) {
     mlx_init_error_flag = 0;
     mlx_init_error_msg[0] = '\0';
+}
+
+int mlx_had_error(void) {
+    return mlx_init_error_flag;
+}
+
+const char* mlx_get_error(void) {
+    return mlx_init_error_flag ? mlx_init_error_msg : NULL;
+}
+
+void mlx_set_safe_init_mode(void) {
+    mlx_clear_error();
     mlx_set_error_handler(mlx_silent_error_handler, NULL, NULL);
 }
 

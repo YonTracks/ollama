@@ -108,6 +108,46 @@ func TestEvalAutoKeeps(t *testing.T) {
 	}
 }
 
+func TestDataReadbackProtectsUnkeptReceiver(t *testing.T) {
+	a := NewArrayInt32([]int32{1, 2}, []int32{2})
+
+	data := a.Data()
+	if len(data) != 2 || data[0] != 1 || data[1] != 2 {
+		t.Fatalf("expected [1, 2], got %v", data)
+	}
+	if !a.Valid() {
+		t.Fatal("readback freed the receiver during dtype conversion")
+	}
+	if a.Kept() {
+		t.Fatal("readback should restore the receiver's cleanup state")
+	}
+
+	Eval()
+	if a.Valid() {
+		t.Fatal("unkept receiver should be freed on the next cleanup")
+	}
+}
+
+func TestCopySurvivesSourceCleanup(t *testing.T) {
+	source := NewArrayFloat32([]float32{1, 2}, []int32{2})
+	copied := Copy(source)
+	Eval(copied)
+
+	source.Free()
+	Eval()
+	if source.Valid() {
+		t.Fatal("source should be freed")
+	}
+	if !copied.Valid() {
+		t.Fatal("copied array should survive source cleanup")
+	}
+
+	data := copied.Data()
+	if len(data) != 2 || data[0] != 1 || data[1] != 2 {
+		t.Fatalf("expected [1, 2], got %v", data)
+	}
+}
+
 // TestWeightsSurvive verifies kept arrays survive multiple Eval cycles.
 func TestWeightsSurvive(t *testing.T) {
 	weight := NewArrayFloat32([]float32{1, 2, 3, 4}, []int32{2, 2})

@@ -66,6 +66,16 @@ func (s *server) handleImageCompletion(w http.ResponseWriter, r *http.Request, r
 	imageGenMu.Lock()
 	defer imageGenMu.Unlock()
 
+	var enc *json.Encoder
+	var flusher http.Flusher
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			errMsg := fmt.Sprintf("image generation failed: %v", recovered)
+			slog.Error("image generation panic", "error", errMsg)
+			writeImageError(w, enc, flusher, errMsg)
+		}
+	}()
+
 	// Set seed if not provided
 	if req.Seed <= 0 {
 		req.Seed = time.Now().UnixNano()
@@ -74,14 +84,15 @@ func (s *server) handleImageCompletion(w http.ResponseWriter, r *http.Request, r
 	// Set up streaming response
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Transfer-Encoding", "chunked")
-	flusher, ok := w.(http.Flusher)
+	var ok bool
+	flusher, ok = w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
 
 	ctx := r.Context()
-	enc := json.NewEncoder(w)
+	enc = json.NewEncoder(w)
 
 	// Progress callback streams step updates
 	progress := func(step, total int) {
@@ -128,4 +139,16 @@ func (s *server) handleImageCompletion(w http.ResponseWriter, r *http.Request, r
 	w.Write(data)
 	w.Write([]byte("\n"))
 	flusher.Flush()
+}
+
+func writeImageError(w http.ResponseWriter, enc *json.Encoder, flusher http.Flusher, errMsg string) {
+	resp := Response{Content: "error: " + errMsg, Done: true, StopReason: "error"}
+	if enc != nil {
+		_ = enc.Encode(resp)
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return
+	}
+	http.Error(w, errMsg, http.StatusInternalServerError)
 }

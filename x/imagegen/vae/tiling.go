@@ -2,14 +2,18 @@
 package vae
 
 import (
+	"fmt"
+	"time"
+
 	"github.com/ollama/ollama/x/imagegen/mlx"
 )
 
 // TilingConfig holds configuration for tiled VAE decoding.
 // This is a general technique to reduce memory usage when decoding large latents.
 type TilingConfig struct {
-	TileSize int32 // Tile size in latent space (e.g., 64 latent → 512 pixels for 8x VAE)
-	Overlap  int32 // Overlap in latent space (e.g., 16 latent = 25% of 64)
+	TileSize    int32 // Tile size in latent space (e.g., 64 latent → 512 pixels for 8x VAE)
+	Overlap     int32 // Overlap in latent space (e.g., 16 latent = 25% of 64)
+	LogProgress bool  // Log per-tile decode progress for diagnosing memory failures
 }
 
 // DefaultTilingConfig returns reasonable defaults matching diffusers.
@@ -57,6 +61,10 @@ func DecodeTiled(latents *mlx.Array, cfg *TilingConfig, decoder func(*mlx.Array)
 
 	// Calculate tiling parameters (matching diffusers)
 	overlapSize := tileLatentSize - overlapLatent // stride in latent space
+	rowsCount := int((H + overlapSize - 1) / overlapSize)
+	colsCount := int((W + overlapSize - 1) / overlapSize)
+	totalTiles := rowsCount * colsCount
+	tileIndex := 0
 
 	// Blend extent in pixel space (assumes 8x upscale, adjust if needed)
 	// For other scale factors, this could be made configurable
@@ -70,22 +78,44 @@ func DecodeTiled(latents *mlx.Array, cfg *TilingConfig, decoder func(*mlx.Array)
 	for i := int32(0); i < H; i += overlapSize {
 		var row []decodedTile
 		for j := int32(0); j < W; j += overlapSize {
+			tileIndex++
 			// Extract tile (may be smaller at edges)
 			i2 := min(i+tileLatentSize, H)
 			j2 := min(j+tileLatentSize, W)
+			var tileStart time.Time
+			if cfg.LogProgress {
+				tileStart = time.Now()
+				fmt.Printf("    VAE tile %d/%d: latent [%d:%d, %d:%d]\n", tileIndex, totalTiles, i, i2, j, j2)
+			}
 
 			tile := mlx.Slice(latents, []int32{0, i, j, 0}, []int32{1, i2, j2, C})
 			decoded := decoder(tile)
 			decoded = mlx.AsType(decoded, mlx.DtypeFloat32)
-			mlx.Eval(decoded)
+			decoded = mlx.Contiguous(decoded)
+			if cfg.LogProgress {
+				mlx.Materialize(fmt.Sprintf("VAE tile %d/%d decode", tileIndex, totalTiles), decoded)
+			} else {
+				mlx.Materialize("", decoded)
+			}
 
 			decodedShape := decoded.Shape()
 			tileH := decodedShape[1]
 			tileW := decodedShape[2]
 			tileData := decoded.Data()
+			if tileData == nil {
+				panic(fmt.Sprintf("VAE tile %d/%d readback returned no data", tileIndex, totalTiles))
+			}
 			decoded.Free()
+			tile.Free()
+			mlx.Eval()
+			mlx.ClearCache()
 
 			row = append(row, decodedTile{data: tileData, height: tileH, width: tileW})
+			if cfg.LogProgress {
+				fmt.Printf("    VAE tile %d/%d complete in %.2fs (active %.1f GB)\n",
+					tileIndex, totalTiles, time.Since(tileStart).Seconds(),
+					float64(mlx.MetalGetActiveMemory())/(1024*1024*1024))
+			}
 		}
 		rows = append(rows, row)
 	}

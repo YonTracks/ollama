@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/ollama/ollama/x/imagegen/manifest"
@@ -38,6 +40,14 @@ type Model struct {
 	Transformer     *Flux2Transformer2DModel
 	VAE             *AutoencoderKLFlux2
 	SchedulerConfig *SchedulerConfig
+}
+
+func debugLogsEnabled() bool {
+	v := strings.ToLower(os.Getenv("OLLAMA_DEBUG"))
+	if v == "" {
+		v = strings.ToLower(os.Getenv("OLLAMA_IMAGEGEN_DEBUG"))
+	}
+	return v != "" && v != "0" && v != "false"
 }
 
 // TextEncoderLayerIndices are the layers from which to extract text embeddings.
@@ -327,7 +337,7 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 	if refTokens != nil {
 		toEval = append(toEval, refTokens.Tokens)
 	}
-	mlx.Eval(toEval...)
+	mlx.Materialize("", toEval...)
 	mlx.MetalResetPeakMemory() // Reset peak to measure generation separately
 	fmt.Printf("✓ (%.2fs, %.1f GB)\n", time.Since(setupStart).Seconds(),
 		float64(mlx.MetalGetActiveMemory())/(1024*1024*1024))
@@ -338,6 +348,8 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 
 	loopStart := time.Now()
 	stepStart := time.Now()
+	var denoisePeakGB float64
+	debugLogs := debugLogsEnabled()
 
 	// Denoising loop
 	for i := range cfg.Steps {
@@ -372,22 +384,40 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 		}
 
 		// Scheduler step (keep reference to old patches for the computation graph)
+		oldPatches := patches
 		newPatches := scheduler.Step(output, patches, i)
 
 		if cfg.CapturePath != "" && i == 1 {
 			mlx.MetalStopCapture()
 		}
 
-		mlx.Eval(newPatches)
-		patches = newPatches
+		materializeStage := ""
+		if debugLogs {
+			materializeStage = fmt.Sprintf("denoise step %d", i+1)
+		}
+		mlx.Materialize(materializeStage, newPatches)
+		nextPatches := mlx.Copy(newPatches)
+		mlx.Materialize("", nextPatches)
+		oldPatches.Free()
+		newPatches.Free()
+		patches = nextPatches
+		mlx.Eval()
+		mlx.ClearCache()
 
 		elapsed := time.Since(stepStart).Seconds()
 		peakGB := float64(mlx.MetalGetPeakMemory()) / (1024 * 1024 * 1024)
-		if i == 0 {
-			fmt.Printf("    step %d: %.2fs (JIT warmup), peak %.1f GB\n", i+1, elapsed, peakGB)
-		} else {
-			fmt.Printf("    step %d: %.2fs, peak %.1f GB\n", i+1, elapsed, peakGB)
+		if peakGB > denoisePeakGB {
+			denoisePeakGB = peakGB
 		}
+		activeGB := float64(mlx.MetalGetActiveMemory()) / (1024 * 1024 * 1024)
+		if i == 0 {
+			fmt.Printf("    step %d: %.2fs (JIT warmup), active %.1f GB, peak %.1f GB\n",
+				i+1, elapsed, activeGB, peakGB)
+		} else {
+			fmt.Printf("    step %d: %.2fs, active %.1f GB, peak %.1f GB\n",
+				i+1, elapsed, activeGB, peakGB)
+		}
+		mlx.MetalResetPeakMemory()
 		stepStart = time.Now()
 		if cfg.Progress != nil {
 			cfg.Progress(i+1, cfg.Steps)
@@ -395,14 +425,16 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 	}
 
 	loopTime := time.Since(loopStart).Seconds()
-	peakMem := float64(mlx.MetalGetPeakMemory()) / (1024 * 1024 * 1024)
 	fmt.Printf("  Denoised %d steps in %.2fs (%.2fs/step), peak %.1f GB\n",
-		cfg.Steps, loopTime, loopTime/float64(cfg.Steps), peakMem)
+		cfg.Steps, loopTime, loopTime/float64(cfg.Steps), denoisePeakGB)
 
 	// Free timesteps now that denoising is done
 	for _, ts := range timesteps {
 		ts.Free()
 	}
+	mlx.Eval()
+	mlx.ClearCache()
+	mlx.MetalResetPeakMemory()
 
 	// VAE decode with tiling for larger images
 	fmt.Print("  Decoding VAE... ")
@@ -411,9 +443,14 @@ func (m *Model) generate(ctx context.Context, cfg *GenerateConfig) (*mlx.Array, 
 	// VAE attention is O(n²) on latent pixels, tiling reduces memory significantly
 	if patchH*2 > 64 || patchW*2 > 64 {
 		m.VAE.Tiling = DefaultTilingConfig()
+		fmt.Printf("(tiling tile %d, overlap %d) ", m.VAE.Tiling.TileSize, m.VAE.Tiling.Overlap)
 	}
 	decoded := m.VAE.Decode(patches, patchH, patchW)
-	mlx.Eval(decoded)
+	vaeStage := ""
+	if debugLogs {
+		vaeStage = "VAE output"
+	}
+	mlx.Materialize(vaeStage, decoded)
 
 	// Free patches now that decode is done
 	patches.Free()
