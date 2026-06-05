@@ -9,7 +9,7 @@ import (
 	"image"
 	"math"
 	"os"
-	"strings"
+	"strconv"
 	"time"
 
 	"github.com/ollama/ollama/x/imagegen/manifest"
@@ -43,11 +43,18 @@ type Model struct {
 }
 
 func debugLogsEnabled() bool {
-	v := strings.ToLower(os.Getenv("OLLAMA_DEBUG"))
-	if v == "" {
-		v = strings.ToLower(os.Getenv("OLLAMA_IMAGEGEN_DEBUG"))
+	if v := os.Getenv("OLLAMA_IMAGEGEN_DEBUG"); v != "" {
+		return debugEnvEnabled(v)
 	}
-	return v != "" && v != "0" && v != "false"
+	return debugEnvEnabled(os.Getenv("OLLAMA_DEBUG"))
+}
+
+func debugEnvEnabled(v string) bool {
+	if b, err := strconv.ParseBool(v); err == nil {
+		return b
+	}
+	i, err := strconv.ParseInt(v, 10, 64)
+	return err == nil && i > 0
 }
 
 // TextEncoderLayerIndices are the layers from which to extract text embeddings.
