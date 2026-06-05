@@ -161,6 +161,10 @@ SetupAppRunningError=Another Ollama installer is running.%n%nPlease cancel or fi
 Root: HKCU; Subkey: "Environment"; \
     ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; \
     Check: NeedsAddPath('{app}')
+; Keep new installs localhost-only by default without overwriting existing user configuration.
+Root: HKCU; Subkey: "Environment"; \
+    ValueType: string; ValueName: "OLLAMA_HOST"; ValueData: "127.0.0.1:11434"; \
+    Check: NeedsDefaultOllamaHost()
 ; Register ollama:// URL protocol
 Root: HKCU; Subkey: "Software\Classes\ollama"; ValueType: string; ValueName: ""; ValueData: "URL:Ollama Protocol"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\ollama"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Flags: uninsdeletekey
@@ -182,6 +186,20 @@ begin
   { look for the path with leading and trailing semicolon }
   { Pos() returns 0 if not found }
   Result := Pos(';' + ExpandConstant(Param) + ';', ';' + OrigPath + ';') = 0;
+end;
+
+function NeedsDefaultOllamaHost(): boolean;
+var
+  ExistingHost: string;
+begin
+  if not RegQueryStringValue(HKEY_CURRENT_USER,
+    'Environment',
+    'OLLAMA_HOST', ExistingHost)
+  then begin
+    Result := True;
+    exit;
+  end;
+  Result := ExistingHost = '';
 end;
 
 function GetDirSize(Path: String): Int64;

@@ -2066,6 +2066,41 @@ func TestSchedLlamaServerEvictsExistingOnPending(t *testing.T) {
 	require.NotNil(t, runner)
 }
 
+func TestWaitForVRAMRecoverySkipsSmallDiscreteRunner(t *testing.T) {
+	ctx, done := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer done()
+
+	s := InitScheduler(ctx)
+	s.waitForRecovery = time.Second
+
+	calls := 0
+	s.getGpuFn = func(ctx context.Context, runners []ml.FilteredRunnerDiscovery) []ml.DeviceInfo {
+		calls++
+		return []ml.DeviceInfo{
+			{
+				DeviceID:    ml.DeviceID{ID: "0", Library: "CUDA"},
+				TotalMemory: 12 * format.GibiByte,
+				FreeMemory:  10 * format.GibiByte,
+			},
+		}
+	}
+
+	runner := &runnerRef{
+		gpus:         []ml.DeviceID{{ID: "0", Library: "CUDA"}},
+		discreteGPUs: true,
+		vramSize:     324 * format.MebiByte,
+	}
+
+	finished := s.waitForVRAMRecovery(runner, nil)
+	select {
+	case <-finished:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("small runner VRAM recovery wait did not finish quickly")
+	}
+
+	require.Equal(t, 1, calls)
+}
+
 type mockLlm struct {
 	modelPath         string
 	pingResp          error

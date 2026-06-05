@@ -204,7 +204,11 @@ func init() {
 
 	found := findMLXLibrary(forcedVariant)
 	if !found {
-		initError = fmt.Errorf("failed to load MLX dynamic library (searched: %v)", libOllamaRoots())
+		if initLoadError != "" {
+			initError = fmt.Errorf("failed to load MLX dynamic library (searched: %v; last error: %s)", libOllamaRoots(), initLoadError)
+		} else {
+			initError = fmt.Errorf("failed to load MLX dynamic library (searched: %v)", libOllamaRoots())
+		}
 		return
 	}
 

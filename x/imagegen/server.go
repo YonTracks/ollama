@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -86,7 +87,16 @@ func (s *Server) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo
 			if requireFull {
 				return nil, llm.ErrLoadRequiredFull
 			}
-			return nil, fmt.Errorf("model requires %s but only %s are available (after %s overhead)", format.HumanBytes2(s.vramSize), format.HumanBytes2(available), format.HumanBytes2(overhead))
+			if shouldAttemptImagegenLoadWithLowFreeMemory(gpus[0], requireFull, runtime.GOOS) {
+				slog.Warn("imagegen GPU memory snapshot is below model requirement; attempting load because Windows CUDA free memory can be stale after runner unload",
+					"model", s.modelName,
+					"required", format.HumanBytes2(s.vramSize),
+					"available", format.HumanBytes2(available),
+					"free", format.HumanBytes2(gpus[0].FreeMemory),
+					"overhead", format.HumanBytes2(overhead))
+			} else {
+				return nil, fmt.Errorf("model requires %s but only %s are available (after %s overhead)", format.HumanBytes2(s.vramSize), format.HumanBytes2(available), format.HumanBytes2(overhead))
+			}
 		}
 	}
 
@@ -153,6 +163,17 @@ func (s *Server) Load(ctx context.Context, _ ml.SystemInfo, gpus []ml.DeviceInfo
 	return nil, nil
 }
 
+func shouldAttemptImagegenLoadWithLowFreeMemory(gpu ml.DeviceInfo, requireFull bool, goos string) bool {
+	if requireFull {
+		return false
+	}
+
+	// The scheduler can carry a stale low CUDA free-memory snapshot on Windows
+	// after all runners have unloaded. When no eviction decision is being made,
+	// let the imagegen subprocess perform the real load-time check.
+	return goos == "windows" && strings.EqualFold(gpu.Library, "CUDA")
+}
+
 // Ping checks if the subprocess is healthy.
 func (s *Server) Ping(ctx context.Context) error {
 	url := fmt.Sprintf("http://127.0.0.1:%d/health", s.port)
@@ -186,11 +207,13 @@ func configureMLXSubprocessEnv(cmd *exec.Cmd, libraryPaths []string) {
 	if len(libraryPaths) == 0 {
 		return
 	}
+	libraryPaths = expandMLXLibraryPaths(libraryPaths)
 
 	// Search order for the imagegen runner is:
 	//   1. bundled lib/ollama root
-	//   2. backend-specific library dirs selected during GPU discovery
-	//   3. any existing caller-provided library path values
+	//   2. bundled mlx_* dirs containing mlxc and its dependent DLLs
+	//   3. backend-specific library dirs selected during GPU discovery
+	//   4. any existing caller-provided library path values
 	pathEnv := mlxLibraryPathEnv()
 	pathEnvPaths := append([]string{}, libraryPaths...)
 	if existingPath, ok := os.LookupEnv(pathEnv); ok {
@@ -205,6 +228,55 @@ func configureMLXSubprocessEnv(cmd *exec.Cmd, libraryPaths []string) {
 	}
 	setSubprocessEnv(cmd, "OLLAMA_LIBRARY_PATH", strings.Join(ollamaLibraryPaths, string(filepath.ListSeparator)))
 	slog.Debug("mlx subprocess library path", "OLLAMA_LIBRARY_PATH", strings.Join(ollamaLibraryPaths, string(filepath.ListSeparator)))
+
+	configureMLXCUDAHeaders(cmd, libraryPaths)
+}
+
+func expandMLXLibraryPaths(libraryPaths []string) []string {
+	var expanded []string
+	seen := map[string]struct{}{}
+	add := func(path string) {
+		if path == "" {
+			return
+		}
+		if _, ok := seen[path]; ok {
+			return
+		}
+		seen[path] = struct{}{}
+		expanded = append(expanded, path)
+	}
+
+	for _, path := range libraryPaths {
+		add(path)
+		if strings.HasPrefix(filepath.Base(path), "mlx_") {
+			continue
+		}
+		mlxDirs, err := filepath.Glob(filepath.Join(path, "mlx_*"))
+		if err != nil {
+			continue
+		}
+		sort.Sort(sort.Reverse(sort.StringSlice(mlxDirs)))
+		for _, mlxDir := range mlxDirs {
+			add(mlxDir)
+		}
+	}
+
+	return expanded
+}
+
+func configureMLXCUDAHeaders(cmd *exec.Cmd, libraryPaths []string) {
+	for _, path := range libraryPaths {
+		if !strings.HasPrefix(filepath.Base(path), "mlx_cuda_") {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(path, "include")); err != nil {
+			continue
+		}
+		setSubprocessEnv(cmd, "CUDA_PATH", path)
+		setSubprocessEnv(cmd, "CUDA_HOME", path)
+		slog.Debug("mlx subprocess CUDA headers", "CUDA_PATH", path)
+		return
+	}
 }
 
 func setSubprocessEnv(cmd *exec.Cmd, key, value string) {
