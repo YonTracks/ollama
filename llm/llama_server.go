@@ -333,6 +333,29 @@ func startLlamaServer(launch llamaServerLaunchConfig, out io.Writer) (cmd *exec.
 	}
 
 	// Build CLI flags — minimal set, let llama-server auto-detect the rest
+	params := llamaServerParams(port, launch)
+
+	// Set up library paths for GPU backend discovery
+	cmd = exec.Command(exe, params...)
+
+	if out != nil {
+		// os/exec serializes Write calls when stdout and stderr share a writer.
+		cmd.Stdout = out
+		cmd.Stderr = out
+	}
+	cmd.SysProcAttr = LlamaServerSysProcAttr
+	SetupLlamaServerCommandEnv(cmd, exe, launch.gpuLibs, launch.extraEnvs)
+
+	slog.Info("starting llama-server", "cmd", cmd)
+	slog.Debug("subprocess", "", filteredEnv(cmd.Env))
+
+	if err = cmd.Start(); err != nil {
+		return nil, 0, err
+	}
+	return cmd, port, nil
+}
+
+func llamaServerParams(port int, launch llamaServerLaunchConfig) []string {
 	params := []string{
 		"--model", launch.modelPath,
 		"--port", strconv.Itoa(port),
@@ -389,24 +412,7 @@ func startLlamaServer(launch llamaServerLaunchConfig, out io.Writer) (cmd *exec.
 
 	params = appendContextShiftArgs(params, launch.opts, launch.config.ContextShift)
 
-	// Set up library paths for GPU backend discovery
-	cmd = exec.Command(exe, params...)
-
-	if out != nil {
-		// os/exec serializes Write calls when stdout and stderr share a writer.
-		cmd.Stdout = out
-		cmd.Stderr = out
-	}
-	cmd.SysProcAttr = LlamaServerSysProcAttr
-	SetupLlamaServerCommandEnv(cmd, exe, launch.gpuLibs, launch.extraEnvs)
-
-	slog.Info("starting llama-server", "cmd", cmd)
-	slog.Debug("subprocess", "", filteredEnv(cmd.Env))
-
-	if err = cmd.Start(); err != nil {
-		return nil, 0, err
-	}
-	return cmd, port, nil
+	return params
 }
 
 // SetupLlamaServerCommandEnv configures the environment for a llama-server

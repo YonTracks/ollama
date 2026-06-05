@@ -186,6 +186,10 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(llama_cpp)
 
+if(WIN32 AND TARGET llama-server)
+    target_link_libraries(llama-server PRIVATE shell32)
+endif()
+
 # Link the Ollama-compat source files into the fetched llama target.
 # Kept separate from the hook patch so our .cpp/.h stay
 # on-disk in llama/compat/ rather than being copied into _deps/.

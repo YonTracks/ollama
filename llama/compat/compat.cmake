@@ -18,7 +18,7 @@
 # The compat layer consists of:
 #   1. Ollama-owned compat source files linked into the fetched llama.cpp
 #      targets from this directory.
-#   2. A small patch file that adds call-sites in llama.cpp loaders.
+#   2. Small patch files that add call-sites and platform glue.
 
 set(_compat_dir ${CMAKE_CURRENT_LIST_DIR})
 
