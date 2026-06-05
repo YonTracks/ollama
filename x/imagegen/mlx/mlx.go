@@ -359,10 +359,45 @@ func Eval(outputs ...*Array) []*Array {
 		}
 		if len(evalHandles) > 0 {
 			vec := C.mlx_vector_array_new_data(&evalHandles[0], C.size_t(len(evalHandles)))
-			C.mlx_eval(vec)
+			checkMLXCall("eval", func() C.int {
+				return C.mlx_eval(vec)
+			})
 			C.mlx_vector_array_free(vec)
 		}
 	}
+	return outputs
+}
+
+// Materialize forces each output array to finish evaluating and synchronizes the
+// current default stream. A non-empty stage prints timing and memory diagnostics.
+func Materialize(stage string, outputs ...*Array) []*Array {
+	for _, o := range outputs {
+		if o != nil {
+			o.kept = true
+		}
+	}
+
+	cleanup()
+
+	start := time.Now()
+	count := 0
+	for _, o := range outputs {
+		if o != nil && o.c.ctx != nil {
+			checkMLXCall(materializeOp(stage), func() C.int {
+				return C.mlx_array_eval(o.c)
+			})
+			count++
+		}
+	}
+	syncDefaultStream(materializeSyncOp(stage))
+
+	if stage != "" {
+		activeGB := float64(MetalGetActiveMemory()) / (1024 * 1024 * 1024)
+		peakGB := float64(MetalGetPeakMemory()) / (1024 * 1024 * 1024)
+		fmt.Printf("    mlx %s: materialized %d array(s) in %.2fs (active %.1f GB, peak %.1f GB)\n",
+			stage, count, time.Since(start).Seconds(), activeGB, peakGB)
+	}
+
 	return outputs
 }
 
@@ -389,7 +424,9 @@ func AsyncEval(outputs ...*Array) {
 		}
 		if len(evalHandles) > 0 {
 			vec := C.mlx_vector_array_new_data(&evalHandles[0], C.size_t(len(evalHandles)))
-			C.mlx_async_eval(vec)
+			checkMLXCall("async eval", func() C.int {
+				return C.mlx_async_eval(vec)
+			})
 			C.mlx_vector_array_free(vec)
 		}
 	}
@@ -397,7 +434,7 @@ func AsyncEval(outputs ...*Array) {
 
 // Sync waits for all async operations to complete (no cleanup).
 func Sync() {
-	C.mlx_synchronize(C.default_stream())
+	syncDefaultStream("synchronize default stream")
 }
 
 // Free marks this array for cleanup on the next Eval().
@@ -419,6 +456,12 @@ func (a *Array) Eval() *Array {
 	return a
 }
 
+// Materialize forces this array to finish evaluating and returns it for chaining.
+func (a *Array) Materialize(stage string) *Array {
+	Materialize(stage, a)
+	return a
+}
+
 // Valid returns true if the array hasn't been freed.
 func (a *Array) Valid() bool {
 	return a != nil && a.c.ctx != nil
@@ -427,6 +470,44 @@ func (a *Array) Valid() bool {
 // Kept returns true if the array is marked to survive Eval() cleanup.
 func (a *Array) Kept() bool {
 	return a != nil && a.kept
+}
+
+func checkMLXResult(op string, ret C.int) {
+	if ret != 0 {
+		msg := ""
+		if C.mlx_had_error() != 0 {
+			msg = C.GoString(C.mlx_get_error())
+		}
+		if msg != "" {
+			panic(fmt.Sprintf("mlx: %s failed with status %d: %s", op, int(ret), msg))
+		}
+		panic(fmt.Sprintf("mlx: %s failed with status %d", op, int(ret)))
+	}
+}
+
+func checkMLXCall(op string, fn func() C.int) {
+	C.mlx_clear_error()
+	checkMLXResult(op, fn())
+}
+
+func materializeOp(stage string) string {
+	if stage == "" {
+		return "array eval"
+	}
+	return "array eval: " + stage
+}
+
+func materializeSyncOp(stage string) string {
+	if stage == "" {
+		return "synchronize materialized array"
+	}
+	return "synchronize materialized array: " + stage
+}
+
+func syncDefaultStream(op string) {
+	checkMLXCall(op, func() C.int {
+		return C.mlx_synchronize(C.default_stream())
+	})
 }
 
 func int32ToCInt(s []int32) *C.int {
@@ -776,9 +857,14 @@ func ArgmaxAll(a *Array) int32 {
 	C.mlx_flatten(&flat, a.c, 0, -1, C.default_stream())
 	res := C.mlx_array_new()
 	C.mlx_argmax(&res, flat, false, C.default_stream())
-	C.mlx_array_eval(res)
+	checkMLXCall("array eval: argmax", func() C.int {
+		return C.mlx_array_eval(res)
+	})
+	syncDefaultStream("synchronize argmax")
 	var val C.int32_t
-	C.mlx_array_item_int32(&val, res)
+	checkMLXCall("item int32: argmax", func() C.int {
+		return C.mlx_array_item_int32(&val, res)
+	})
 	C.mlx_array_free(flat)
 	C.mlx_array_free(res)
 	return int32(val)
@@ -857,6 +943,13 @@ func Contiguous(a *Array) *Array {
 	res := C.mlx_array_new()
 	// Use allow_col=false to force row-major contiguous layout
 	C.mlx_contiguous(&res, a.c, false, C.default_stream())
+	return newArray(res)
+}
+
+// Copy returns a standalone copy of the array.
+func Copy(a *Array) *Array {
+	res := C.mlx_array_new()
+	C.mlx_copy(&res, a.c, C.default_stream())
 	return newArray(res)
 }
 
@@ -1277,7 +1370,18 @@ func (d Dtype) ItemSize() int64 {
 // Note: Arrays of other dtypes (bf16, f16, etc) are automatically converted to float32.
 // Note: Triggers cleanup of non-kept arrays.
 func (a *Array) Data() []float32 {
+	if !a.Valid() {
+		return nil
+	}
+	wasKept := a.kept
+	a.kept = true
+	defer func() {
+		if a.Valid() {
+			a.kept = wasKept
+		}
+	}()
 	cleanup()
+
 	size := a.Size()
 	if size == 0 {
 		return nil
@@ -1286,16 +1390,22 @@ func (a *Array) Data() []float32 {
 	arr := a
 	if a.Dtype() != DtypeFloat32 {
 		arr = AsType(a, DtypeFloat32)
-		arr.Eval()
-		// Cast array will be cleaned up on next Eval
+		Materialize("", arr)
 	}
 
+	checkMLXCall("array eval: float32 data", func() C.int {
+		return C.mlx_array_eval(arr.c)
+	})
+	syncDefaultStream("synchronize float32 data")
 	ptr := C.mlx_array_data_float32(arr.c)
 	if ptr == nil {
 		return nil
 	}
 	data := make([]float32, size)
 	copy(data, unsafe.Slice((*float32)(unsafe.Pointer(ptr)), size))
+	if arr != a {
+		arr.Free()
+	}
 	return data
 }
 
@@ -1313,11 +1423,26 @@ func (a *Array) Item() float32 {
 // Note: For non-contiguous arrays (e.g., from SliceStride), call Contiguous() first.
 // Note: Triggers cleanup of non-kept arrays.
 func (a *Array) DataInt32() []int32 {
+	if !a.Valid() {
+		return nil
+	}
+	wasKept := a.kept
+	a.kept = true
+	defer func() {
+		if a.Valid() {
+			a.kept = wasKept
+		}
+	}()
 	cleanup()
+
 	size := a.Size()
 	if size == 0 {
 		return nil
 	}
+	checkMLXCall("array eval: int32 data", func() C.int {
+		return C.mlx_array_eval(a.c)
+	})
+	syncDefaultStream("synchronize int32 data")
 	ptr := C.mlx_array_data_int32(a.c)
 	if ptr == nil {
 		return nil
@@ -1330,9 +1455,26 @@ func (a *Array) DataInt32() []int32 {
 // ItemInt32 gets a single scalar value efficiently (no array copy).
 // Note: Triggers cleanup of non-kept arrays.
 func (a *Array) ItemInt32() int32 {
+	if !a.Valid() {
+		return 0
+	}
+	wasKept := a.kept
+	a.kept = true
+	defer func() {
+		if a.Valid() {
+			a.kept = wasKept
+		}
+	}()
 	cleanup()
+
+	checkMLXCall("array eval: int32 item", func() C.int {
+		return C.mlx_array_eval(a.c)
+	})
+	syncDefaultStream("synchronize int32 item")
 	var val C.int32_t
-	C.mlx_array_item_int32(&val, a.c)
+	checkMLXCall("item int32", func() C.int {
+		return C.mlx_array_item_int32(&val, a.c)
+	})
 	return int32(val)
 }
 
@@ -1341,7 +1483,18 @@ func (a *Array) ItemInt32() int32 {
 // For non-contiguous arrays, call Contiguous() first.
 // Note: Triggers cleanup of non-kept arrays.
 func (a *Array) Bytes() []byte {
+	if !a.Valid() {
+		return nil
+	}
+	wasKept := a.kept
+	a.kept = true
+	defer func() {
+		if a.Valid() {
+			a.kept = wasKept
+		}
+	}()
 	cleanup()
+
 	nbytes := a.Nbytes()
 	if nbytes == 0 {
 		return nil
@@ -1351,19 +1504,36 @@ func (a *Array) Bytes() []byte {
 	var ptr unsafe.Pointer
 	switch a.Dtype() {
 	case DtypeFloat32:
+		checkMLXCall("array eval: float32 bytes", func() C.int {
+			return C.mlx_array_eval(a.c)
+		})
+		syncDefaultStream("synchronize float32 bytes")
 		ptr = unsafe.Pointer(C.mlx_array_data_float32(a.c))
 	case DtypeInt32:
+		checkMLXCall("array eval: int32 bytes", func() C.int {
+			return C.mlx_array_eval(a.c)
+		})
+		syncDefaultStream("synchronize int32 bytes")
 		ptr = unsafe.Pointer(C.mlx_array_data_int32(a.c))
 	case DtypeUint32:
+		checkMLXCall("array eval: uint32 bytes", func() C.int {
+			return C.mlx_array_eval(a.c)
+		})
+		syncDefaultStream("synchronize uint32 bytes")
 		ptr = unsafe.Pointer(C.mlx_array_data_uint32(a.c))
 	case DtypeUint8:
+		checkMLXCall("array eval: uint8 bytes", func() C.int {
+			return C.mlx_array_eval(a.c)
+		})
+		syncDefaultStream("synchronize uint8 bytes")
 		ptr = unsafe.Pointer(C.mlx_array_data_uint8(a.c))
 	default:
 		// For other types (bf16, f16, etc), convert to float32
 		arr := AsType(a, DtypeFloat32)
-		arr.Eval()
+		Materialize("", arr)
 		ptr = unsafe.Pointer(C.mlx_array_data_float32(arr.c))
 		nbytes = arr.Nbytes()
+		arr.Free()
 	}
 
 	if ptr == nil {
@@ -1423,6 +1593,15 @@ func MetalIsAvailable() bool {
 	return bool(available)
 }
 
+// CUDAIsAvailable returns true if CUDA GPU support is available.
+func CUDAIsAvailable() bool {
+	var available C._Bool
+	checkMLXCall("cuda availability", func() C.int {
+		return C.mlx_cuda_is_available(&available)
+	})
+	return bool(available)
+}
+
 // MetalStartCapture starts a GPU trace capture to the given file path.
 // The path must not already exist. Run with MTL_CAPTURE_ENABLED=1 env var.
 // Open the resulting .gputrace file in Xcode for analysis.
@@ -1439,13 +1618,7 @@ func MetalStopCapture() {
 
 // GPUIsAvailable returns true if any GPU (Metal or CUDA) is available
 func GPUIsAvailable() bool {
-	// On Linux with CUDA build, GPU is available
-	// On macOS, check Metal availability
-	if MetalIsAvailable() {
-		return true
-	}
-	// CUDA is available if we compiled with CUDA support (Linux)
-	return runtime.GOOS == "linux"
+	return MetalIsAvailable() || CUDAIsAvailable()
 }
 
 // GetDefaultDeviceType returns the current default device (0=CPU, 1=GPU)

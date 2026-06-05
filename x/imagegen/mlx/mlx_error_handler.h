@@ -13,6 +13,15 @@ void mlx_set_safe_init_mode(void);
 // Call from runner entry points after confirming MLX is available.
 void mlx_set_default_error_mode(void);
 
+// Clear the captured MLX error state.
+void mlx_clear_error(void);
+
+// Check whether an error has been captured.
+int mlx_had_error(void);
+
+// Get the captured MLX error message, or NULL if none.
+const char* mlx_get_error(void);
+
 // Check whether an error occurred while in safe init mode.
 int mlx_had_init_error(void);
 

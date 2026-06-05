@@ -105,6 +105,27 @@ func TestCompletionEOFBeforeDoneReturnsError(t *testing.T) {
 	}
 }
 
+func TestCompletionStreamedErrorReturnsError(t *testing.T) {
+	s := newCompletionTestServer(func(r *http.Request) string {
+		return `{"step":1,"total":2}` + "\n" +
+			`{"done":true,"content":"error: mlx failed","stop_reason":"error"}` + "\n"
+	})
+
+	var responses []llm.CompletionResponse
+	err := s.Completion(context.Background(), llm.CompletionRequest{Prompt: "test prompt"}, func(resp llm.CompletionResponse) {
+		responses = append(responses, resp)
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "mlx failed") {
+		t.Fatalf("error = %v", err)
+	}
+	if len(responses) != 1 || responses[0].Done {
+		t.Fatalf("responses = %+v, want one non-done progress response", responses)
+	}
+}
+
 func TestConfigureMLXSubprocessEnvAddsMLXDirsAndCUDAHeaders(t *testing.T) {
 	root := t.TempDir()
 	mlxCUDA := filepath.Join(root, "mlx_cuda_v13")

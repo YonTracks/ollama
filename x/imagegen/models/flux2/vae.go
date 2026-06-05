@@ -297,10 +297,15 @@ func (mb *VAEMidBlock) Forward(x *mlx.Array) *mlx.Array {
 	return x
 }
 
-// DefaultTilingConfig returns reasonable defaults for tiled decoding
-// Matches diffusers: tile_latent_min_size=64, tile_overlap_factor=0.25
+// DefaultTilingConfig returns conservative Flux2 VAE tiling defaults.
+// Flux2 keeps large transformer/VAE weights resident, so smaller tiles reduce
+// decode peak memory on 1024x1024 generations.
 func DefaultTilingConfig() *vae.TilingConfig {
-	return vae.DefaultTilingConfig()
+	return &vae.TilingConfig{
+		TileSize:    32,
+		Overlap:     8,
+		LogProgress: debugLogsEnabled(),
+	}
 }
 
 // AutoencoderKLFlux2 is the Flux2 VAE with BatchNorm
@@ -615,7 +620,11 @@ func (v *AutoencoderKLFlux2) Decode(latents *mlx.Array, pH, pW int32) *mlx.Array
 
 	// Use tiled decoding if enabled
 	if v.Tiling != nil {
-		mlx.Eval(z)
+		stage := ""
+		if v.Tiling.LogProgress {
+			stage = "VAE latent pre-tiles"
+		}
+		mlx.Materialize(stage, z)
 		return vae.DecodeTiled(z, v.Tiling, v.decodeTile)
 	}
 
