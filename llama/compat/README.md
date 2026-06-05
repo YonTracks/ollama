@@ -30,16 +30,19 @@ local llama.cpp tree.
   small tensor repacking primitives.
 - `llama-cpp-hooks.patch` - small additive call-site edits in llama.cpp files.
   It currently touches `src/llama-model-loader.cpp` and `tools/mtmd/clip.cpp`.
+- `llama-windows-utf8-paths.patch` - Windows UTF-8 command-line and CLIP file
+  opening fixes for non-ASCII model paths.
 - `compat.cmake`, `apply-patch.cmake` - CMake glue and an idempotent applier
   (used by `llama/server/CMakeLists.txt`) that applies every `*.patch` under
-  this directory — the hooks patch plus each `models/` architecture patch.
+  this directory.
 - `models/` - the sibling **new-architecture** layer: implementations of
   architectures llama.cpp doesn't support yet, each added via a small
   registration patch. (Those files *add* archs; the files above *translate*
   existing GGUFs onto archs llama.cpp already has.)
 
 The compatibility source files stay in this directory and are linked into the
-fetched llama.cpp targets. The patch file only adds call sites.
+fetched llama.cpp targets. The patch files only add call sites and small
+platform glue.
 
 ## Load-Time Hooks
 
@@ -111,7 +114,7 @@ dispatching them from `translate_metadata` / `translate_clip_metadata`. For
 monolithic vision models, also update the `compatClipArches` allowlist in
 `llm/llama_server.go` so Ollama passes the main GGUF as `--mmproj`.
 
-## Regenerating the Patch File
+## Regenerating Patch Files
 
 After a llama.cpp bump moves the insertion points, re-apply the edits to a
 fresh checkout and run:
@@ -122,6 +125,15 @@ git diff -- \
     src/llama-model-loader.cpp \
     tools/mtmd/clip.cpp \
     > /path/to/ollama/llama/compat/llama-cpp-hooks.patch
+```
+
+For Windows path handling changes, regenerate the corresponding patch with:
+
+```sh
+git diff -- \
+    tools/mtmd/clip.cpp \
+    tools/server/main.cpp \
+    > /path/to/ollama/llama/compat/llama-windows-utf8-paths.patch
 ```
 
 ## Implementation Notes

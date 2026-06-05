@@ -1906,6 +1906,37 @@ func TestAppendMMProjArgs(t *testing.T) {
 	}
 }
 
+func TestLlamaServerParamsPreserveUnicodeModelAndProjectorPaths(t *testing.T) {
+	opts := api.DefaultOptions()
+	opts.NumGPU = 0
+	opts.NumCtx = 4096
+
+	modelPath := `C:\Users\張 庭 綱\.ollama\models\blobs\sha256-4e30e2665218745ef463f722c0bf86be0cab6ee676320f1cfadf91e989107448`
+	got := llamaServerParams(49152, llamaServerLaunchConfig{
+		modelPath:   modelPath,
+		projectors:  []string{modelPath},
+		opts:        opts,
+		numParallel: 1,
+		config:      LlamaServerConfig{},
+	})
+
+	assertArgValue := func(flag, want string) {
+		t.Helper()
+		for i := 0; i < len(got)-1; i++ {
+			if got[i] == flag {
+				if got[i+1] != want {
+					t.Fatalf("%s value = %q, want %q", flag, got[i+1], want)
+				}
+				return
+			}
+		}
+		t.Fatalf("missing %s in args %v", flag, got)
+	}
+
+	assertArgValue("--model", modelPath)
+	assertArgValue("--mmproj", modelPath)
+}
+
 func TestAppendJinjaArgs(t *testing.T) {
 	tests := []struct {
 		name   string
