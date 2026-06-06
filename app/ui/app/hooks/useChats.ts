@@ -1051,6 +1051,15 @@ export function useChatSession({
             continue;
           }
 
+          if (event.eventName === "loading") {
+            updateActiveStream(streamId, (stream) => ({
+              ...stream,
+              modelLoading: true,
+              modelLoadingName: selectedModel
+            }));
+            continue;
+          }
+
           if (event.eventName === "error") {
             const contextError = contextErrorMessage(event.error, settings);
             workingMessages = appendAssistantError(

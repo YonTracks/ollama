@@ -255,15 +255,14 @@ function withModelLoadingMessage(
 ) {
   if (!modelLoading) return messages;
 
-  const hasPendingAssistant = messages.some(
-    (message) =>
-      message.role === "assistant" &&
-      (message.status === "sending" || message.status === "streaming") &&
-      !message.content &&
-      !message.thinking &&
-      (message.attachments?.length ?? 0) === 0
-  );
-  if (hasPendingAssistant) return messages;
+  const last = messages.at(-1);
+  const lastIsPendingAssistant =
+    last?.role === "assistant" &&
+    (last.status === "sending" || last.status === "streaming") &&
+    !last.content &&
+    !last.thinking &&
+    (last.attachments?.length ?? 0) === 0;
+  if (lastIsPendingAssistant) return messages;
 
   return [
     ...messages,

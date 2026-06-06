@@ -516,7 +516,7 @@ export class ChatEventAttachment {
     }
 }
 export class ChatEvent {
-    eventName: "chat" | "thinking" | "assistant_with_tools" | "tool_call" | "tool" | "tool_result" | "done" | "chat_created";
+    eventName: "chat" | "thinking" | "assistant_with_tools" | "tool_call" | "tool" | "tool_result" | "loading" | "done" | "chat_created";
     content?: string;
     thinking?: string;
     attachments?: ChatEventAttachment[];

@@ -242,6 +242,7 @@ export interface ChatTextEvent {
     | "tool_call"
     | "tool"
     | "tool_result"
+    | "loading"
     | "done"
     | "chat_created";
   content?: string;

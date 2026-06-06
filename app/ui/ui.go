@@ -1432,7 +1432,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 			flusher.Flush()
 		}
 
-		result, content, err := registry.Execute(ctx, toolCall.Function.Name, toolCall.Function.Arguments.ToMap())
+		args := toolCall.Function.Arguments.ToMap()
+		args = imageGenerateArgsWithPromptFallback(toolCall.Function.Name, args, chat.Messages)
+		result, content, err := registry.Execute(ctx, toolCall.Function.Name, args)
 		if err != nil {
 			errContent := fmt.Sprintf("Error: %v", err)
 			toolErrMsg := store.NewMessage("tool", errContent, nil)
@@ -1543,6 +1545,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 
 	for {
 		var toolsExecuted bool
+		var toolFollowUpNeeded bool
 		var deferredToolCalls []api.ToolCall
 
 		var availableTools []map[string]any
@@ -1583,6 +1586,13 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 		chatReq, err := s.buildChatRequest(preparedChat, req.Model, thinkValue, availableTools, contextSettings)
 		if err != nil {
 			return err
+		}
+
+		if passNum > 1 {
+			if err := json.NewEncoder(w).Encode(responses.ChatEvent{EventName: string(EventLoading)}); err != nil {
+				return err
+			}
+			flusher.Flush()
 		}
 
 		finalMetrics = nil
@@ -1699,6 +1709,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 				for _, toolCall := range res.Message.ToolCalls {
 					// continues loop as tools were executed
 					toolsExecuted = true
+					if shouldRequestFollowUpAfterToolExecution(toolCall.Function.Name) {
+						toolFollowUpNeeded = true
+					}
 
 					if shouldDeferToolExecutionUntilChatComplete(toolCall.Function.Name) {
 						deferredToolCalls = append(deferredToolCalls, toolCall)
@@ -1813,6 +1826,10 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 			if err := executeToolCall(toolCall); err != nil {
 				return err
 			}
+		}
+
+		if !toolFollowUpNeeded {
+			break
 		}
 
 		// If no tools were executed, exit the loop
@@ -5331,6 +5348,10 @@ func shouldEmitToolStartBeforeExecution(name string) bool {
 	return name == "image.generate"
 }
 
+func shouldRequestFollowUpAfterToolExecution(name string) bool {
+	return name != "image.generate"
+}
+
 // Ollama's unload API returns after the runner is scheduled to expire. On CUDA,
 // the process can disappear from /api/ps before VRAM has actually recovered, so
 // image generation gets a short recovery window before loading the image model.
@@ -5568,6 +5589,85 @@ func imageToolGenerateRequest(req tools.ImageGenerateRequest) *api.GenerateReque
 		Height:    req.Height,
 		Steps:     req.Steps,
 	}
+}
+
+func imageGenerateArgsWithPromptFallback(name string, args map[string]any, messages []store.Message) map[string]any {
+	if name != "image.generate" {
+		return args
+	}
+	if strings.TrimSpace(getStringArg(args, "prompt")) != "" {
+		return args
+	}
+
+	prompt := fallbackImageGeneratePrompt(messages)
+	if prompt == "" {
+		return args
+	}
+	if args == nil {
+		args = map[string]any{}
+	}
+	args["prompt"] = prompt
+	return args
+}
+
+func fallbackImageGeneratePrompt(messages []store.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "user" {
+			continue
+		}
+
+		prompt := strings.TrimSpace(messages[i].Content)
+		if isImageGenerationRequest(prompt) {
+			return prompt
+		}
+		return ""
+	}
+	return ""
+}
+
+func isImageGenerationRequest(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+
+	imageWords := []string{"image", "picture", "photo", "illustration", "drawing", "artwork"}
+	createWords := []string{"create", "generate", "make", "draw", "paint", "render", "produce"}
+
+	hasImageWord := false
+	for _, word := range imageWords {
+		if strings.Contains(lower, word) {
+			hasImageWord = true
+			break
+		}
+	}
+
+	hasCreateWord := false
+	for _, word := range createWords {
+		if strings.Contains(lower, word) {
+			hasCreateWord = true
+			break
+		}
+	}
+
+	return (hasImageWord && hasCreateWord) ||
+		strings.HasPrefix(lower, "draw ") ||
+		strings.HasPrefix(lower, "paint ")
+}
+
+func getStringArg(args map[string]any, key string) string {
+	if args == nil {
+		return ""
+	}
+	value, ok := args[key]
+	if !ok {
+		return ""
+	}
+	s, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return s
 }
 
 func toolAttachmentsFromResult(result any) ([]store.File, []responses.ChatEventAttachment) {

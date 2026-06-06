@@ -771,6 +771,18 @@ func TestImageGenerateToolStartIsEmittedBeforeExecution(t *testing.T) {
 	}
 }
 
+func TestImageGenerateToolDoesNotRequestFollowUpPass(t *testing.T) {
+	if shouldRequestFollowUpAfterToolExecution("image.generate") {
+		t.Fatal("image.generate should finish after the streamed image tool result")
+	}
+	if !shouldRequestFollowUpAfterToolExecution("web_search") {
+		t.Fatal("web_search should keep the follow-up model pass")
+	}
+	if !shouldRequestFollowUpAfterToolExecution("desktop.read_text_file") {
+		t.Fatal("desktop.read_text_file should keep the follow-up model pass")
+	}
+}
+
 func TestUnloadGenerateRequestUsesKeepAliveZero(t *testing.T) {
 	req := unloadGenerateRequest("qwen3.6:35b")
 
@@ -874,6 +886,60 @@ func TestImageToolGenerateRequestUsesKeepAliveZero(t *testing.T) {
 	}
 	if req.Width != 768 || req.Height != 768 || req.Steps != 4 {
 		t.Fatalf("image options = %dx%d steps=%d, want 768x768 steps=4", req.Width, req.Height, req.Steps)
+	}
+}
+
+func TestImageGenerateArgsWithPromptFallback(t *testing.T) {
+	messages := []store.Message{
+		store.NewMessage("user", "create an image of a tomato plant", nil),
+	}
+
+	args := imageGenerateArgsWithPromptFallback("image.generate", nil, messages)
+	if got := args["prompt"]; got != "create an image of a tomato plant" {
+		t.Fatalf("prompt fallback = %q, want user request", got)
+	}
+
+	existing := map[string]any{"prompt": "A detailed existing prompt", "width": 1024}
+	args = imageGenerateArgsWithPromptFallback("image.generate", existing, messages)
+	if got := args["prompt"]; got != "A detailed existing prompt" {
+		t.Fatalf("existing prompt = %q, want unchanged", got)
+	}
+	if got := args["width"]; got != 1024 {
+		t.Fatalf("width = %v, want preserved", got)
+	}
+
+	args = imageGenerateArgsWithPromptFallback("image.generate", nil, []store.Message{
+		store.NewMessage("user", "what does a tomato plant need?", nil),
+	})
+	if args != nil {
+		t.Fatalf("non-image request args = %#v, want nil", args)
+	}
+
+	args = imageGenerateArgsWithPromptFallback("web_search", nil, messages)
+	if args != nil {
+		t.Fatalf("non-image tool args = %#v, want nil", args)
+	}
+}
+
+func TestIsImageGenerationRequest(t *testing.T) {
+	tests := []struct {
+		text string
+		want bool
+	}{
+		{text: "create an image of a tomato plant", want: true},
+		{text: "Draw a tomato plant", want: true},
+		{text: "please render an image of a cyberpunk city", want: true},
+		{text: "what does a tomato plant need?", want: false},
+		{text: "describe this image", want: false},
+		{text: "render this markdown", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			if got := isImageGenerationRequest(tt.text); got != tt.want {
+				t.Fatalf("isImageGenerationRequest() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
